@@ -4,12 +4,24 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-function commandForPlatform(command, platform = process.platform) {
-  return platform === 'win32' ? `${command}.cmd` : command;
+function commandForPlatform(command, args, platform = process.platform) {
+  if (platform === 'win32') {
+    return {
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', command, ...args],
+    };
+  }
+
+  return { command, args };
+}
+
+function run(command, args, options) {
+  const invocation = commandForPlatform(command, args);
+  return spawnSync(invocation.command, invocation.args, options);
 }
 
 function json(command, args) {
-  const result = spawnSync(command, args, { encoding: 'utf8' });
+  const result = run(command, args, { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 }
@@ -26,13 +38,19 @@ const workspaceManifestPaths = [
   'packages/contracts/package.json',
 ];
 
-test('selects the Windows command shim used by Corepack', () => {
-  assert.equal(commandForPlatform('pnpm', 'win32'), 'pnpm.cmd');
-  assert.equal(commandForPlatform('pnpm', 'darwin'), 'pnpm');
+test('builds a shell-backed pnpm invocation on Windows only', () => {
+  assert.deepEqual(commandForPlatform('pnpm', ['--version'], 'win32'), {
+    command: 'cmd.exe',
+    args: ['/d', '/s', '/c', 'pnpm', '--version'],
+  });
+  assert.deepEqual(commandForPlatform('pnpm', ['--version'], 'darwin'), {
+    command: 'pnpm',
+    args: ['--version'],
+  });
 });
 
 test('package managers discover every runnable workspace', () => {
-  const pnpm = json(commandForPlatform('pnpm'), [
+  const pnpm = json('pnpm', [
     '--recursive', 'list', '--depth', '-1', '--json',
   ]);
   const root = pnpm.find(({ path }) => path === process.cwd());
@@ -120,7 +138,7 @@ test('the root test command executes the workspace smoke suite', {
 }, () => {
   const childEnv = { ...process.env, OPSPILOT_SMOKE_CHILD: '1' };
   delete childEnv.NODE_TEST_CONTEXT;
-  const result = spawnSync(commandForPlatform('pnpm'), ['test'], {
+  const result = run('pnpm', ['test'], {
     encoding: 'utf8',
     timeout: 60_000,
     env: childEnv,
