@@ -19,7 +19,11 @@
         "minWidth": 960,
         "minHeight": 640
       }
-    ]
+    ],
+    "security": {
+      "capabilities": ["main"],
+      "freezePrototype": true
+    }
   },
   "bundle": {
     "active": false

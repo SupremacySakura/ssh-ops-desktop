@@ -1,1 +1,1 @@
-{}
+{"main":{"identifier":"main","description":"Minimal IPC access for the OpsPilot main window.","local":true,"windows":["main"],"permissions":["allow-core-health","core:event:default","core:window:default"]}}

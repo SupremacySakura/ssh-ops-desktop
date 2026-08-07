@@ -1,15 +1,24 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import { createTauriCoreClient } from './api/core';
 
 const root = document.getElementById('root');
 
-if (!root) {
-  throw new Error('Missing #root element');
+async function bootstrap() {
+  if (!root) {
+    throw new Error('Missing #root element');
+  }
+
+  if (import.meta.env.MODE === 'native-e2e') {
+    await import('@wdio/tauri-plugin');
+  }
+
+  createRoot(root).render(
+    <StrictMode>
+      <App core={createTauriCoreClient()} />
+    </StrictMode>,
+  );
 }
 
-createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+void bootstrap();

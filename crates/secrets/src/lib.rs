@@ -97,3 +97,8 @@ pub trait SecretStore: Send + Sync {
 
     async fn delete(&self, secret_ref: &SecretRef) -> Result<(), CoreError>;
 }
+
+#[allow(async_fn_in_trait)]
+pub trait SecretStoreReadiness: Send + Sync {
+    async fn probe_readiness(&self) -> Result<(), CoreError>;
+}

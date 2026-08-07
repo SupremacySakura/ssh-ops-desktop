@@ -5,7 +5,7 @@ use opspilot_domain::{CoreError, CoreErrorCode, Id};
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
-use crate::{SecretKind, SecretRef, SecretStore, SecretValue};
+use crate::{SecretKind, SecretRef, SecretStore, SecretStoreReadiness, SecretValue};
 
 /// In-memory SecretStore used by unit and integration tests.
 #[derive(Debug, Default)]
@@ -42,6 +42,12 @@ impl SecretStore for MemorySecretStore {
             .remove(secret_ref)
             .map(|_| ())
             .ok_or_else(secret_unavailable)
+    }
+}
+
+impl SecretStoreReadiness for MemorySecretStore {
+    async fn probe_readiness(&self) -> Result<(), CoreError> {
+        Ok(())
     }
 }
 

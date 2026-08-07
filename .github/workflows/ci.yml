@@ -1,0 +1,96 @@
+name: M0 CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  m0:
+    name: M0 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - windows-2025
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Activate pinned pnpm with Corepack
+        run: |
+          corepack enable
+          corepack install --global pnpm@10.15.0
+          pnpm --version
+
+      - name: Configure pnpm store
+        run: pnpm config set store-dir "${{ runner.temp }}/pnpm-store"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/pnpm-store
+          key: m0-${{ runner.os }}-${{ runner.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml', 'Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Select pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: m0-${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('pnpm-lock.yaml', 'Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting and lint
+        run: |
+          cargo fmt --check
+          pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Check cross-runtime contracts
+        run: pnpm contracts:check
+
+      - name: Run TypeScript tests
+        run: pnpm test --run
+
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run renderer E2E
+        run: pnpm test:e2e:renderer
+
+      - name: Build debug desktop shell without test driver
+        run: pnpm tauri build --debug
+
+      - name: Build native E2E desktop shell
+        run: pnpm build:e2e:native
+
+      - name: Run native E2E
+        run: pnpm test:e2e:native

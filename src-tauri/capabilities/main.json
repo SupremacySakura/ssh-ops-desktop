@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Minimal IPC access for the OpsPilot main window.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-core-health",
+    "core:event:default",
+    "core:window:default"
+  ]
+}
