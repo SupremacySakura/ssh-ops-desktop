@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpsPilot",
+  "version": "0.1.0",
+  "identifier": "com.opspilot.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @opspilot/desktop dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm --filter @opspilot/desktop build",
+    "frontendDist": "../apps/desktop/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "OpsPilot",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640
+      }
+    ]
+  },
+  "bundle": {
+    "active": false
+  }
+}

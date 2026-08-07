@@ -1,0 +1,29 @@
+{
+  "name": "ssh-ops-desktop",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @opspilot/desktop dev",
+    "tauri": "tauri",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm test:packages && pnpm test:smoke",
+    "test:packages": "pnpm -r test",
+    "test:smoke": "node --test tests/smoke/workspace.test.mjs",
+    "verify:static": "pnpm lint && pnpm typecheck && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings",
+    "test:integration": "vitest run --config tests/integration/vitest.config.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@tauri-apps/cli": "2.11.4",
+    "eslint": "10.8.0",
+    "globals": "17.9.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.66.0",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "opspilot-desktop"
+version = "0.1.0"
+description = "OpsPilot desktop shell"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "opspilot_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+opspilot-domain = { path = "../crates/domain" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
