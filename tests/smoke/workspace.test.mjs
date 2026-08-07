@@ -4,6 +4,10 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+function commandForPlatform(command, platform = process.platform) {
+  return platform === 'win32' ? `${command}.cmd` : command;
+}
+
 function json(command, args) {
   const result = spawnSync(command, args, { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
@@ -22,8 +26,15 @@ const workspaceManifestPaths = [
   'packages/contracts/package.json',
 ];
 
+test('selects the Windows command shim used by Corepack', () => {
+  assert.equal(commandForPlatform('pnpm', 'win32'), 'pnpm.cmd');
+  assert.equal(commandForPlatform('pnpm', 'darwin'), 'pnpm');
+});
+
 test('package managers discover every runnable workspace', () => {
-  const pnpm = json('pnpm', ['--recursive', 'list', '--depth', '-1', '--json']);
+  const pnpm = json(commandForPlatform('pnpm'), [
+    '--recursive', 'list', '--depth', '-1', '--json',
+  ]);
   const root = pnpm.find(({ path }) => path === process.cwd());
   assert.equal(root?.name, 'ssh-ops-desktop');
   const packageNames = new Set(
@@ -109,7 +120,7 @@ test('the root test command executes the workspace smoke suite', {
 }, () => {
   const childEnv = { ...process.env, OPSPILOT_SMOKE_CHILD: '1' };
   delete childEnv.NODE_TEST_CONTEXT;
-  const result = spawnSync('pnpm', ['test'], {
+  const result = spawnSync(commandForPlatform('pnpm'), ['test'], {
     encoding: 'utf8',
     timeout: 60_000,
     env: childEnv,
