@@ -49,6 +49,33 @@ test('builds a shell-backed pnpm invocation on Windows only', () => {
   });
 });
 
+test('provides every required Windows icon resource size', () => {
+  const iconPath = 'src-tauri/icons/icon.ico';
+  assert.ok(existsSync(iconPath), `${iconPath} must be checked in for Windows builds`);
+
+  const icon = readFileSync(iconPath);
+  assert.ok(icon.length >= 6, `${iconPath} must contain an ICO header`);
+  assert.equal(icon.readUInt16LE(0), 0, `${iconPath} must use the ICO reserved value`);
+  assert.equal(icon.readUInt16LE(2), 1, `${iconPath} must be an ICO image`);
+
+  const imageCount = icon.readUInt16LE(4);
+  assert.ok(
+    icon.length >= 6 + (imageCount * 16),
+    `${iconPath} must contain every declared directory entry`,
+  );
+
+  const sizes = [];
+  for (let index = 0; index < imageCount; index += 1) {
+    const entryOffset = 6 + (index * 16);
+    const width = icon[entryOffset] || 256;
+    const height = icon[entryOffset + 1] || 256;
+    assert.equal(width, height, `${iconPath} layer ${index} must be square`);
+    sizes.push(width);
+  }
+
+  assert.deepEqual(sizes.toSorted((left, right) => left - right), [16, 24, 32, 48, 64, 256]);
+});
+
 test('package managers discover every runnable workspace', () => {
   const pnpm = json('pnpm', [
     '--recursive', 'list', '--depth', '-1', '--json',
