@@ -1,0 +1,7 @@
+{
+  "level": "L2",
+  "approvalRequired": true,
+  "snapshotRequired": false,
+  "confirmationText": "Restart nginx",
+  "reason": "service restart changes remote state"
+}

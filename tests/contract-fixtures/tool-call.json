@@ -1,0 +1,10 @@
+{
+  "toolCallId": "019c62b2-2970-7000-8000-000000000001",
+  "runId": "019c62b2-2970-7000-8000-000000000002",
+  "serverId": "019c62b2-2970-7000-8000-000000000003",
+  "name": "server.overview",
+  "schemaVersion": 1,
+  "args": {
+    "includeMetrics": true
+  }
+}

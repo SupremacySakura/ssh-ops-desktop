@@ -14,6 +14,7 @@
     "test": "pnpm test:packages && pnpm test:smoke",
     "test:packages": "pnpm -r test",
     "test:smoke": "node --test tests/smoke/workspace.test.mjs",
+    "contracts:check": "pnpm --filter @opspilot/contracts test --run && cargo test -p opspilot-domain --test contract_fixtures",
     "verify:static": "pnpm lint && pnpm typecheck && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings",
     "test:integration": "vitest run --config tests/integration/vitest.config.ts"
   },

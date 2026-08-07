@@ -1,0 +1,5 @@
+{
+  "code": "SSH_HOST_KEY_CHANGED",
+  "message": "blocked",
+  "retryable": false
+}
