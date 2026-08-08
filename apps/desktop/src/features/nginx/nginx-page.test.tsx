@@ -32,6 +32,8 @@ describe('NginxPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '发现并读取配置' }));
     const editor = await screen.findByLabelText('Nginx 候选配置');
+    expect(screen.getByLabelText('Nginx 安全变更流程')).toHaveTextContent('配置校验');
+    expect(screen.getByRole('complementary', { name: 'Nginx 配置详情' })).toHaveTextContent('/etc/nginx/nginx.conf');
     fireEvent.change(editor, { target: { value: 'worker_processes auto;' } });
     expect(screen.getByText('- worker_processes 1;')).toBeVisible();
     expect(screen.getByText('+ worker_processes auto;')).toBeVisible();

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ModelProfileInputSchema, type ModelProfileSummary } from '@opspilot/contracts';
 
 import type { CoreClient } from '../../api/core';
+import { PageHeader, Panel, SectionHeader } from '../../app/ui/layout';
 
 export function ModelSettings({ core }: { core: CoreClient }) {
   const [profiles, setProfiles] = useState<ModelProfileSummary[]>([]);
@@ -64,30 +65,30 @@ export function ModelSettings({ core }: { core: CoreClient }) {
   };
 
   return <div className="settings-layout">
-    <section className="panel model-form">
-      <div className="panel-title"><h2>模型 Provider</h2><span className="muted">OpenAI-compatible</span></div>
-      <p>请求只发送到下方 Base URL；API Key 保存进系统凭据库，保存后立即从页面清除。</p>
+    <Panel aria-label="模型配置" className="model-form">
+      <SectionHeader actions={<span className="provider-badge">OpenAI-compatible</span>} description="请求只发送到明确配置的服务地址" title="模型配置" />
+      <div className="credential-notice"><strong>凭据隔离</strong><p>API Key 保存进系统凭据库，保存成功后立即从页面状态清除。</p></div>
       <label>配置名称<input aria-label="配置名称" maxLength={128} onChange={(event) => setName(event.target.value)} value={name} /></label>
       <label>Base URL<input aria-label="Base URL" inputMode="url" onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://models.example.com/v1" value={baseUrl} /></label>
       <label>Model<input aria-label="Model" maxLength={256} onChange={(event) => setModel(event.target.value)} value={model} /></label>
       <label>API Key<input aria-label="API Key" autoComplete="new-password" onChange={(event) => setApiKey(event.target.value)} type="password" value={apiKey} /></label>
       <button className="primary" disabled={busy} onClick={() => void save()} type="button">保存模型配置</button>
       {message ? <p className="form-message" role="status">{message}</p> : null}
-    </section>
-    <section className="panel">
-      <div className="panel-title"><h2>已配置模型</h2><span className="count-badge">{profiles.length}</span></div>
-      {profiles.length === 0 ? <p>尚未配置模型</p> : <ul className="profile-list">{profiles.map((profile) => <li key={profile.id}>
+    </Panel>
+    <Panel aria-label="已保存模型" className="saved-models-panel">
+      <SectionHeader count={profiles.length} description="仅显示非敏感配置摘要" title="已保存模型" />
+      {profiles.length === 0 ? <div className="conversation-empty">尚未配置模型</div> : <ul className="profile-list">{profiles.map((profile) => <li key={profile.id}>
         <div><strong>{profile.name}</strong><small>{profile.baseUrl} · {profile.model}</small></div>
         <span className="status-badge"><i />{profile.hasApiKey ? '已配置 API Key' : '无需 API Key'}</span>
         <button onClick={() => void test(profile)} type="button">测试连接</button>
       </li>)}</ul>}
-    </section>
+    </Panel>
   </div>;
 }
 
 export function SettingsPage({ core }: { core: CoreClient }) {
   return <div className="page-stack">
-    <div className="page-heading"><div><p className="eyebrow">PREFERENCES</p><h1>设置</h1><p>模型凭据存入系统凭据库，页面只显示是否已配置。</p></div></div>
+    <PageHeader description="模型凭据存入系统凭据库，页面只显示是否已配置。" eyebrow="Preferences" title="设置" />
     <ModelSettings core={core} />
   </div>;
 }

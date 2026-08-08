@@ -6,6 +6,7 @@ import type {
 
 import type { AgentAvailability, CoreClient } from '../../api/core';
 import { RiskDecisionDialog } from '../../app/risk-decision-dialog';
+import { PageHeader, Panel, SectionHeader } from '../../app/ui/layout';
 import type { ConnectedServer } from '../terminal/terminal-page';
 
 interface AgentPageProps {
@@ -110,21 +111,21 @@ export function AgentPage({ availability, connections, core, profiles, servers }
 
   const selectedEnvironment = servers.find((server) => server.id === serverId)?.environment ?? 'other';
 
-  return <div className="page-stack">
-    <div className="page-heading"><div><p className="eyebrow">LOCAL AI OPERATOR</p><h1>AI Agent</h1><p>Agent 只能调用 Rust 发布的工具目录，写操作与人工操作共用同一审批门。</p></div></div>
+  return <div className="page-stack agent-page">
+    <PageHeader actions={<a className="button-link" href="#terminal">打开终端</a>} description="Agent 只能调用 Rust 发布的工具目录，写操作与人工操作共用同一审批门。" eyebrow="Local AI operator" title="AI Agent" />
     {unavailable ? <div className="alert warning-alert" role="alert"><strong>AI Agent 暂不可用</strong><span>{availability?.reason ?? '正在检查本地 Sidecar。'}；人工终端、Docker 和 Nginx 功能不受影响。</span></div> : <div className="alert success-alert">Agent 已就绪</div>}
-    <div className="tool-chips" aria-label="Agent 工具目录">{catalog.map((tool) => <span key={tool.name}>{tool.name}</span>)}</div>
+    <div className="agent-tool-strip"><span>可用工具</span><div className="tool-chips" aria-label="Agent 工具目录">{catalog.length > 0 ? catalog.map((tool) => <span key={tool.name}>{tool.name}</span>) : <small>Core 尚未返回工具目录</small>}</div></div>
     <div className="agent-layout">
-      <section className="panel"><h2>对话</h2><div className="agent-scope">
+      <Panel aria-label="Agent 对话"><SectionHeader description="声明服务器和模型作用域" title="对话" /><div className="agent-scope">
         <label>服务器<select aria-label="Agent 服务器" onChange={(event) => setServerId(event.target.value)} value={serverId}><option value="">请选择</option>{servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select></label>
         <label>模型<select aria-label="Agent 模型" onChange={(event) => setProfileId(event.target.value)} value={profileId}><option value="">请选择</option>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
-      </div><textarea aria-label="Agent 输入" onChange={(event) => setInput(event.target.value)} placeholder="例如：解释这台服务器的状态，并提出安全建议" value={input} /><button className="primary" disabled={unavailable || busy} onClick={() => void start()} type="button">生成计划并运行</button>{error ? <p role="alert">{error}</p> : null}</section>
-      <section className="panel"><h2>执行计划</h2>{run ? <ol className="run-plan"><li><strong>读取服务器概览</strong><span>Rust Core · L0</span></li><li><strong>生成解释</strong><span>远程模型 · 最小上下文</span></li></ol> : <div className="conversation-empty">等待结构化计划</div>}</section>
-      <section className="panel"><h2>结果与审批</h2>{run ? <div className="run-result"><span className="status-badge"><i />{statusLabel(run.status)}</span><p>{run.outputSummary ?? '写操作正在等待你的审批。'}</p><small>Run {run.id}</small></div> : <div className="conversation-empty">没有待审批项</div>}</section>
+      </div><textarea aria-label="Agent 输入" onChange={(event) => setInput(event.target.value)} placeholder="例如：解释这台服务器的状态，并提出安全建议" value={input} /><button className="primary" disabled={unavailable || busy} onClick={() => void start()} type="button">生成计划并运行</button>{error ? <p role="alert">{error}</p> : null}</Panel>
+      <Panel aria-label="执行计划"><SectionHeader description="Core 可审计执行步骤" title="执行计划" />{run ? <ol className="run-plan"><li><strong>读取服务器概览</strong><span>Rust Core · L0</span></li><li><strong>生成解释</strong><span>远程模型 · 最小上下文</span></li></ol> : <div className="conversation-empty">等待结构化计划</div>}</Panel>
+      <Panel aria-label="审批队列"><SectionHeader description="写操作必须人工确认" title="审批队列" />{run ? <div className="run-result"><span className="status-badge"><i />{statusLabel(run.status)}</span><p>{run.outputSummary ?? '写操作正在等待你的审批。'}</p><small>Run {run.id}</small></div> : <div className="conversation-empty">没有待审批项</div>}</Panel>
     </div>
+    <Panel className="agent-trace-panel"><SectionHeader description="仅展示本地 Core 返回的运行记录" title="Trace" /><div className="table-wrap"><table aria-label="Agent Trace"><thead><tr><th>Run</th><th>输入</th><th>输出</th><th>状态</th><th>更新时间</th></tr></thead><tbody>{run ? <tr><td><strong>{run.id}</strong></td><td>{run.inputSummary}</td><td title={run.outputSummary ?? undefined}>{run.outputSummary ? '已记录输出' : '暂无输出'}</td><td>{run.status}</td><td>{run.updatedAt}</td></tr> : <tr><td className="empty-cell" colSpan={5}>尚无 Agent 运行记录</td></tr>}</tbody></table></div></Panel>
     {approval ? <RiskDecisionDialog environment={selectedEnvironment} request={approval} onApprove={(proof) => void approve(proof)} onReject={() => void reject()} /> : null}
     {approvalMessage ? <div className="alert success-alert" role="status">{approvalMessage}</div> : null}
-    <a className="manual-link" href="#terminal">打开终端</a>
   </div>;
 }
 

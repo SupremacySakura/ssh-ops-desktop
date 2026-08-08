@@ -65,8 +65,10 @@ describe('FileManagerPage', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
 
     render(<FileManagerPage connections={[{ server, connection }]} core={core} />);
+    expect(screen.getByRole('heading', { name: '远程文件' })).toBeVisible();
     fireEvent.change(screen.getByLabelText('远程目录'), { target: { value: '/etc' } });
     fireEvent.click(screen.getByRole('button', { name: '浏览目录' }));
+    expect(await screen.findByRole('region', { name: '远端文件列表' })).toBeVisible();
     fireEvent.click(await screen.findByRole('button', { name: '打开 app.conf' }));
 
     expect(await screen.findByDisplayValue('port=8080')).toBeVisible();

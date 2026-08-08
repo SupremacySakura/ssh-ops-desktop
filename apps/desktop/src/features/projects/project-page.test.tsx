@@ -2,7 +2,7 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ConnectionHandle, ServerSummary } from '@opspilot/contracts';
@@ -37,7 +37,9 @@ describe('ProjectsPage', () => {
     fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: 'API' } });
     fireEvent.change(screen.getByLabelText('Git 仓库'), { target: { value: 'https://example.com/team/api.git' } });
     fireEvent.click(screen.getByRole('button', { name: '创建项目' }));
-    expect(await screen.findByText('/srv/api')).toBeVisible();
+    expect(within(await screen.findByRole('table', { name: '项目列表' })).getByText('/srv/api')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '查看 API 详情' }));
+    expect(screen.getByRole('complementary', { name: 'API 详情' })).toHaveTextContent('release_symlink');
     fireEvent.change(screen.getByLabelText('发布版本 API'), { target: { value: 'v1.2.3' } });
     fireEvent.click(screen.getByRole('button', { name: '发布 API' }));
     expect(await screen.findByRole('alertdialog', { name: '操作审批' })).toHaveTextContent('将切换线上 release');

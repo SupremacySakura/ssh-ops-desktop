@@ -26,6 +26,7 @@ describe('TasksPage', () => {
     render(<TasksPage core={core} />);
 
     expect(await screen.findByText('HEALTH_CHECK_FAILED')).toBeVisible();
+    expect(screen.getByRole('table', { name: '任务与日志' })).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '审计日志' }));
     expect(await screen.findByText('nginx.apply')).toBeVisible();
     expect(screen.getByText(/\[REDACTED\]/u)).toBeVisible();

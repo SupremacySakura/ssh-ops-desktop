@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { ApprovalProof, ApprovalRequest } from '@opspilot/contracts';
 
 interface RiskDecisionDialogProps {
@@ -11,14 +11,12 @@ interface RiskDecisionDialogProps {
 export function RiskDecisionDialog({
   environment, request, onApprove, onReject,
 }: RiskDecisionDialogProps) {
-  const [confirmedResource, setConfirmedResource] = useState('');
+  const requestKey = `${request.approvalId}:${request.argsDigest}:${request.confirmationTarget ?? ''}`;
+  const [confirmation, setConfirmation] = useState({ requestKey, value: '' });
+  const confirmedResource = confirmation.requestKey === requestKey ? confirmation.value : '';
   const blocked = request.risk.level === 'L4';
   const needsExactTarget = request.risk.level === 'L3';
   const targetMatches = !needsExactTarget || confirmedResource === request.confirmationTarget;
-
-  useEffect(() => {
-    setConfirmedResource('');
-  }, [request.approvalId, request.argsDigest, request.confirmationTarget]);
 
   const approve = () => {
     if (blocked || !targetMatches) return;
@@ -54,7 +52,7 @@ export function RiskDecisionDialog({
       确认目标资源
       <input
         autoComplete="off"
-        onChange={(event) => setConfirmedResource(event.target.value)}
+        onChange={(event) => setConfirmation({ requestKey, value: event.target.value })}
         placeholder={request.confirmationTarget}
         spellCheck={false}
         value={confirmedResource}

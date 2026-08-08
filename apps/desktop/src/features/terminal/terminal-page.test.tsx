@@ -48,6 +48,9 @@ describe('TerminalPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '新建终端会话' }));
     expect(await screen.findByText('已连接 · web-01')).toBeVisible();
+    expect(screen.getByLabelText('终端连接摘要')).toHaveTextContent('web-01');
+    expect(screen.getByRole('complementary', { name: '终端 AI 助手' })).toBeVisible();
+    expect(screen.getByRole('link', { name: '前往 AI Agent 工作区' })).toHaveAttribute('href', '#agent');
     onData?.({ terminalSessionId: '00000000-0000-4000-8000-000000000003', sequence: 1, bytes: [36, 32] });
     await waitFor(() => expect(screen.getByLabelText('终端输出')).toHaveTextContent('$'));
 

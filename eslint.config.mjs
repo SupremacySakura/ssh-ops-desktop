@@ -8,6 +8,7 @@ export default tseslint.config(
       '**/dist/**',
       '**/node_modules/**',
       'src-tauri/gen/**',
+      'src-tauri/resources/agent-runtime/main.mjs',
       'target/**',
     ],
   },
@@ -20,6 +21,13 @@ export default tseslint.config(
         ...globals.browser,
         ...globals.node,
       },
+    },
+  },
+  {
+    files: ['packages/contracts/src/**/*.{ts,tsx}'],
+    rules: {
+      // Contract schemas intentionally reject ASCII control characters at trust boundaries.
+      'no-control-regex': 'off',
     },
   },
 );

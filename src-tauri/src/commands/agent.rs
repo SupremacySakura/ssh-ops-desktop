@@ -162,10 +162,18 @@ pub(crate) async fn agent_run_start(
         adapter.services(&request.connection),
     );
     let mut unavailable = Vec::new();
-    if os.is_err() { unavailable.push("os"); }
-    if metrics.is_err() { unavailable.push("metrics"); }
-    if ports.is_err() { unavailable.push("ports"); }
-    if system_services.is_err() { unavailable.push("services"); }
+    if os.is_err() {
+        unavailable.push("os");
+    }
+    if metrics.is_err() {
+        unavailable.push("metrics");
+    }
+    if ports.is_err() {
+        unavailable.push("ports");
+    }
+    if system_services.is_err() {
+        unavailable.push("services");
+    }
     let observation = serde_json::json!({
         "server": observation,
         "os": os.ok(),

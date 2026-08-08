@@ -20,7 +20,7 @@ if (typeof tauriConfig.version !== 'string') {
 describe('OpsPilot native Tauri shell', () => {
   it('launches the real shell and reads Core readiness through native IPC', async () => {
     const heading = await $('h1');
-    await expect(heading).toHaveText('OpsPilot');
+    await expect(heading).toHaveText('服务器总览');
 
     const health = (await browser.tauri.execute(({ core }) =>
       core.invoke('core_health'),
@@ -36,7 +36,10 @@ describe('OpsPilot native Tauri shell', () => {
     }
 
     expect(health.secretStoreReady).toBe(true);
-    expect(await $('main').getText()).toContain('Core 已就绪');
+    expect(await $('body').getText()).toContain('Core 已就绪');
+
+    await $('button[title="终端"]').click();
+    await expect($('h1')).toHaveText('远程终端');
   });
 
   it('allows the server catalog IPC surface through the main window ACL', async () => {

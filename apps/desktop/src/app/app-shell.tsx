@@ -1,65 +1,115 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+
+import { Icon, type IconName } from './icons';
 
 export type WorkspaceRoute =
   | 'dashboard' | 'servers' | 'terminal' | 'agent' | 'projects'
   | 'files' | 'docker' | 'nginx' | 'tasks' | 'settings';
 
-const NAVIGATION: Array<{ route: WorkspaceRoute; icon: string; label: string }> = [
-  { route: 'dashboard', icon: '◫', label: '仪表盘' },
-  { route: 'servers', icon: '▤', label: '服务器' },
-  { route: 'terminal', icon: '⌘', label: '终端' },
-  { route: 'files', icon: '▥', label: '文件' },
-  { route: 'agent', icon: '✦', label: 'AI Agent' },
-  { route: 'projects', icon: '◇', label: '项目' },
-  { route: 'docker', icon: '▱', label: 'Docker' },
-  { route: 'nginx', icon: '⬡', label: 'Nginx' },
-  { route: 'tasks', icon: '≡', label: '任务与日志' },
-  { route: 'settings', icon: '⚙', label: '设置' },
+const NAVIGATION: Array<{ route: WorkspaceRoute; icon: IconName; label: string }> = [
+  { route: 'dashboard', icon: 'dashboard', label: '仪表盘' },
+  { route: 'servers', icon: 'server', label: '服务器' },
+  { route: 'terminal', icon: 'terminal', label: '终端' },
+  { route: 'agent', icon: 'agent', label: 'AI Agent' },
+  { route: 'projects', icon: 'project', label: '项目' },
+  { route: 'files', icon: 'file', label: '文件' },
+  { route: 'docker', icon: 'docker', label: 'Docker' },
+  { route: 'nginx', icon: 'nginx', label: 'Nginx' },
+  { route: 'tasks', icon: 'history', label: '任务与日志' },
+  { route: 'settings', icon: 'settings', label: '设置' },
 ];
 
 interface AppShellProps {
-  route: WorkspaceRoute;
+  children: ReactNode;
+  coreReady: boolean;
+  coreVersion: string;
   environment: string;
   onEnvironmentChange(value: string): void;
   onNavigate(route: WorkspaceRoute): void;
-  children: ReactNode;
+  route: WorkspaceRoute;
 }
 
-export function AppShell({ route, environment, onEnvironmentChange, onNavigate, children }: AppShellProps) {
+export function AppShell({
+  children,
+  coreReady,
+  coreVersion,
+  environment,
+  onEnvironmentChange,
+  onNavigate,
+  route,
+}: AppShellProps) {
+  const [collapsed, setCollapsed] = useState(false);
+
   return (
-    <div className="app-shell">
-      <aside className="sidebar" aria-label="主导航">
-        <div className="brand"><span className="brand-mark">O</span><span>OpsPilot</span></div>
-        <nav>
+    <div className={collapsed ? 'app-shell sidebar-collapsed' : 'app-shell'}>
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="brand-mark"><Icon name="activity" size={19} /></span>
+          <span className="brand-name">OpsPilot</span>
+        </div>
+        <nav aria-label="主导航">
           {NAVIGATION.map((item) => (
             <button
               aria-current={route === item.route ? 'page' : undefined}
+              aria-label={item.label}
               className={route === item.route ? 'nav-item active' : 'nav-item'}
               key={item.route}
               onClick={() => onNavigate(item.route)}
               title={item.label}
               type="button"
             >
-              <span aria-hidden="true">{item.icon}</span><span>{item.label}</span>
+              <Icon name={item.icon} />
+              <span>{item.label}</span>
             </button>
           ))}
         </nav>
-        <div className="sidebar-foot"><span className="status-dot" />Core 本地运行</div>
+        <div className="sidebar-spacer" />
+        <div className="license-card">
+          <span className="license-icon"><Icon name="help" size={16} /></span>
+          <div><strong>本地优先</strong><small>数据留在你的设备</small></div>
+        </div>
+        <button
+          aria-label={collapsed ? '展开侧栏' : '收起侧栏'}
+          className="collapse-button"
+          onClick={() => setCollapsed((value) => !value)}
+          title={collapsed ? '展开侧栏' : '收起侧栏'}
+          type="button"
+        >
+          <Icon className={collapsed ? 'is-reversed' : undefined} name="collapse" />
+          <span>收起侧栏</span>
+        </button>
       </aside>
       <div className="workspace">
         <header className="topbar">
-          <label className="environment-select">
-            <span>环境</span>
-            <select value={environment} onChange={(event) => onEnvironmentChange(event.target.value)}>
-              <option value="all">全部环境</option>
-              <option value="production">生产环境</option>
-              <option value="staging">预发布</option>
-              <option value="development">开发环境</option>
-            </select>
-          </label>
-          {environment === 'production' ? <span className="production-chip">● 生产环境</span> : null}
-          <button className="command-button" type="button" aria-label="打开全局搜索">⌘ K　搜索服务器、项目或命令</button>
-          <div className="topbar-actions"><button type="button" aria-label="通知">◔</button><span className="avatar">OP</span></div>
+          <button aria-label="搜索服务器、项目或命令" className="command-button" type="button">
+            <Icon name="search" size={16} />
+            <span>搜索服务器、项目或命令</span>
+            <kbd>⌘ K</kbd>
+          </button>
+          <div className="topbar-context">
+            <div aria-label="当前环境" className="environment-control">
+              <span className={environment === 'production' ? 'environment-dot production' : 'environment-dot'} />
+              <select aria-label="环境" onChange={(event) => onEnvironmentChange(event.target.value)} value={environment}>
+                <option value="all">全部环境</option>
+                <option value="production">生产环境</option>
+                <option value="staging">预发布</option>
+                <option value="development">开发环境</option>
+              </select>
+              <Icon name="chevron-down" size={14} />
+            </div>
+            {environment === 'production' ? <span className="production-chip"><Icon name="alert" size={13} />生产环境</span> : null}
+            <div aria-label="Core 状态" className={coreReady ? 'core-status ready' : 'core-status'} role="status">
+              <span className="status-dot" />
+              <span>{coreReady ? 'Core 已就绪' : 'Core 未就绪'}</span>
+              <small>Core {coreVersion}</small>
+            </div>
+            <button aria-label="通知" className="topbar-icon-button" type="button"><Icon name="bell" /></button>
+            <div className="user-menu" aria-label="当前用户">
+              <span className="avatar">OP</span>
+              <div><strong>本地用户</strong><small>设备管理员</small></div>
+              <Icon name="chevron-down" size={14} />
+            </div>
+          </div>
         </header>
         <main className="main-content">{children}</main>
       </div>

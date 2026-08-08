@@ -25,6 +25,8 @@ describe('Agent run coordinator', () => {
 
   it('emits no tool result after cancellation', async () => {
     const events: Array<{ type: string; status?: string }> = [];
+    // The request closure must capture the binding before the coordinator is assigned.
+    // eslint-disable-next-line prefer-const
     let coordinator: AgentRunCoordinator;
     const model = {
       plan: vi.fn(async () => ({ runId, summary: 'Cancel', steps: [{

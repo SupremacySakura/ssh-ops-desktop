@@ -37,6 +37,8 @@ describe('DockerPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '加载 Docker' }));
     expect(await screen.findByText('nginx:alpine')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '查看 web 详情' }));
+    expect(screen.getByRole('complementary', { name: 'web 详情' })).toHaveTextContent('nginx:alpine');
     fireEvent.click(screen.getByRole('button', { name: '查看 web 日志' }));
     expect(await screen.findByText('ready on :80')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '查看 web 指标' }));

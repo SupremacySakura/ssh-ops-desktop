@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import type { ModelProfileSummary, ServerSummary } from '@opspilot/contracts';
 
 import type { AgentAvailability, CoreClient, CoreHealth } from './api/core';
@@ -7,12 +7,17 @@ import { DashboardPage } from './features/dashboard/dashboard-page';
 import { AgentPage } from './features/agent/agent-page';
 import { ServerListPage } from './features/servers/server-list-page';
 import { SettingsPage } from './features/settings/model-settings';
-import { TerminalPage, type ConnectedServer, type PendingTerminalSession } from './features/terminal/terminal-page';
+import type { ConnectedServer, PendingTerminalSession } from './features/terminal/terminal-page';
 import { FileManagerPage } from './features/files/file-manager-page';
 import { DockerPage } from './features/docker/docker-page';
 import { NginxPage } from './features/nginx/nginx-page';
 import { ProjectsPage } from './features/projects/project-page';
 import { TasksPage } from './features/tasks/task-center';
+
+const TerminalPage = lazy(async () => {
+  const terminal = await import('./features/terminal/terminal-page');
+  return { default: terminal.TerminalPage };
+});
 
 interface AppProps { core: CoreClient }
 type HealthState = { status: 'loading' } | { status: 'loaded'; health: CoreHealth } | { status: 'error' };
@@ -64,10 +69,24 @@ export default function App({ core }: AppProps) {
 
   const ready = healthState.health.databaseReady && healthState.health.secretStoreReady;
   const navigate = (next: WorkspaceRoute) => { window.location.hash = next; setRoute(next); };
-  return <AppShell route={route} environment={environment} onEnvironmentChange={setEnvironment} onNavigate={navigate}>
+  return <AppShell
+    coreReady={ready}
+    coreVersion={healthState.health.version}
+    environment={environment}
+    onEnvironmentChange={setEnvironment}
+    onNavigate={navigate}
+    route={route}
+  >
     {!ready ? <div className="alert warning-alert" role="alert"><strong>Core 未就绪</strong><span>数据库或系统凭据库不可用，写操作已禁用。</span></div> : null}
-    {ready ? <div className="core-summary"><span><i />Core 已就绪</span><span>版本 {healthState.health.version}</span></div> : null}
-    {route === 'dashboard' ? <DashboardPage agent={agent} connections={connections} core={core} onAddServer={() => navigate('servers')} servers={visibleServers} /> : null}
+    {route === 'dashboard' ? <DashboardPage
+      agent={agent}
+      connections={connections}
+      core={core}
+      onAddServer={() => navigate('servers')}
+      onOpenAgent={() => navigate('agent')}
+      onOpenTerminal={() => navigate('terminal')}
+      servers={visibleServers}
+    /> : null}
     {route === 'servers' ? <ServerListPage
       core={core}
       onConnected={(server, connection) => setConnections((current) => [
@@ -86,7 +105,7 @@ export default function App({ core }: AppProps) {
       }}
       servers={visibleServers}
     /> : null}
-    {route === 'terminal' ? <TerminalPage connections={connections} core={core} onPendingSessionClaimed={() => setPendingTerminal(undefined)} pendingSession={pendingTerminal} /> : null}
+    {route === 'terminal' ? <Suspense fallback={<div className="panel">正在加载终端…</div>}><TerminalPage connections={connections} core={core} onPendingSessionClaimed={() => setPendingTerminal(undefined)} pendingSession={pendingTerminal} /></Suspense> : null}
     {route === 'files' ? <FileManagerPage connections={connections} core={core} /> : null}
     {route === 'agent' ? <AgentPage availability={agent} connections={connections} core={core} profiles={profiles} servers={visibleServers} /> : null}
     {route === 'projects' ? <ProjectsPage connections={connections} core={core} /> : null}

@@ -22,7 +22,7 @@ describe('App health status', () => {
     render(<App core={core} />);
 
     expect(await screen.findByText('Core 已就绪')).toBeVisible();
-    expect(screen.getByText('版本 test-version')).toBeVisible();
+    expect(screen.getByRole('status', { name: 'Core 状态' })).toHaveTextContent('Core test-version');
   });
 
   it('shows an error instead of loading forever when Core health rejects', async () => {

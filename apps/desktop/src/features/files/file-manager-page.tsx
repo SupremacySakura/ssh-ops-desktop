@@ -7,7 +7,9 @@ import type {
 } from '@opspilot/contracts';
 
 import type { CoreClient } from '../../api/core';
+import { Icon } from '../../app/icons';
 import { RiskDecisionDialog } from '../../app/risk-decision-dialog';
+import { PageHeader, Panel, SectionHeader } from '../../app/ui/layout';
 import type { ConnectedServer } from '../terminal/terminal-page';
 
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
@@ -145,12 +147,12 @@ export function FileManagerPage({ connections, core }: {
     }
   };
 
-  return <div className="page-stack">
-    <div className="page-heading"><div><p className="eyebrow">SECURE FILE TRANSFER</p><h1>远程文件</h1><p>SFTP 浏览、上传、下载与冲突校验由 Rust Core 执行；写入统一进入审批网关。</p></div><span className="status-badge"><i />可信 SFTP</span></div>
-    <section className="panel file-toolbar"><select aria-label="文件服务器" onChange={(event) => setServerId(event.target.value)} value={serverId}><option value="">选择服务器</option>{connections.map(({ server }) => <option key={server.id} value={server.id}>{server.name}</option>)}</select><input aria-label="远程目录" onChange={(event) => setPath(event.target.value)} value={path} /><button onClick={() => void browse()} type="button">浏览目录</button><label>上传本地文件<input aria-label="上传本地文件" onChange={(event) => setUpload(event.target.files?.[0])} type="file" /></label><button disabled={!upload} onClick={() => void prepareUpload()} type="button">上传到当前目录</button></section>
+  return <div className="page-stack files-page">
+    <PageHeader actions={<span className="status-badge"><i />可信 SFTP</span>} description="SFTP 浏览、上传、下载与冲突校验由 Rust Core 执行；写入统一进入审批网关。" eyebrow="Secure file transfer" title="远程文件" />
+    <Panel aria-label="文件操作" className="file-toolbar"><select aria-label="文件服务器" onChange={(event) => setServerId(event.target.value)} value={serverId}><option value="">选择服务器</option>{connections.map(({ server }) => <option key={server.id} value={server.id}>{server.name}</option>)}</select><input aria-label="远程目录" onChange={(event) => setPath(event.target.value)} value={path} /><button onClick={() => void browse()} type="button">浏览目录</button><label className="file-upload-control"><span>选择本地文件</span><input aria-label="上传本地文件" onChange={(event) => setUpload(event.target.files?.[0])} type="file" /></label><button className="primary" disabled={!upload} onClick={() => void prepareUpload()} type="button">上传到当前目录</button></Panel>
     {message ? <div className="alert warning-alert" role="status">{message}</div> : null}
-    <div className="file-layout"><section className="panel"><div className="panel-title"><h2>{path}</h2><span className="count-badge">{entries.length}</span></div><ul className="file-list">{path !== '/' ? <li><button onClick={() => void browse(parentPath(path))} type="button">↰ 上级目录</button></li> : null}{entries.map((entry) => <li key={entry.path}><button aria-label={`打开 ${entry.name}`} onClick={() => void open(entry)} type="button"><span>{entry.kind === 'directory' ? '▣' : '▤'}</span><strong>{entry.name}</strong><small>{entry.kind} · {entry.size} B</small></button></li>)}</ul></section><section className="panel file-preview"><div className="panel-title"><h2>{content?.path ?? '文件编辑'}</h2>{content ? <button onClick={() => void download()} type="button">下载</button> : null}</div>{content ? <><textarea aria-label="文件编辑内容" onChange={(event) => setDraft(event.target.value)} value={draft} /><button className="primary" disabled={draft === baseline} onClick={() => void prepareSave()} type="button">查看 Diff 并保存</button><dl className="risk-details"><div><dt>打开时 SHA-256</dt><dd className="digest">{content.sha256}</dd></div><div><dt>大小</dt><dd>{content.bytes.length} B</dd></div></dl></> : <div className="conversation-empty">选择一个普通文件进行预览或编辑</div>}</section></div>
-    {content && draft !== baseline ? <section className="panel diff-panel"><h2>保存前 Diff</h2><pre>{lineDiff(baseline, draft)}</pre></section> : null}
+    <div className="file-layout"><Panel aria-label="远端文件列表" className="file-browser-panel"><SectionHeader count={entries.length} description="目录内容来自当前可信 SSH 连接" title={path} /><ul className="file-list">{path !== '/' ? <li><button onClick={() => void browse(parentPath(path))} type="button"><span className="file-kind-icon"><Icon name="collapse" /></span><strong>上级目录</strong><small>{parentPath(path)}</small></button></li> : null}{entries.map((entry) => <li key={entry.path}><button aria-label={`打开 ${entry.name}`} onClick={() => void open(entry)} type="button"><span className="file-kind-icon"><Icon name={entry.kind === 'directory' ? 'project' : 'file'} /></span><strong>{entry.name}</strong><small>{entry.kind} · {entry.size} B</small></button></li>)}</ul></Panel><Panel aria-label="文件预览与编辑" className="file-preview"><SectionHeader actions={content ? <button onClick={() => void download()} type="button">下载</button> : null} description={content ? '保存前会校验打开时的 SHA-256' : '支持普通文本文件'} title={content?.path ?? '文件编辑'} />{content ? <><textarea aria-label="文件编辑内容" onChange={(event) => setDraft(event.target.value)} value={draft} /><div className="file-editor-actions"><button className="primary" disabled={draft === baseline} onClick={() => void prepareSave()} type="button">查看 Diff 并保存</button></div><dl className="risk-details"><div><dt>打开时 SHA-256</dt><dd className="digest">{content.sha256}</dd></div><div><dt>大小</dt><dd>{content.bytes.length} B</dd></div></dl></> : <div className="conversation-empty">选择一个普通文件进行预览或编辑</div>}</Panel></div>
+    {content && draft !== baseline ? <Panel className="diff-panel"><SectionHeader description="远端文件不会在审批前发生变化" title="保存前 Diff" /><pre>{lineDiff(baseline, draft)}</pre></Panel> : null}
     {approval ? <RiskDecisionDialog environment={connected?.server.environment ?? 'other'} request={approval} onApprove={(proof) => void approve(proof)} onReject={() => void reject()} /> : null}
   </div>;
 }
@@ -165,12 +167,16 @@ function joinRemotePath(directory: string, name: string): string {
 }
 
 function safeFileName(name: string): boolean {
+  const hasControlCharacter = Array.from(name).some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
   return name.length > 0
     && name !== '.'
     && name !== '..'
     && !name.includes('/')
     && !name.includes('\\')
-    && !/[\u0000-\u001f\u007f]/u.test(name);
+    && !hasControlCharacter;
 }
 
 function lineDiff(before: string, after: string): string {

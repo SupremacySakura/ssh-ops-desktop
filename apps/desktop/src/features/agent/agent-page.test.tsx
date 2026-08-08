@@ -50,6 +50,10 @@ describe('AgentPage', () => {
     expect(await screen.findByText('The selected server is configured for production.')).toBeVisible();
     expect(screen.getByText('server.overview')).toBeVisible();
     expect(screen.getByText('已完成')).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Agent 对话' })).toBeVisible();
+    expect(screen.getByRole('region', { name: '执行计划' })).toBeVisible();
+    expect(screen.getByRole('region', { name: '审批队列' })).toBeVisible();
+    expect(screen.getByRole('table', { name: 'Agent Trace' })).toBeVisible();
     expect(core.startAgentRun).toHaveBeenCalledWith(expect.objectContaining({ connection }));
   });
 

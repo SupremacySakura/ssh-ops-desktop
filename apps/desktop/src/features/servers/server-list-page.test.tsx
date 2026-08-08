@@ -127,4 +127,17 @@ describe('ServerListPage', () => {
     }));
     expect(onCreated).toHaveBeenCalledWith(summary);
   });
+
+  it('filters the catalog and opens a non-destructive server detail pane', () => {
+    render(<ServerListPage
+      core={{ serverGroups: async () => [] } as unknown as CoreClient}
+      onCreated={vi.fn()}
+      servers={[summary]}
+    />);
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 web-01 详情' }));
+    expect(screen.getByRole('complementary', { name: 'web-01 详情' })).toHaveTextContent('example.com:22');
+    fireEvent.change(screen.getByLabelText('环境筛选'), { target: { value: 'development' } });
+    expect(screen.getByText('没有匹配的服务器')).toBeVisible();
+  });
 });

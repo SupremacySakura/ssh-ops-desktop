@@ -56,4 +56,26 @@ describe('DashboardPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '＋ 添加服务器' }));
     expect(onAddServer).toHaveBeenCalledOnce();
   });
+
+  it('shows an honest empty state and routes terminal and Agent quick actions', () => {
+    const onOpenAgent = vi.fn();
+    const onOpenTerminal = vi.fn();
+
+    render(
+      <DashboardPage
+        agent={{ agentAvailable: false, reason: 'not configured' }}
+        connections={[]}
+        core={{ tasks: async () => [] } as unknown as CoreClient}
+        onOpenAgent={onOpenAgent}
+        onOpenTerminal={onOpenTerminal}
+        servers={[]}
+      />,
+    );
+
+    expect(screen.getByText('暂无已连接服务器')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '打开终端' }));
+    fireEvent.click(screen.getByRole('button', { name: 'AI 巡检' }));
+    expect(onOpenTerminal).toHaveBeenCalledOnce();
+    expect(onOpenAgent).toHaveBeenCalledOnce();
+  });
 });

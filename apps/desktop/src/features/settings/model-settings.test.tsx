@@ -25,6 +25,8 @@ describe('ModelSettings', () => {
     } as unknown as CoreClient;
     render(<ModelSettings core={core} />);
 
+    expect(screen.getByRole('region', { name: '模型配置' })).toBeVisible();
+    expect(screen.getByRole('region', { name: '已保存模型' })).toBeVisible();
     await screen.findByText('尚未配置模型');
     fireEvent.change(screen.getByLabelText('配置名称'), { target: { value: profile.name } });
     fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: profile.baseUrl } });
