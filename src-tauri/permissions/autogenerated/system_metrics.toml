@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-system-metrics"
+description = "Enables the system_metrics command without any pre-configured scope."
+commands.allow = ["system_metrics"]
+
+[[permission]]
+identifier = "deny-system-metrics"
+description = "Denies the system_metrics command without any pre-configured scope."
+commands.deny = ["system_metrics"]

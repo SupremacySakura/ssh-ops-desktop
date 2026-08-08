@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-task-events-since"
+description = "Enables the task_events_since command without any pre-configured scope."
+commands.allow = ["task_events_since"]
+
+[[permission]]
+identifier = "deny-task-events-since"
+description = "Denies the task_events_since command without any pre-configured scope."
+commands.deny = ["task_events_since"]

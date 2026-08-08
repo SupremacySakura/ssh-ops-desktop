@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use opspilot_audit::{AuditEvent, AuditWriter, Redactor};
+use opspilot_audit::{AuditEvent, AuditReader, AuditWriter, Redactor};
 use opspilot_persistence::Database;
 use serde_json::json;
 use tempfile::tempdir;
@@ -101,6 +101,40 @@ async fn audit_writer_assigns_the_current_utc_creation_time() {
     .expect("audit creation time should be readable");
     assert!(created_at.ends_with('Z'));
     assert!((before..=after).contains(&created_at_epoch));
+}
+
+#[tokio::test]
+async fn audit_reader_returns_structured_redacted_records() {
+    let database = Database::open(":memory:")
+        .await
+        .expect("audit database should open");
+    let writer = AuditWriter::new(database.clone(), Redactor::new(["fixture-secret"]));
+    writer
+        .append(
+            AuditEvent::new(
+                "task.complete",
+                "task",
+                "success",
+                json!({ "token": "fixture-secret", "count": 2 }),
+            )
+            .with_resource_id("task-1")
+            .with_server_id("server-1"),
+        )
+        .await
+        .expect("audit event should be persisted");
+
+    let records = AuditReader::new(database)
+        .list(10)
+        .await
+        .expect("audit records should be readable");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].action, "task.complete");
+    assert_eq!(records[0].resource_id.as_deref(), Some("task-1"));
+    assert_eq!(records[0].server_id.as_deref(), Some("server-1"));
+    assert_eq!(
+        records[0].redacted_payload,
+        json!({ "token": "[REDACTED]", "count": 2 })
+    );
 }
 
 #[tokio::test]

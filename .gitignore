@@ -11,3 +11,4 @@ test-results/
 
 target/
 *.log
+src-tauri/binaries/opspilot-agent-node-*

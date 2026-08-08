@@ -8,6 +8,7 @@ license.workspace = true
 opspilot-domain = { path = "../domain" }
 opspilot-persistence = { path = "../persistence" }
 serde_json.workspace = true
+serde.workspace = true
 sqlx.workspace = true
 uuid.workspace = true
 

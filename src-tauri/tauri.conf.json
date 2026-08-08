@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.opspilot.desktop",
   "build": {
-    "beforeDevCommand": "pnpm --filter @opspilot/desktop dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm --filter @opspilot/desktop build",
+    "beforeBuildCommand": "pnpm build:desktop",
     "frontendDist": "../apps/desktop/dist"
   },
   "app": {
@@ -26,6 +26,8 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "externalBin": ["binaries/opspilot-agent-node"],
+    "resources": ["resources/agent-runtime/**/*"]
   }
 }

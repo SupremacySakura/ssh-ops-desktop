@@ -1,7 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import '@xterm/xterm/css/xterm.css';
 import App from './App';
 import { createTauriCoreClient } from './api/core';
+import './styles.css';
 
 const root = document.getElementById('root');
 

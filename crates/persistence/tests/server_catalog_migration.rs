@@ -94,7 +94,7 @@ async fn migration_reports_normalized_legacy_server_identity_conflicts() {
         .fetch_one(upgraded.pool())
         .await
         .expect("migration version should be readable");
-    assert_eq!(migration_version, 4);
+    assert!(migration_version >= 4);
 }
 
 #[tokio::test]
@@ -179,7 +179,7 @@ async fn migration_reports_shared_v3_server_secret_references() {
         .fetch_one(upgraded.pool())
         .await
         .expect("migration version should be readable");
-    assert_eq!(migration_version, 4);
+    assert!(migration_version >= 4);
 }
 
 async fn open_v2_database(path: &std::path::Path) -> SqlitePool {

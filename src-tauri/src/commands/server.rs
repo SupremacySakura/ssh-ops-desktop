@@ -10,7 +10,7 @@ use opspilot_domain::{
     ServerSummary, ServerTag,
 };
 use opspilot_persistence::ServerRepository;
-use opspilot_secrets::{KeyringSecretStore, SecretStore};
+use opspilot_secrets::{KeyringSecretStore, SecretKind, SecretStore, SecretValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -165,6 +165,13 @@ pub(crate) struct ServerDeleteRequest {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ServerCredentialSetRequest {
+    server_id: Id,
+    secret: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImportPreviewRequest {
     format: ImportFormat,
     source: String,
@@ -261,6 +268,65 @@ where
     )
     .await;
     complete_with_audit(result, audit_result)
+}
+
+pub(crate) async fn set_server_credential<S>(
+    repository: &ServerRepository,
+    audit: &AuditWriter,
+    secret_store: &S,
+    request: ServerCredentialSetRequest,
+) -> Result<(), CoreError>
+where
+    S: SecretStore,
+{
+    if request.secret.is_empty() || request.secret.len() > 64 * 1024 {
+        return Err(CoreError::new(
+            CoreErrorCode::Validation,
+            "server credential must contain 1 byte to 64 KiB",
+            false,
+        ));
+    }
+    let server = repository.get(request.server_id).await?;
+    let (kind, persisted_kind) = match server.auth_type {
+        AuthType::Password => (SecretKind::Password, "password"),
+        AuthType::PrivateKey => (SecretKind::PrivateKey, "private_key"),
+        AuthType::Certificate => (SecretKind::Certificate, "certificate"),
+        AuthType::SshAgent => {
+            return Err(CoreError::new(
+                CoreErrorCode::Validation,
+                "SSH agent authentication does not accept a stored credential",
+                false,
+            ));
+        }
+    };
+    let previous = repository.connection_secret_ref(server.id).await?;
+    let replacement = secret_store
+        .put(kind, server.id, SecretValue::new(request.secret))
+        .await?;
+    if let Some(previous) = &previous
+        && let Err(error) = secret_store.delete(previous).await
+    {
+        let _ = secret_store.delete(&replacement).await;
+        return Err(error);
+    }
+    if let Err(error) = repository
+        .replace_connection_secret_ref(server.id, previous.as_ref(), &replacement, persisted_kind)
+        .await
+    {
+        let _ = secret_store.delete(&replacement).await;
+        return Err(error);
+    }
+    audit
+        .append(
+            AuditEvent::new(
+                "server.credential_set",
+                "server",
+                "success",
+                serde_json::json!({ "authType": server.auth_type }),
+            )
+            .with_server_id(server.id.to_string()),
+        )
+        .await
 }
 
 const SERVER_FIELDS: &[&str] = &[
@@ -787,9 +853,24 @@ pub(crate) async fn server_delete(
     delete_server(
         &ServerRepository::new(services.database),
         &services.audit_writer,
-        &services.secret_store,
+        services.secret_store.as_ref(),
         request.server_id,
         request.confirmed,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn server_credential_set(
+    app: AppHandle,
+    request: ServerCredentialSetRequest,
+) -> Result<(), CoreError> {
+    let services = services(&app);
+    set_server_credential(
+        &ServerRepository::new(services.database),
+        &services.audit_writer,
+        services.secret_store.as_ref(),
+        request,
     )
     .await
 }
@@ -915,17 +996,22 @@ pub(crate) async fn server_import_apply(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        fs,
+        time::{Duration, Instant},
+    };
 
     use async_trait::async_trait;
     use opspilot_audit::{AuditWriter, Redactor};
     use opspilot_domain::{AuthType, CoreError, CoreErrorCode, Id, ServerEnvironment, ServerInput};
     use opspilot_persistence::{Database, ServerRepository};
     use opspilot_secrets::{MemorySecretStore, SecretKind, SecretRef, SecretStore, SecretValue};
+    use tempfile::tempdir;
 
     use super::{
-        ImportApplyResult, ImportFormat, ImportPreviewStore, ImportRowStatus, ServerMutationInput,
-        apply_import_at, apply_import_with_audit, create_server, delete_server, preview_import_at,
+        ImportApplyResult, ImportFormat, ImportPreviewStore, ImportRowStatus,
+        ServerCredentialSetRequest, ServerMutationInput, apply_import_at, apply_import_with_audit,
+        create_server, delete_server, preview_import_at, set_server_credential,
     };
 
     fn server_input(name: &str, host: &str) -> ServerInput {
@@ -936,6 +1022,20 @@ mod tests {
             "deploy",
             ServerEnvironment::Production,
             AuthType::SshAgent,
+            None,
+            Vec::new(),
+        )
+        .expect("fixture should be valid")
+    }
+
+    fn password_server_input(name: &str, host: &str) -> ServerInput {
+        ServerInput::try_new(
+            name,
+            host,
+            22,
+            "deploy",
+            ServerEnvironment::Production,
+            AuthType::Password,
             None,
             Vec::new(),
         )
@@ -998,6 +1098,66 @@ mod tests {
         });
 
         assert!(serde_json::from_value::<ServerMutationInput>(missing_tag_ids).is_err());
+    }
+
+    #[tokio::test]
+    async fn credential_is_kept_in_secret_store_and_only_its_reference_is_persisted() {
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("credential.sqlite3");
+        let database = Database::open(&database_path)
+            .await
+            .expect("database should open");
+        let repository = ServerRepository::new(database.clone());
+        let audit = AuditWriter::new(database.clone(), Redactor::new(["fixture-password"]));
+        let secrets = MemorySecretStore::default();
+        let server = repository
+            .create(password_server_input(
+                "Password server",
+                "password.example.com",
+            ))
+            .await
+            .expect("server should be created");
+
+        set_server_credential(
+            &repository,
+            &audit,
+            &secrets,
+            ServerCredentialSetRequest {
+                server_id: server.id,
+                secret: "fixture-password".to_owned(),
+            },
+        )
+        .await
+        .expect("credential should be stored");
+
+        let secret_ref = repository
+            .connection_secret_ref(server.id)
+            .await
+            .expect("credential reference should be readable")
+            .expect("credential reference should exist");
+        assert_eq!(
+            secrets
+                .get(&secret_ref)
+                .await
+                .expect("secret should remain available")
+                .expose(),
+            "fixture-password"
+        );
+
+        database.pool().close().await;
+        drop(database);
+        for entry in fs::read_dir(directory.path()).expect("database directory should be readable")
+        {
+            let path = entry.expect("database entry should be readable").path();
+            if path.is_file() {
+                let bytes = fs::read(path).expect("database file should be readable");
+                assert!(
+                    !bytes
+                        .windows(b"fixture-password".len())
+                        .any(|candidate| candidate == b"fixture-password")
+                );
+            }
+        }
     }
 
     #[tokio::test]

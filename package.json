@@ -7,7 +7,11 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "dev": "pnpm --filter @opspilot/desktop dev",
+    "dev": "pnpm build:agent && pnpm --filter @opspilot/desktop dev",
+    "build:agent": "pnpm --filter @opspilot/agent-runtime build",
+    "build:desktop": "pnpm build:agent && pnpm --filter @opspilot/desktop build",
+    "build:desktop:native-e2e": "pnpm build:agent && pnpm --filter @opspilot/desktop build:native-e2e",
+    "build:release": "tauri build --config src-tauri/tauri.release.conf.json",
     "tauri": "tauri",
     "build:e2e:native": "tauri build --debug --features native-e2e --config src-tauri/tauri.native-e2e.conf.json",
     "lint": "eslint . --max-warnings 0",

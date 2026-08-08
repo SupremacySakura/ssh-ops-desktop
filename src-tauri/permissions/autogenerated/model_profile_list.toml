@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-model-profile-list"
+description = "Enables the model_profile_list command without any pre-configured scope."
+commands.allow = ["model_profile_list"]
+
+[[permission]]
+identifier = "deny-model-profile-list"
+description = "Denies the model_profile_list command without any pre-configured scope."
+commands.deny = ["model_profile_list"]

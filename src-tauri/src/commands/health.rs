@@ -41,23 +41,50 @@ pub(crate) async fn core_health(app: AppHandle) -> CoreHealth {
 
 #[cfg(test)]
 mod tests {
-    use opspilot_domain::{CoreError, CoreErrorCode};
+    use async_trait::async_trait;
+    use opspilot_domain::{CoreError, CoreErrorCode, Id};
     use opspilot_persistence::Database;
-    use opspilot_secrets::{MemorySecretStore, SecretStoreReadiness};
+    use opspilot_secrets::{
+        MemorySecretStore, SecretKind, SecretRef, SecretStore, SecretStoreReadiness, SecretValue,
+    };
 
     use super::{CoreServices, read_core_health};
 
     #[derive(Debug)]
     struct UnavailableSecretStore;
 
+    #[async_trait]
+    impl SecretStore for UnavailableSecretStore {
+        async fn put(
+            &self,
+            _kind: SecretKind,
+            _owner_id: Id,
+            _value: SecretValue,
+        ) -> Result<SecretRef, CoreError> {
+            Err(unavailable())
+        }
+
+        async fn get(&self, _secret_ref: &SecretRef) -> Result<SecretValue, CoreError> {
+            Err(unavailable())
+        }
+
+        async fn delete(&self, _secret_ref: &SecretRef) -> Result<(), CoreError> {
+            Err(unavailable())
+        }
+    }
+
     impl SecretStoreReadiness for UnavailableSecretStore {
         async fn probe_readiness(&self) -> Result<(), CoreError> {
-            Err(CoreError::new(
-                CoreErrorCode::SecretUnavailable,
-                "credential store unavailable",
-                false,
-            ))
+            Err(unavailable())
         }
+    }
+
+    fn unavailable() -> CoreError {
+        CoreError::new(
+            CoreErrorCode::SecretUnavailable,
+            "credential store unavailable",
+            false,
+        )
     }
 
     #[tokio::test]

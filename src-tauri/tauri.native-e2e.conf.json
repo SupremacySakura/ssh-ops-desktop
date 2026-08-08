@@ -1,6 +1,6 @@
 {
   "build": {
-    "beforeBuildCommand": "pnpm --filter @opspilot/desktop build:native-e2e"
+    "beforeBuildCommand": "pnpm build:desktop:native-e2e"
   },
   "app": {
     "withGlobalTauri": true

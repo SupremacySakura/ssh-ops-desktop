@@ -166,6 +166,98 @@ impl ServerRepository {
         Ok(Some(secret_ref))
     }
 
+    pub async fn connection_secret_ref(&self, id: Id) -> Result<Option<SecretRef>, CoreError> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT secret_ref FROM servers WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(self.database.pool())
+                .await
+                .map_err(|error| repository_error("read server credential reference", error))?;
+        let (secret_ref,) = row.ok_or_else(|| {
+            CoreError::new(CoreErrorCode::NotFound, "server was not found", false)
+        })?;
+        secret_ref.map(SecretRef::from_persisted).transpose()
+    }
+
+    pub async fn replace_connection_secret_ref(
+        &self,
+        id: Id,
+        expected_old: Option<&SecretRef>,
+        replacement: &SecretRef,
+        kind: &str,
+    ) -> Result<(), CoreError> {
+        if !matches!(kind, "password" | "private_key" | "certificate") {
+            return Err(CoreError::new(
+                CoreErrorCode::Validation,
+                "server credential kind is invalid",
+                false,
+            ));
+        }
+        let mut transaction = self
+            .database
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| repository_error("begin server credential replacement", error))?;
+        let current: Option<Option<String>> =
+            sqlx::query_scalar("SELECT secret_ref FROM servers WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(|error| {
+                    repository_error("read server credential for replacement", error)
+                })?;
+        let current = current.ok_or_else(|| {
+            CoreError::new(CoreErrorCode::NotFound, "server was not found", false)
+        })?;
+        if current.as_deref() != expected_old.map(SecretRef::as_str) {
+            return Err(CoreError::new(
+                CoreErrorCode::Conflict,
+                "server credential changed while it was being replaced; retry",
+                true,
+            ));
+        }
+        sqlx::query("UPDATE servers SET secret_ref = NULL WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| repository_error("detach previous server credential", error))?;
+        if let Some(previous) = expected_old {
+            sqlx::query("DELETE FROM secret_refs WHERE ref = ?")
+                .bind(previous.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| {
+                    repository_error("delete previous server credential metadata", error)
+                })?;
+        }
+        sqlx::query(
+            "INSERT INTO secret_refs (ref, kind, owner_type, owner_id, created_at, updated_at)
+             VALUES (?, ?, 'server', ?,
+                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        )
+        .bind(replacement.as_str())
+        .bind(kind)
+        .bind(id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| repository_error("persist server credential metadata", error))?;
+        sqlx::query(
+            "UPDATE servers SET secret_ref = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?",
+        )
+        .bind(replacement.as_str())
+        .bind(id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| repository_error("attach server credential", error))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| repository_error("commit server credential replacement", error))
+    }
+
     pub async fn delete(
         &self,
         id: Id,

@@ -4,6 +4,7 @@
 
 use opspilot_domain::{CoreError, CoreErrorCode};
 use opspilot_persistence::Database;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -53,6 +54,69 @@ impl AuditEvent {
 pub struct AuditWriter {
     database: Database,
     redactor: Redactor,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuditRecord {
+    pub id: String,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: Option<String>,
+    pub server_id: Option<String>,
+    pub result: String,
+    pub redacted_payload: Value,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuditReader {
+    database: Database,
+}
+
+impl AuditReader {
+    pub fn new(database: Database) -> Self {
+        Self { database }
+    }
+
+    pub async fn list(&self, limit: u32) -> Result<Vec<AuditRecord>, CoreError> {
+        let rows = sqlx::query_as::<_, AuditRow>(
+            "SELECT id, action, resource_type, resource_id, server_id, result,
+                    redacted_payload, created_at
+             FROM audit_logs ORDER BY created_at DESC, id LIMIT ?",
+        )
+        .bind(i64::from(limit.clamp(1, 1000)))
+        .fetch_all(self.database.pool())
+        .await
+        .map_err(audit_error)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AuditRecord {
+                    id: row.id,
+                    action: row.action,
+                    resource_type: row.resource_type,
+                    resource_id: row.resource_id,
+                    server_id: row.server_id,
+                    result: row.result,
+                    redacted_payload: serde_json::from_str(&row.redacted_payload)
+                        .map_err(audit_error)?,
+                    created_at: row.created_at,
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct AuditRow {
+    id: String,
+    action: String,
+    resource_type: String,
+    resource_id: Option<String>,
+    server_id: Option<String>,
+    result: String,
+    redacted_payload: String,
+    created_at: String,
 }
 
 impl AuditWriter {

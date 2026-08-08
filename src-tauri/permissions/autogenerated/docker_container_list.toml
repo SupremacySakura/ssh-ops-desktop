@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-docker-container-list"
+description = "Enables the docker_container_list command without any pre-configured scope."
+commands.allow = ["docker_container_list"]
+
+[[permission]]
+identifier = "deny-docker-container-list"
+description = "Denies the docker_container_list command without any pre-configured scope."
+commands.deny = ["docker_container_list"]

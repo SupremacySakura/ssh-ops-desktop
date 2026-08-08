@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-operation-status"
+description = "Enables the operation_status command without any pre-configured scope."
+commands.allow = ["operation_status"]
+
+[[permission]]
+identifier = "deny-operation-status"
+description = "Denies the operation_status command without any pre-configured scope."
+commands.deny = ["operation_status"]

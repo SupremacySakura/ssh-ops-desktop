@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-run-start"
+description = "Enables the agent_run_start command without any pre-configured scope."
+commands.allow = ["agent_run_start"]
+
+[[permission]]
+identifier = "deny-agent-run-start"
+description = "Denies the agent_run_start command without any pre-configured scope."
+commands.deny = ["agent_run_start"]

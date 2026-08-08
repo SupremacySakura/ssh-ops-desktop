@@ -57,6 +57,11 @@ export const ServerDeleteRequestSchema = z.object({
   confirmed: z.literal(true),
 }).strict();
 
+export const ServerCredentialSetRequestSchema = z.object({
+  serverId: IdSchema,
+  secret: z.string().min(1).max(64 * 1024),
+}).strict();
+
 export const ServerGroupInputSchema = z.object({
   name: TrimmedRequiredTextSchema,
   sortOrder: z.int(),
@@ -79,6 +84,7 @@ export type ServerAuthType = z.infer<typeof ServerAuthTypeSchema>;
 export type ServerInput = z.infer<typeof ServerInputSchema>;
 export type ServerSummary = z.infer<typeof ServerSummarySchema>;
 export type ServerDeleteRequest = z.infer<typeof ServerDeleteRequestSchema>;
+export type ServerCredentialSetRequest = z.infer<typeof ServerCredentialSetRequestSchema>;
 export type ServerGroupInput = z.infer<typeof ServerGroupInputSchema>;
 export type ServerGroup = z.infer<typeof ServerGroupSchema>;
 export type ServerTagInput = z.infer<typeof ServerTagInputSchema>;

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-connection-disconnect"
+description = "Enables the connection_disconnect command without any pre-configured scope."
+commands.allow = ["connection_disconnect"]
+
+[[permission]]
+identifier = "deny-connection-disconnect"
+description = "Denies the connection_disconnect command without any pre-configured scope."
+commands.deny = ["connection_disconnect"]

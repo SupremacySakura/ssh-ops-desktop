@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nginx-discover"
+description = "Enables the nginx_discover command without any pre-configured scope."
+commands.allow = ["nginx_discover"]
+
+[[permission]]
+identifier = "deny-nginx-discover"
+description = "Denies the nginx_discover command without any pre-configured scope."
+commands.deny = ["nginx_discover"]
