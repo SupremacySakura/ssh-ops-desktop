@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-server-tag-create"
+description = "Enables the server_tag_create command without any pre-configured scope."
+commands.allow = ["server_tag_create"]
+
+[[permission]]
+identifier = "deny-server-tag-create"
+description = "Denies the server_tag_create command without any pre-configured scope."
+commands.deny = ["server_tag_create"]

@@ -1,22 +1,8 @@
-use opspilot_persistence::Database;
 use opspilot_secrets::{KeyringSecretStore, SecretStoreReadiness};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-#[derive(Clone, Debug)]
-pub(crate) struct CoreServices<S = KeyringSecretStore> {
-    database: Database,
-    secret_store: S,
-}
-
-impl<S> CoreServices<S> {
-    pub(crate) fn new(database: Database, secret_store: S) -> Self {
-        Self {
-            database,
-            secret_store,
-        }
-    }
-}
+use super::CoreServices;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

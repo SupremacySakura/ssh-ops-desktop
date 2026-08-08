@@ -183,10 +183,178 @@
           "markdownDescription": "Enables the core_health command without any pre-configured scope."
         },
         {
+          "description": "Enables the server_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-create",
+          "markdownDescription": "Enables the server_create command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-delete",
+          "markdownDescription": "Enables the server_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_group_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-group-create",
+          "markdownDescription": "Enables the server_group_create command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_group_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-group-delete",
+          "markdownDescription": "Enables the server_group_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_group_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-group-list",
+          "markdownDescription": "Enables the server_group_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_group_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-group-update",
+          "markdownDescription": "Enables the server_group_update command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_import_apply command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-import-apply",
+          "markdownDescription": "Enables the server_import_apply command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_import_preview command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-import-preview",
+          "markdownDescription": "Enables the server_import_preview command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-list",
+          "markdownDescription": "Enables the server_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_tag_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-tag-create",
+          "markdownDescription": "Enables the server_tag_create command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_tag_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-tag-delete",
+          "markdownDescription": "Enables the server_tag_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_tag_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-tag-list",
+          "markdownDescription": "Enables the server_tag_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_tag_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-tag-update",
+          "markdownDescription": "Enables the server_tag_update command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-update",
+          "markdownDescription": "Enables the server_update command without any pre-configured scope."
+        },
+        {
           "description": "Denies the core_health command without any pre-configured scope.",
           "type": "string",
           "const": "deny-core-health",
           "markdownDescription": "Denies the core_health command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-create",
+          "markdownDescription": "Denies the server_create command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-delete",
+          "markdownDescription": "Denies the server_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_group_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-group-create",
+          "markdownDescription": "Denies the server_group_create command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_group_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-group-delete",
+          "markdownDescription": "Denies the server_group_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_group_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-group-list",
+          "markdownDescription": "Denies the server_group_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_group_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-group-update",
+          "markdownDescription": "Denies the server_group_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_import_apply command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-import-apply",
+          "markdownDescription": "Denies the server_import_apply command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_import_preview command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-import-preview",
+          "markdownDescription": "Denies the server_import_preview command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-list",
+          "markdownDescription": "Denies the server_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_tag_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-tag-create",
+          "markdownDescription": "Denies the server_tag_create command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_tag_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-tag-delete",
+          "markdownDescription": "Denies the server_tag_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_tag_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-tag-list",
+          "markdownDescription": "Denies the server_tag_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_tag_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-tag-update",
+          "markdownDescription": "Denies the server_tag_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-update",
+          "markdownDescription": "Denies the server_update command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

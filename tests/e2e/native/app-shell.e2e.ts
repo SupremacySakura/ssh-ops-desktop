@@ -38,4 +38,10 @@ describe('OpsPilot native Tauri shell', () => {
     expect(health.secretStoreReady).toBe(true);
     expect(await $('main').getText()).toContain('Core 已就绪');
   });
+
+  it('allows the server catalog IPC surface through the main window ACL', async () => {
+    const servers = await browser.tauri.execute(({ core }) => core.invoke('server_list'));
+
+    expect(Array.isArray(servers)).toBe(true);
+  });
 });

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 opspilot-domain = { path = "../domain" }
+opspilot-secrets = { path = "../secrets" }
 sqlx.workspace = true
 
 [dev-dependencies]

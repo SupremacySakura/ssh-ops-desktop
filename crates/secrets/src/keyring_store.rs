@@ -53,7 +53,7 @@ impl SecretStore for KeyringSecretStore {
         let account = secret_ref.as_str().to_owned();
         run_keyring(move || {
             let entry = keyring::Entry::new(SERVICE, &account)?;
-            entry.delete_credential()
+            classify_delete(entry.delete_credential())
         })
         .await
     }
@@ -76,6 +76,13 @@ fn classify_readiness_probe(result: keyring::Result<String>) -> keyring::Result<
             Ok(())
         }
         Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn classify_delete(result: keyring::Result<()>) -> keyring::Result<()> {
+    match result {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error),
     }
 }
@@ -105,7 +112,20 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::classify_readiness_probe;
+    use super::{classify_delete, classify_readiness_probe};
+
+    #[test]
+    fn missing_delete_entry_is_already_complete() {
+        assert!(classify_delete(Err(keyring::Error::NoEntry)).is_ok());
+    }
+
+    #[test]
+    fn delete_backend_failure_stays_unavailable() {
+        assert!(matches!(
+            classify_delete(Err(keyring::Error::NoDefaultStore)),
+            Err(keyring::Error::NoDefaultStore)
+        ));
+    }
 
     #[test]
     fn missing_probe_entry_still_means_the_store_is_readable() {

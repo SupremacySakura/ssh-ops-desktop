@@ -226,7 +226,11 @@ async fn migration_backfills_refs_and_preserves_server_relations() {
     .map(|row| row.get::<String, _>("detail"))
     .collect::<Vec<_>>()
     .join("\n");
-    assert!(secret_ref_index_plan.contains("idx_servers_secret_ref"));
+    assert!(
+        secret_ref_index_plan.contains("idx_servers_secret_ref")
+            || secret_ref_index_plan.contains("idx_servers_unique_secret_ref"),
+        "secret_ref lookup should use a dedicated index: {secret_ref_index_plan}"
+    );
 }
 
 #[tokio::test]

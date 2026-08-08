@@ -36,12 +36,8 @@ impl SecretStore for MemorySecretStore {
     }
 
     async fn delete(&self, secret_ref: &SecretRef) -> Result<(), CoreError> {
-        self.values
-            .write()
-            .await
-            .remove(secret_ref)
-            .map(|_| ())
-            .ok_or_else(secret_unavailable)
+        self.values.write().await.remove(secret_ref);
+        Ok(())
     }
 }
 

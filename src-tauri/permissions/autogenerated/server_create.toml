@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-server-create"
+description = "Enables the server_create command without any pre-configured scope."
+commands.allow = ["server_create"]
+
+[[permission]]
+identifier = "deny-server-create"
+description = "Denies the server_create command without any pre-configured scope."
+commands.deny = ["server_create"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-server-import-preview"
+description = "Enables the server_import_preview command without any pre-configured scope."
+commands.allow = ["server_import_preview"]
+
+[[permission]]
+identifier = "deny-server-import-preview"
+description = "Denies the server_import_preview command without any pre-configured scope."
+commands.deny = ["server_import_preview"]

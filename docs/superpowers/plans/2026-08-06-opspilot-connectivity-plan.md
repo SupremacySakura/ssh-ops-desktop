@@ -46,6 +46,7 @@
 - Create: `crates/persistence/src/server_repository.rs`
 - Modify: `crates/persistence/src/lib.rs`
 - Create: `crates/persistence/tests/server_repository.rs`
+- Create: `crates/persistence/migrations/0003_server_catalog.sql`
 - Create: `src-tauri/src/commands/server.rs`
 - Modify: `src-tauri/src/commands/mod.rs`
 - Modify: `src-tauri/src/lib.rs`
@@ -120,7 +121,7 @@ git commit -m "feat: 实现服务器目录管理"
 - Create: `crates/ssh-core/src/auth/agent.rs`
 - Create: `crates/ssh-core/src/auth/certificate.rs`
 - Create: `crates/ssh-core/tests/known_hosts.rs`
-- Create: `crates/persistence/migrations/0003_host_keys.sql`
+- Create: `crates/persistence/migrations/0004_host_keys.sql`
 - Modify: `Cargo.toml`
 - Create: `packages/contracts/src/host-key.ts`
 - Create: `packages/contracts/src/host-key.test.ts`
@@ -178,7 +179,7 @@ Expected: PASS；测试捕获日志中不包含密码、私钥正文或 API toke
 - [ ] **Step 5: 提交任务**
 
 ```bash
-git add Cargo.toml Cargo.lock crates/ssh-core crates/persistence/migrations/0003_host_keys.sql packages/contracts/src/host-key.ts packages/contracts/src/host-key.test.ts tests/contract-fixtures/host-key-unknown.json
+git add Cargo.toml Cargo.lock crates/ssh-core crates/persistence/migrations/0004_host_keys.sql packages/contracts/src/host-key.ts packages/contracts/src/host-key.test.ts tests/contract-fixtures/host-key-unknown.json
 git commit -m "feat: 强制校验 SSH 主机身份"
 ```
 

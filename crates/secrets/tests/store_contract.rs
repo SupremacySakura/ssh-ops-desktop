@@ -70,6 +70,10 @@ async fn exercise_store_contract(store: &impl SecretStore) -> Result<(), CoreErr
         .await
         .expect_err("deleted secret should no longer be readable");
     assert_eq!(missing.code(), CoreErrorCode::SecretUnavailable);
+    store
+        .delete(&secret_ref)
+        .await
+        .expect("deleting an already absent secret must be idempotent");
 
     Ok(())
 }
