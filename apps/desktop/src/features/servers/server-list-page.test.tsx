@@ -3,6 +3,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ConnectionHandle } from '@opspilot/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CoreClient } from '../../api/core';
@@ -140,5 +141,32 @@ describe('ServerListPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '环境筛选' }));
     fireEvent.click(screen.getByRole('option', { name: '开发环境' }));
     expect(screen.getByText('没有匹配的服务器')).toBeVisible();
+  });
+
+  it('shows live, previously, and never connection states on server cards', () => {
+    const core = { serverGroups: async () => [] } as unknown as CoreClient;
+    const { rerender } = render(<ServerListPage core={core} onCreated={vi.fn()} servers={[summary]} />);
+    expect(screen.getByText('未连接')).toBeVisible();
+
+    const previously = {
+      ...summary,
+      id: '00000000-0000-4000-8000-000000000002',
+      name: 'web-02',
+      lastConnectedAt: '2026-08-01T08:00:00+08:00',
+    };
+    rerender(<ServerListPage core={core} onCreated={vi.fn()} servers={[summary, previously]} />);
+    expect(screen.getByText('曾连接')).toBeVisible();
+
+    const connection = {
+      serverId: summary.id,
+      connectionId: '00000000-0000-4000-8000-000000000020',
+    } as ConnectionHandle;
+    rerender(<ServerListPage
+      connections={[{ server: summary, connection }]}
+      core={core}
+      onCreated={vi.fn()}
+      servers={[summary, previously]}
+    />);
+    expect(screen.getByText('已连接')).toBeVisible();
   });
 });

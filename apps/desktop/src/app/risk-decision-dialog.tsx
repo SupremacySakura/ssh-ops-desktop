@@ -30,7 +30,7 @@ export function RiskDecisionDialog({
     });
   };
 
-  return <Modal onClose={onReject} open>
+  return <Modal elevated onClose={onReject} open>
     <section aria-labelledby="risk-dialog-title" aria-modal="true" className="risk-dialog" role="alertdialog">
       <header>
         <div>

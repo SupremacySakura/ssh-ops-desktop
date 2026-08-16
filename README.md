@@ -94,4 +94,7 @@ pnpm build:e2e:native && pnpm test:e2e:native
 
 ## 许可证
 
-UNLICENSED（暂不开源）
+本项目采用 **MIT License**，详见 [LICENSE](LICENSE)。
+
+Copyright (c) 2026 SupremacySakura
+

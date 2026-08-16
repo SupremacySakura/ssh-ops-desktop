@@ -368,7 +368,7 @@ export function FileManagerPage({ connections, core }: {
           <h2>{content.path}</h2>
           <button aria-label="关闭文件编辑" className="ui-icon-button" onClick={closeEditor} type="button"><Icon name="close" /></button>
         </header>
-        <Suspense fallback={<div className="code-editor-host" />}>
+        <Suspense fallback={<div className="code-editor-loading" role="status"><span className="code-editor-spinner" aria-hidden="true" /><p>正在加载编辑器…</p></div>}>
           <CodeEditor aria-label="文件编辑内容" language={languageForPath(content.path)} onChange={setDraft} value={draft} />
         </Suspense>
         <dl className="risk-details">

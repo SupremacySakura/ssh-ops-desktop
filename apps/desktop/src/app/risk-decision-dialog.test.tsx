@@ -62,4 +62,12 @@ describe('RiskDecisionDialog', () => {
     expect(screen.getByText('产品不提供结构化执行')).toBeVisible();
     expect(screen.queryByRole('button', { name: '确认执行' })).not.toBeInTheDocument();
   });
+
+  it('renders on the elevated overlay layer so it stays above other modals', () => {
+    render(<RiskDecisionDialog environment="production" request={request} onApprove={vi.fn()} onReject={vi.fn()} />);
+
+    const overlay = document.querySelector('.modal-overlay');
+    expect(overlay).not.toBeNull();
+    expect(overlay!.className).toContain('elevated');
+  });
 });

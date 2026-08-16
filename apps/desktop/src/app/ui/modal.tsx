@@ -2,6 +2,8 @@ import { useEffect, useRef, type ReactNode } from 'react';
 
 interface ModalProps {
   children: ReactNode;
+  /** 置顶层级：用于审批等必须压过其他弹窗的模态。 */
+  elevated?: boolean;
   onClose?(): void;
   open: boolean;
 }
@@ -19,7 +21,7 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
 }
 
-export function Modal({ children, onClose, open }: ModalProps) {
+export function Modal({ children, elevated = false, onClose, open }: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
@@ -73,7 +75,7 @@ export function Modal({ children, onClose, open }: ModalProps) {
 
   return (
     <div
-      className="modal-overlay"
+      className={`modal-overlay${elevated ? ' elevated' : ''}`}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose?.();
       }}

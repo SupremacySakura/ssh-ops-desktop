@@ -98,6 +98,7 @@ export default function App({ core }: AppProps) {
       servers={visibleServers}
     /></KeepAlivePage> : null}
     {visited.has('servers') ? <KeepAlivePage active={route === 'servers'}><ServerListPage
+      connections={connections}
       core={core}
       onConnected={(server, connection) => setConnections((current) => [
         { server, connection }, ...current.filter((item) => item.server.id !== server.id),

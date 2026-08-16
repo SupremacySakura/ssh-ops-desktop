@@ -15,8 +15,11 @@ import { Modal } from '../../app/ui/modal';
 import { DetailPane, FilterBar, PageHeader } from '../../app/ui/layout';
 import { Select } from '../../app/ui/select';
 import { environmentLabel } from '../dashboard/dashboard-page';
+import type { ConnectedServer } from '../terminal/terminal-page';
 
 interface ServerListPageProps {
+  /** 当前已建立的可信连接；用于在卡片上展示实时连接状态。 */
+  connections?: ConnectedServer[];
   core: CoreClient;
   onConnected?(server: ServerSummary, connection: ConnectionHandle): void;
   onCreated(server: ServerSummary): void;
@@ -30,7 +33,7 @@ const INITIAL_FORM: ServerInput = {
 };
 
 export function ServerListPage({
-  core, onConnected, onCreated, onDeleted, onUpdated, servers,
+  connections = [], core, onConnected, onCreated, onDeleted, onUpdated, servers,
 }: ServerListPageProps) {
   const [query, setQuery] = useState('');
   const [environmentFilter, setEnvironmentFilter] = useState('all');
@@ -69,7 +72,14 @@ export function ServerListPage({
     const matchesAuth = authFilter === 'all' || server.authType === authFilter;
     return matchesQuery && matchesEnvironment && matchesGroup && matchesAuth;
   }), [authFilter, environmentFilter, groupFilter, query, servers]);
+  const connectedServerIds = useMemo(
+    () => new Set(connections.map((item) => item.server.id)),
+    [connections],
+  );
   const selectedServer = filtered.find((server) => server.id === selectedServerId);
+  const selectedConnectionState: ConnectionState = selectedServer
+    ? connectionStateOf(selectedServer, connectedServerIds)
+    : 'never';
 
   const openCreate = () => {
     setEditingId(undefined);
@@ -228,7 +238,20 @@ export function ServerListPage({
       title="服务器管理"
     />
     {message ? <div className="alert success-alert" role="status">{message}</div> : null}
-    {formOpen ? <section className="panel server-form" aria-label="服务器表单"><div className="panel-title"><h2>{editingId ? '编辑服务器' : '新增服务器'}</h2><button onClick={() => setFormOpen(false)} type="button">关闭</button></div><div className="form-grid"><label>服务器名称<input aria-label="服务器名称" onChange={(event) => setForm({ ...form, name: event.target.value })} value={form.name} /></label><label>主机地址<input aria-label="主机地址" onChange={(event) => setForm({ ...form, host: event.target.value })} value={form.host} /></label><label>端口<input aria-label="端口" max={65535} min={1} onChange={(event) => setForm({ ...form, port: Number(event.target.value) })} type="number" value={form.port} /></label><label>用户名<input aria-label="用户名" onChange={(event) => setForm({ ...form, username: event.target.value })} value={form.username} /></label><label>环境<Select aria-label="服务器环境" onChange={(value) => setForm({ ...form, environment: value as ServerInput['environment'] })} options={[{ value: 'production', label: '生产环境' }, { value: 'staging', label: '预发布' }, { value: 'development', label: '开发环境' }, { value: 'other', label: '其他' }]} value={form.environment} /></label><label>认证方式<Select aria-label="认证方式" onChange={(value) => { setCredential(''); setForm({ ...form, authType: value as ServerInput['authType'] }); }} options={[{ value: 'password', label: '密码' }, { value: 'private_key', label: '私钥' }, { value: 'ssh_agent', label: 'SSH Agent' }, { value: 'certificate', label: '证书' }]} value={form.authType} /></label><label>分组<Select aria-label="服务器分组" onChange={(value) => setForm({ ...form, groupId: value || undefined })} options={[{ value: '', label: '未分组' }, ...groups.map((group) => ({ value: group.id, label: group.name }))]} value={form.groupId ?? ''} /></label>{form.authType !== 'ssh_agent' ? <label>{form.authType === 'password' ? '密码' : '私钥/证书口令'}<input aria-label={form.authType === 'password' ? '密码' : '私钥或证书口令'} autoComplete="new-password" onChange={(event) => setCredential(event.target.value)} placeholder={editingId ? '留空则保留现有凭据' : ''} type="password" value={credential} /></label> : null}</div><div className="heading-actions"><input aria-label="新分组名称" onChange={(event) => setGroupName(event.target.value)} placeholder="新分组名称" value={groupName} /><button disabled={!groupName.trim()} onClick={() => void createGroup()} type="button">创建分组</button><button className="primary" onClick={() => void save()} type="button">{editingId ? '保存修改' : '保存服务器'}</button></div></section> : null}
+    {formOpen ? <Modal onClose={() => setFormOpen(false)} open>
+      <section aria-label="服务器表单" aria-modal="true" className="server-form-dialog" role="dialog">
+        <header>
+          <h2>{editingId ? '编辑服务器' : '新增服务器'}</h2>
+          <button onClick={() => setFormOpen(false)} type="button">关闭</button>
+        </header>
+        <div className="form-grid"><label>服务器名称<input aria-label="服务器名称" onChange={(event) => setForm({ ...form, name: event.target.value })} value={form.name} /></label><label>主机地址<input aria-label="主机地址" onChange={(event) => setForm({ ...form, host: event.target.value })} value={form.host} /></label><label>端口<input aria-label="端口" max={65535} min={1} onChange={(event) => setForm({ ...form, port: Number(event.target.value) })} type="number" value={form.port} /></label><label>用户名<input aria-label="用户名" onChange={(event) => setForm({ ...form, username: event.target.value })} value={form.username} /></label><label>环境<Select aria-label="服务器环境" onChange={(value) => setForm({ ...form, environment: value as ServerInput['environment'] })} options={[{ value: 'production', label: '生产环境' }, { value: 'staging', label: '预发布' }, { value: 'development', label: '开发环境' }, { value: 'other', label: '其他' }]} value={form.environment} /></label><label>认证方式<Select aria-label="认证方式" onChange={(value) => { setCredential(''); setForm({ ...form, authType: value as ServerInput['authType'] }); }} options={[{ value: 'password', label: '密码' }, { value: 'private_key', label: '私钥' }, { value: 'ssh_agent', label: 'SSH Agent' }, { value: 'certificate', label: '证书' }]} value={form.authType} /></label><label>分组<Select aria-label="服务器分组" onChange={(value) => setForm({ ...form, groupId: value || undefined })} options={[{ value: '', label: '未分组' }, ...groups.map((group) => ({ value: group.id, label: group.name }))]} value={form.groupId ?? ''} /></label>{form.authType !== 'ssh_agent' ? <label>{form.authType === 'password' ? '密码' : '私钥/证书口令'}<input aria-label={form.authType === 'password' ? '密码' : '私钥或证书口令'} autoComplete="new-password" onChange={(event) => setCredential(event.target.value)} placeholder={editingId ? '留空则保留现有凭据' : ''} type="password" value={credential} /></label> : null}</div>
+        <footer>
+          <input aria-label="新分组名称" onChange={(event) => setGroupName(event.target.value)} placeholder="新分组名称" value={groupName} />
+          <button disabled={!groupName.trim()} onClick={() => void createGroup()} type="button">创建分组</button>
+          <button className="primary" onClick={() => void save()} type="button">{editingId ? '保存修改' : '保存服务器'}</button>
+        </footer>
+      </section>
+    </Modal> : null}
     <FilterBar resultCount={filtered.length}>
       <input aria-label="搜索服务器" onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、地址或用户" value={query} />
       <Select aria-label="环境筛选" onChange={(value) => setEnvironmentFilter(value)} options={[{ value: 'all', label: '全部环境' }, { value: 'production', label: '生产环境' }, { value: 'staging', label: '预发布' }, { value: 'development', label: '开发环境' }, { value: 'other', label: '其他' }]} value={environmentFilter} />
@@ -237,9 +260,23 @@ export function ServerListPage({
       <button onClick={() => { setQuery(''); setEnvironmentFilter('all'); setGroupFilter('all'); setAuthFilter('all'); }} type="button">重置</button>
     </FilterBar>
     <div className={selectedServer ? 'catalog-layout has-detail' : 'catalog-layout'}>
-      <section className="panel catalog-table"><div className="table-wrap"><table aria-label="服务器列表"><thead><tr><th>名称 / 用途</th><th>地址</th><th>环境</th><th>分组</th><th>认证方式</th><th>操作</th></tr></thead><tbody>{filtered.length === 0 ? <tr><td className="empty-cell" colSpan={6}>没有匹配的服务器</td></tr> : filtered.map((server) => <tr className={selectedServerId === server.id ? 'selected-row' : undefined} key={server.id}><td><button aria-label={`查看 ${server.name} 详情`} className="server-name-button" onClick={() => setSelectedServerId(server.id)} type="button"><strong>{server.name}</strong><small>{server.username}</small></button></td><td>{server.host}:{server.port}</td><td><span className={`environment-badge ${server.environment}`}>{environmentLabel(server.environment)}</span></td><td>{groups.find((group) => group.id === server.groupId)?.name ?? '未分组'}</td><td>{server.authType.replaceAll('_', ' ')}</td><td><div className="row-actions"><button aria-label={`连接 ${server.name}`} className="link-button" onClick={() => connect(server)} type="button">连接</button><button aria-label={`编辑 ${server.name}`} onClick={() => openEdit(server)} type="button">编辑</button><button aria-label={`删除 ${server.name}`} onClick={() => setDeleteTarget(server)} type="button">删除</button></div></td></tr>)}</tbody></table></div></section>
+      <section aria-label="服务器列表" className="panel catalog-cards">
+        {filtered.length === 0 ? <div className="catalog-empty">没有匹配的服务器</div> : <ul className="server-card-grid">{filtered.map((server) => (
+          <ServerCard
+            groups={groups}
+            key={server.id}
+            onConnect={connect}
+            onDelete={setDeleteTarget}
+            onEdit={openEdit}
+            onSelect={setSelectedServerId}
+            selected={selectedServerId === server.id}
+            server={server}
+            state={connectionStateOf(server, connectedServerIds)}
+          />
+        ))}</ul>}
+      </section>
       {selectedServer ? <DetailPane onClose={() => setSelectedServerId(undefined)} subtitle={`${selectedServer.host}:${selectedServer.port}`} title={selectedServer.name}>
-        <div className="detail-status-line"><span className={`environment-badge ${selectedServer.environment}`}>{environmentLabel(selectedServer.environment)}</span><span className="status-badge"><i />{selectedServer.lastConnectedAt ? '曾连接' : '尚未连接'}</span></div>
+        <div className="detail-status-line"><span className={`environment-badge ${selectedServer.environment}`}>{environmentLabel(selectedServer.environment)}</span><span className={`status-badge connection-${selectedConnectionState}`}><i />{CONNECTION_LABELS[selectedConnectionState]}</span></div>
         <dl className="detail-list"><div><dt>登录用户</dt><dd>{selectedServer.username}</dd></div><div><dt>认证方式</dt><dd>{selectedServer.authType.replaceAll('_', ' ')}</dd></div><div><dt>分组</dt><dd>{groups.find((group) => group.id === selectedServer.groupId)?.name ?? '未分组'}</dd></div><div><dt>最近连接</dt><dd>{selectedServer.lastConnectedAt ?? '尚无记录'}</dd></div></dl>
         <div className="detail-actions"><button aria-label={`从详情连接 ${selectedServer.name}`} className="primary" onClick={() => connect(selectedServer)} type="button">连接服务器</button><button aria-label={`从详情编辑 ${selectedServer.name}`} onClick={() => openEdit(selectedServer)} type="button">编辑配置</button><button aria-label={`从详情删除 ${selectedServer.name}`} className="danger" onClick={() => setDeleteTarget(selectedServer)} type="button">删除</button></div>
       </DetailPane> : null}
@@ -285,4 +322,46 @@ export function ServerListPage({
       </section>
     </Modal> : null}
   </div>;
+}
+
+type ConnectionState = 'connected' | 'previously' | 'never';
+
+const CONNECTION_LABELS: Record<ConnectionState, string> = {
+  connected: '已连接',
+  previously: '曾连接',
+  never: '未连接',
+};
+
+function connectionStateOf(server: ServerSummary, connectedIds: ReadonlySet<string>): ConnectionState {
+  return connectedIds.has(server.id) ? 'connected' : server.lastConnectedAt ? 'previously' : 'never';
+}
+
+interface ServerCardProps {
+  groups: ServerGroup[];
+  onConnect(server: ServerSummary): void;
+  onDelete(server: ServerSummary): void;
+  onEdit(server: ServerSummary): void;
+  onSelect(serverId: string): void;
+  selected: boolean;
+  server: ServerSummary;
+  state: ConnectionState;
+}
+
+function ServerCard({
+  groups, onConnect, onDelete, onEdit, onSelect, selected, server, state,
+}: ServerCardProps) {
+  return (
+    <li className={selected ? 'server-card selected' : 'server-card'}>
+      <button aria-label={`查看 ${server.name} 详情`} className="server-card-header" onClick={() => onSelect(server.id)} type="button">
+        <span className="server-card-title"><strong>{server.name}</strong><small>{server.username}</small></span>
+        <span className="server-card-badges"><span className={`status-badge connection-${state}`}><i />{CONNECTION_LABELS[state]}</span><span className={`environment-badge ${server.environment}`}>{environmentLabel(server.environment)}</span></span>
+      </button>
+      <dl className="server-card-meta">
+        <div><dt>地址</dt><dd>{server.host}:{server.port}</dd></div>
+        <div><dt>分组</dt><dd>{groups.find((group) => group.id === server.groupId)?.name ?? '未分组'}</dd></div>
+        <div><dt>认证</dt><dd>{server.authType.replaceAll('_', ' ')}</dd></div>
+      </dl>
+      <div className="server-card-actions"><button aria-label={`连接 ${server.name}`} className="link-button" onClick={() => onConnect(server)} type="button">连接</button><button aria-label={`编辑 ${server.name}`} onClick={() => onEdit(server)} type="button">编辑</button><button aria-label={`删除 ${server.name}`} onClick={() => onDelete(server)} type="button">删除</button></div>
+    </li>
+  );
 }

@@ -63,6 +63,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Tauri externalBin 要求 src-tauri/binaries/opspilot-agent-node-<triple> 在编译期存在
+      # （tauri_build 会在 cargo test / clippy / tauri build 时校验），必须先生成 sidecar。
+      - name: Build Agent runtime sidecar
+        run: |
+          pnpm build:agent
+          ls -la src-tauri/binaries/
+
       - name: Install Playwright Chromium
         run: pnpm exec playwright install chromium
 
