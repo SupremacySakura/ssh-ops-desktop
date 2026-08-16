@@ -8,7 +8,11 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workspaceRoot = resolve(packageRoot, '../..');
 const outputDirectory = resolve(workspaceRoot, 'src-tauri/resources/agent-runtime');
 const outputFile = resolve(outputDirectory, 'main.mjs');
-const esbuild = resolve(workspaceRoot, 'node_modules/.bin/esbuild');
+// esbuild 声明为本包 devDependency，pnpm 会在本包 node_modules/.bin 下创建入口；
+// Windows 下可执行入口是 .cmd，直接 spawn 无扩展名文件会 ENOENT。
+const esbuild = process.platform === 'win32'
+  ? resolve(packageRoot, 'node_modules/.bin/esbuild.cmd')
+  : resolve(packageRoot, 'node_modules/.bin/esbuild');
 
 mkdirSync(outputDirectory, { recursive: true });
 execFileSync(esbuild, [

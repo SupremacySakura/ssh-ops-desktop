@@ -68,7 +68,7 @@ jobs:
       - name: Build Agent runtime sidecar
         run: |
           pnpm build:agent
-          ls -la src-tauri/binaries/
+          node -e "console.log(require('node:fs').readdirSync('src-tauri/binaries'))"
 
       - name: Install Playwright Chromium
         run: pnpm exec playwright install chromium

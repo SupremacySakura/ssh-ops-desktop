@@ -11,6 +11,9 @@
     "libsql": "0.5.29",
     "zod": "4.4.3"
   },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "lint": "eslint . --max-warnings 0",
