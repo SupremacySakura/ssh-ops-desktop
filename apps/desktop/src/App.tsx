@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ModelProfileSummary, ServerSummary } from '@opspilot/contracts';
 
 import type { AgentAvailability, CoreClient, CoreHealth } from './api/core';
@@ -22,6 +22,11 @@ const TerminalPage = lazy(async () => {
 interface AppProps { core: CoreClient }
 type HealthState = { status: 'loading' } | { status: 'loaded'; health: CoreHealth } | { status: 'error' };
 
+// 访问过的页面保持挂载、仅隐藏，避免切换标签时丢失页面内状态（终端输出、表单草稿等）。
+function KeepAlivePage({ active, children }: { active: boolean; children: ReactNode }) {
+  return <div style={{ display: active ? 'contents' : 'none' }}>{children}</div>;
+}
+
 function initialRoute(): WorkspaceRoute {
   const route = window.location.hash.replace(/^#\/?/u, '') as WorkspaceRoute;
   return ['dashboard', 'servers', 'terminal', 'files', 'agent', 'projects', 'docker', 'nginx', 'tasks', 'settings'].includes(route)
@@ -36,7 +41,12 @@ export default function App({ core }: AppProps) {
   const [connections, setConnections] = useState<ConnectedServer[]>([]);
   const [pendingTerminal, setPendingTerminal] = useState<PendingTerminalSession>();
   const [route, setRoute] = useState<WorkspaceRoute>(initialRoute);
+  const [visited, setVisited] = useState<ReadonlySet<WorkspaceRoute>>(() => new Set([initialRoute()]));
   const [environment, setEnvironment] = useState('all');
+
+  useEffect(() => {
+    setVisited((current) => current.has(route) ? current : new Set(current).add(route));
+  }, [route]);
 
   useEffect(() => {
     let active = true;
@@ -78,7 +88,7 @@ export default function App({ core }: AppProps) {
     route={route}
   >
     {!ready ? <div className="alert warning-alert" role="alert"><strong>Core 未就绪</strong><span>数据库或系统凭据库不可用，写操作已禁用。</span></div> : null}
-    {route === 'dashboard' ? <DashboardPage
+    {visited.has('dashboard') ? <KeepAlivePage active={route === 'dashboard'}><DashboardPage
       agent={agent}
       connections={connections}
       core={core}
@@ -86,8 +96,8 @@ export default function App({ core }: AppProps) {
       onOpenAgent={() => navigate('agent')}
       onOpenTerminal={() => navigate('terminal')}
       servers={visibleServers}
-    /> : null}
-    {route === 'servers' ? <ServerListPage
+    /></KeepAlivePage> : null}
+    {visited.has('servers') ? <KeepAlivePage active={route === 'servers'}><ServerListPage
       core={core}
       onConnected={(server, connection) => setConnections((current) => [
         { server, connection }, ...current.filter((item) => item.server.id !== server.id),
@@ -104,14 +114,14 @@ export default function App({ core }: AppProps) {
           : item));
       }}
       servers={visibleServers}
-    /> : null}
-    {route === 'terminal' ? <Suspense fallback={<div className="panel">正在加载终端…</div>}><TerminalPage connections={connections} core={core} onPendingSessionClaimed={() => setPendingTerminal(undefined)} pendingSession={pendingTerminal} /></Suspense> : null}
-    {route === 'files' ? <FileManagerPage connections={connections} core={core} /> : null}
-    {route === 'agent' ? <AgentPage availability={agent} connections={connections} core={core} profiles={profiles} servers={visibleServers} /> : null}
-    {route === 'projects' ? <ProjectsPage connections={connections} core={core} /> : null}
-    {route === 'docker' ? <DockerPage connections={connections} core={core} onExec={(session, server) => { setPendingTerminal({ session, server }); navigate('terminal'); }} /> : null}
-    {route === 'nginx' ? <NginxPage connections={connections} core={core} /> : null}
-    {route === 'tasks' ? <TasksPage core={core} /> : null}
-    {route === 'settings' ? <SettingsPage core={core} /> : null}
+    /></KeepAlivePage> : null}
+    {visited.has('terminal') ? <KeepAlivePage active={route === 'terminal'}><Suspense fallback={<div className="panel">正在加载终端…</div>}><TerminalPage connections={connections} core={core} onPendingSessionClaimed={() => setPendingTerminal(undefined)} pendingSession={pendingTerminal} /></Suspense></KeepAlivePage> : null}
+    {visited.has('files') ? <KeepAlivePage active={route === 'files'}><FileManagerPage connections={connections} core={core} /></KeepAlivePage> : null}
+    {visited.has('agent') ? <KeepAlivePage active={route === 'agent'}><AgentPage availability={agent} connections={connections} core={core} profiles={profiles} servers={visibleServers} /></KeepAlivePage> : null}
+    {visited.has('projects') ? <KeepAlivePage active={route === 'projects'}><ProjectsPage connections={connections} core={core} /></KeepAlivePage> : null}
+    {visited.has('docker') ? <KeepAlivePage active={route === 'docker'}><DockerPage connections={connections} core={core} onExec={(session, server) => { setPendingTerminal({ session, server }); navigate('terminal'); }} /></KeepAlivePage> : null}
+    {visited.has('nginx') ? <KeepAlivePage active={route === 'nginx'}><NginxPage connections={connections} core={core} /></KeepAlivePage> : null}
+    {visited.has('tasks') ? <KeepAlivePage active={route === 'tasks'}><TasksPage core={core} /></KeepAlivePage> : null}
+    {visited.has('settings') ? <KeepAlivePage active={route === 'settings'}><SettingsPage core={core} /></KeepAlivePage> : null}
   </AppShell>;
 }

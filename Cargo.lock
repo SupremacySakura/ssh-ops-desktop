@@ -3397,6 +3397,7 @@ dependencies = [
  "opspilot-secrets",
  "opspilot-ssh-core",
  "opspilot-task-engine",
+ "russh-sftp",
  "serde",
  "serde_json",
  "sha2 0.10.9",

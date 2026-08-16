@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ConnectionHandle, ServerSummary, TerminalSession } from '@opspilot/contracts';
 
 import type { CoreClient } from '../../api/core';
+import { Modal } from '../../app/ui/modal';
 import { PageHeader } from '../../app/ui/layout';
+import { Select } from '../../app/ui/select';
 import { createTerminalSessionStore } from './session-store';
 import { XtermViewport } from './xterm-viewport';
 
@@ -120,7 +122,7 @@ export function TerminalPage({ connections, core, onPendingSessionClaimed, pendi
   void revision;
   return <div className="page-stack terminal-page">
     <PageHeader
-      actions={<><select aria-label="选择已连接服务器" onChange={(event) => setSelectedServerId(event.target.value)} value={selectedServerId}><option value="">选择服务器</option>{connections.map(({ server }) => <option key={server.id} value={server.id}>{server.name} · {environmentLabel(server.environment)}</option>)}</select><button className="primary" onClick={() => void open()} type="button">新建终端会话</button></>}
+      actions={<><Select aria-label="选择已连接服务器" onChange={(value) => setSelectedServerId(value)} options={[{ value: '', label: '选择服务器' }, ...connections.map(({ server }) => ({ value: server.id, label: `${server.name} · ${environmentLabel(server.environment)}` }))]} value={selectedServerId} /><button className="primary" onClick={() => void open()} type="button">新建终端会话</button></>}
       description="每个标签独立接收有序字节流；断线后输入不会自动重放。"
       eyebrow="Secure shell"
       title="远程终端"
@@ -144,18 +146,40 @@ export function TerminalPage({ connections, core, onPendingSessionClaimed, pendi
         <a className="assistant-link" href="#agent">前往 AI Agent 工作区</a>
       </aside>
     </div>
-    {pendingPaste ? <section aria-label="确认粘贴内容" aria-modal="true" className="risk-dialog" role="alertdialog"><h2>确认粘贴内容</h2><p>目标：{active?.title} · {pendingPaste.split(/\r?\n/u).length} 行 · {new TextEncoder().encode(pendingPaste).byteLength} 字节</p><pre className="paste-preview">{pendingPaste.slice(0, 4_096)}</pre><footer><button onClick={() => setPendingPaste('')} type="button">取消</button><button className="primary" onClick={() => void transmit(pendingPaste)} type="button">确认发送</button></footer></section> : null}
+    <Modal onClose={() => setPendingPaste('')} open={!!pendingPaste}>
+      <section aria-label="确认粘贴内容" aria-modal="true" className="risk-dialog" role="alertdialog">
+        <h2>确认粘贴内容</h2>
+        <p>目标：{active?.title} · {pendingPaste.split(/\r?\n/u).length} 行 · {new TextEncoder().encode(pendingPaste).byteLength} 字节</p>
+        <pre className="paste-preview">{pendingPaste.slice(0, 4_096)}</pre>
+        <footer>
+          <button onClick={() => setPendingPaste('')} type="button">取消</button>
+          <button className="primary" onClick={() => void transmit(pendingPaste)} type="button">确认发送</button>
+        </footer>
+      </section>
+    </Modal>
   </div>;
 }
 
 function requiresPasteConfirmation(value: string, allowSingleControl: boolean): boolean {
   const bytes = new TextEncoder().encode(value).byteLength;
   if (bytes > 4_096) return true;
-  if (allowSingleControl && value.length === 1) return false;
+  if (allowSingleControl && (value.length === 1 || isKeyEscapeSequence(value))) return false;
   return value.includes('\n') || value.includes('\r') || [...value].some((character) => {
     const code = character.codePointAt(0) ?? 0;
     return (code < 32 && code !== 9) || code === 127;
   });
+}
+
+// xterm 的方向键、Home/End、Delete、翻页等功能键会发出 CSI/SS3 转义序列（如 ↑ = "\x1b[A"），
+// 它们是单个按键而非粘贴，不应触发粘贴确认。括号粘贴标记除外，以免绕过多行粘贴的安全确认；
+// 排除必须同时覆盖带修饰符的变体（如 "\x1b[200;1~"），它们也属于粘贴标记而非功能键。
+// eslint-disable-next-line no-control-regex -- 匹配 xterm 功能键的 ESC 转义序列是预期行为
+const KEY_ESCAPE_SEQUENCE = /^\x1b(?:\[\d*(?:;\d+)?[~A-Za-z]|O[A-Za-z])$/u;
+// eslint-disable-next-line no-control-regex -- 匹配括号粘贴标记（含 xterm 修改版粘贴的修饰符变体）是预期行为
+const BRACKETED_PASTE_MARKER = /^\x1b\[20[01];?\d*~$/u;
+
+function isKeyEscapeSequence(value: string): boolean {
+  return !BRACKETED_PASTE_MARKER.test(value) && KEY_ESCAPE_SEQUENCE.test(value);
 }
 
 function environmentLabel(environment: ServerSummary['environment']): string {

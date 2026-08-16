@@ -137,7 +137,8 @@ describe('ServerListPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '查看 web-01 详情' }));
     expect(screen.getByRole('complementary', { name: 'web-01 详情' })).toHaveTextContent('example.com:22');
-    fireEvent.change(screen.getByLabelText('环境筛选'), { target: { value: 'development' } });
+    fireEvent.click(screen.getByRole('button', { name: '环境筛选' }));
+    fireEvent.click(screen.getByRole('option', { name: '开发环境' }));
     expect(screen.getByText('没有匹配的服务器')).toBeVisible();
   });
 });

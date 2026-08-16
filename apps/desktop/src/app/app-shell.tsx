@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 
 import { Icon, type IconName } from './icons';
+import { Select } from './ui/select';
 
 export type WorkspaceRoute =
   | 'dashboard' | 'servers' | 'terminal' | 'agent' | 'projects'
@@ -89,13 +90,12 @@ export function AppShell({
           <div className="topbar-context">
             <div aria-label="当前环境" className="environment-control">
               <span className={environment === 'production' ? 'environment-dot production' : 'environment-dot'} />
-              <select aria-label="环境" onChange={(event) => onEnvironmentChange(event.target.value)} value={environment}>
-                <option value="all">全部环境</option>
-                <option value="production">生产环境</option>
-                <option value="staging">预发布</option>
-                <option value="development">开发环境</option>
-              </select>
-              <Icon name="chevron-down" size={14} />
+              <Select aria-label="环境" onChange={(value) => onEnvironmentChange(value)} options={[
+                { value: 'all', label: '全部环境' },
+                { value: 'production', label: '生产环境' },
+                { value: 'staging', label: '预发布' },
+                { value: 'development', label: '开发环境' },
+              ]} value={environment} />
             </div>
             {environment === 'production' ? <span className="production-chip"><Icon name="alert" size={13} />生产环境</span> : null}
             <div aria-label="Core 状态" className={coreReady ? 'core-status ready' : 'core-status'} role="status">

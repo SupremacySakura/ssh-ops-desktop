@@ -4,6 +4,7 @@ import type { ApprovalProof, ApprovalRequest } from '@opspilot/contracts';
 import type { CoreClient } from '../../api/core';
 import { RiskDecisionDialog } from '../../app/risk-decision-dialog';
 import { DetailPane, PageHeader, Panel, SectionHeader } from '../../app/ui/layout';
+import { Select } from '../../app/ui/select';
 import type { ConnectedServer } from '../terminal/terminal-page';
 
 export function NginxPage({ connections, core }: { connections: ConnectedServer[]; core: CoreClient }) {
@@ -53,7 +54,7 @@ export function NginxPage({ connections, core }: { connections: ConnectedServer[
   const changed = path !== '' && candidate !== baseline;
 
   return <div className="page-stack nginx-page">
-    <PageHeader actions={<><select aria-label="Nginx 服务器" onChange={(event) => setServerId(event.target.value)} value={serverId}><option value="">选择服务器</option>{connections.map(({ server }) => <option key={server.id} value={server.id}>{server.name}</option>)}</select><button className="primary" onClick={() => void discover()} type="button">发现并读取配置</button></>} description="固定执行快照、配置校验、原子替换、平滑重载与健康检查。" eyebrow="Safe configuration" title="Nginx" />
+    <PageHeader actions={<><Select aria-label="Nginx 服务器" onChange={(value) => setServerId(value)} options={[{ value: '', label: '选择服务器' }, ...connections.map(({ server }) => ({ value: server.id, label: server.name }))]} value={serverId} /><button className="primary" onClick={() => void discover()} type="button">发现并读取配置</button></>} description="固定执行快照、配置校验、原子替换、平滑重载与健康检查。" eyebrow="Safe configuration" title="Nginx" />
     <ol aria-label="Nginx 安全变更流程" className="safety-chain"><li><b>1</b><span>创建快照</span></li><li><b>2</b><span>候选配置</span></li><li><b>3</b><span>配置校验</span><small>nginx -t</small></li><li><b>4</b><span>平滑重载</span></li><li><b>5</b><span>健康检查</span></li></ol>
     {message ? <div className="alert success-alert" role="status">{message}</div> : null}
     <div className={path && detailsOpen ? 'nginx-workspace has-detail' : 'nginx-workspace'}>

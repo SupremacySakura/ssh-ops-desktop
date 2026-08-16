@@ -32,7 +32,7 @@ const PATHS: Record<IconName, ReactNode> = {
   close: <path d="m6 6 12 12M18 6 6 18" />,
   collapse: <path d="m14 7-5 5 5 5" />,
   dashboard: <><rect height="7" rx="1" width="7" x="3" y="3" /><rect height="7" rx="1" width="7" x="14" y="3" /><rect height="7" rx="1" width="7" x="3" y="14" /><rect height="7" rx="1" width="7" x="14" y="14" /></>,
-  docker: <><path d="M4 15h13c2 0 3-1 4-3-1 0-2 0-3-1" /><path d="M5 11h3v3H5zM9 11h3v3H9zM13 11h3v3h-3zM9 7h3v3H9zM13 7h3v3h-3z" /></>,
+  docker: <><path d="M3.5 16.5h14c2 0 3.5-1 4-2.5" /><rect height="3" rx="0.6" width="3" x="5" y="12" /><rect height="3" rx="0.6" width="3" x="9" y="12" /><rect height="3" rx="0.6" width="3" x="13" y="12" /><rect height="3" rx="0.6" width="3" x="9" y="8" /><rect height="3" rx="0.6" width="3" x="13" y="8" /></>,
   file: <><path d="M5 3h9l5 5v13H5V3Z" /><path d="M14 3v5h5" /></>,
   help: <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 1 1 3.2 2.4c-.7.3-.7.8-.7 1.6M12 17h.01" /></>,
   history: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5M12 7v5l3 2" /></>,

@@ -9,6 +9,7 @@ import type {
 
 import type { AgentAvailability, CoreClient } from '../../api/core';
 import { EmptyState, MetricCard, PageHeader, Panel, SectionHeader } from '../../app/ui/layout';
+import { Select } from '../../app/ui/select';
 import type { ConnectedServer } from '../terminal/terminal-page';
 
 export function DashboardPage({
@@ -102,10 +103,7 @@ export function DashboardPage({
         <Panel className="dashboard-resource-panel">
           <SectionHeader description="按需读取，不保存长期监控数据" title="实时资源" />
           <div className="metric-controls">
-            <select aria-label="指标服务器" onChange={(event) => setSelectedServerId(event.target.value)} value={selectedServerId}>
-              <option value="">选择已连接服务器</option>
-              {connections.map(({ server }) => <option key={server.id} value={server.id}>{server.name}</option>)}
-            </select>
+            <Select aria-label="指标服务器" onChange={(value) => setSelectedServerId(value)} options={[{ value: '', label: '选择已连接服务器' }, ...connections.map(({ server }) => ({ value: server.id, label: server.name }))]} value={selectedServerId} />
             <button disabled={!selectedConnection} onClick={() => void loadMetrics()} type="button">刷新指标</button>
           </div>
           {metricError ? <div className="alert warning-alert" role="alert">{metricError}</div> : null}

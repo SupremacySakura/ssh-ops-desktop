@@ -4,6 +4,7 @@ import type { ApprovalProof, ApprovalRequest, ProjectDetection, ProjectSummary }
 import type { CoreClient } from '../../api/core';
 import { RiskDecisionDialog } from '../../app/risk-decision-dialog';
 import { DetailPane, PageHeader, Panel, SectionHeader } from '../../app/ui/layout';
+import { Select } from '../../app/ui/select';
 import type { ConnectedServer } from '../terminal/terminal-page';
 
 export function ProjectsPage({ connections, core }: { connections: ConnectedServer[]; core: CoreClient }) {
@@ -71,7 +72,7 @@ export function ProjectsPage({ connections, core }: { connections: ConnectedServ
   };
 
   return <div className="page-stack projects-page">
-    <PageHeader actions={<select aria-label="项目服务器" onChange={(event) => setServerId(event.target.value)} value={serverId}><option value="">选择服务器</option>{connections.map(({ server }) => <option key={server.id} value={server.id}>{server.name}</option>)}</select>} description="检测运行时、持久化项目，并通过可审查计划执行发布。" eyebrow="Deployments" title="项目与发布" />
+    <PageHeader actions={<Select aria-label="项目服务器" onChange={(value) => setServerId(value)} options={[{ value: '', label: '选择服务器' }, ...connections.map(({ server }) => ({ value: server.id, label: server.name }))]} value={serverId} />} description="检测运行时、持久化项目，并通过可审查计划执行发布。" eyebrow="Deployments" title="项目与发布" />
     <Panel className="project-form"><label>项目根目录<input aria-label="项目根目录" onChange={(event) => setRootPath(event.target.value)} placeholder="/srv/app" value={rootPath} /></label><button onClick={() => void detect()} type="button">检测项目</button><label>项目名称<input aria-label="项目名称" onChange={(event) => setName(event.target.value)} value={name} /></label><label>Git 仓库（Compose 可留空）<input aria-label="Git 仓库" onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="https://example.com/team/app.git" value={repositoryUrl} /></label><button className="primary" disabled={!detection || !name || (detection.primary !== 'docker_compose' && !repositoryUrl)} onClick={() => void create()} type="button">创建项目</button>{detection ? <span className="status-badge"><i />{detection.primary} · {Math.round(detection.confidence * 100)}%</span> : null}</Panel>
     {message ? <div className="alert success-alert" role="status">{message}</div> : null}
     <div className={selectedProject ? 'projects-workspace has-detail' : 'projects-workspace'}>

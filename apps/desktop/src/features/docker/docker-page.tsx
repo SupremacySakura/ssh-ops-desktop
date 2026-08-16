@@ -12,6 +12,7 @@ import type {
 import type { CoreClient } from '../../api/core';
 import { RiskDecisionDialog } from '../../app/risk-decision-dialog';
 import { DetailPane, MetricCard, PageHeader, Panel, ProgressBar, SectionHeader } from '../../app/ui/layout';
+import { Select } from '../../app/ui/select';
 import type { ConnectedServer } from '../terminal/terminal-page';
 
 export function DockerPage({ connections, core, onExec }: {
@@ -91,7 +92,7 @@ export function DockerPage({ connections, core, onExec }: {
   const stopped = containers.length - running;
 
   return <div className="page-stack docker-page">
-    <PageHeader actions={<><select aria-label="Docker 服务器" onChange={(event) => setServerId(event.target.value)} value={serverId}><option value="">选择服务器</option>{connections.map(({ server }) => <option key={server.id} value={server.id}>{server.name}</option>)}</select><button className="primary" onClick={() => void load()} type="button">加载 Docker</button></>} description="查询使用远端 Docker CLI；任何写操作先由 Rust 风险网关准备。" eyebrow="Containers" title="Docker" />
+    <PageHeader actions={<><Select aria-label="Docker 服务器" onChange={(value) => setServerId(value)} options={[{ value: '', label: '选择服务器' }, ...connections.map(({ server }) => ({ value: server.id, label: server.name }))]} value={serverId} /><button className="primary" onClick={() => void load()} type="button">加载 Docker</button></>} description="查询使用远端 Docker CLI；任何写操作先由 Rust 风险网关准备。" eyebrow="Containers" title="Docker" />
     {message ? <div className="alert success-alert" role="status">{message}</div> : null}
     <section className="metrics-grid compact" aria-label="Docker 指标">
       <MetricCard detail={version ? `API ${version.apiVersion}` : '等待连接'} icon="docker" label="Engine" value={version?.version ?? '—'} />

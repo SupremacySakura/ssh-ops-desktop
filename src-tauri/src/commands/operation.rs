@@ -70,6 +70,32 @@ pub(super) fn agent_tool_descriptors() -> Vec<opspilot_agent_bridge::ToolDescrip
                 ("expectedSha256".to_owned(), serde_json::json!({ "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" })),
             ]), vec!["path", "bytes"],
         )),
+        ("file.rename", "Rename one conflict-checked remote path", with_connection(
+            serde_json::Map::from_iter([
+                ("path".to_owned(), serde_json::json!({ "type": "string", "pattern": "^/" })),
+                ("target".to_owned(), serde_json::json!({ "type": "string", "pattern": "^/" })),
+            ]), vec!["path", "target"],
+        )),
+        ("file.upload_tree", "Atomically upload a small conflict-checked file tree", with_connection(
+            serde_json::Map::from_iter([
+                ("rootPath".to_owned(), serde_json::json!({ "type": "string", "pattern": "^/" })),
+                ("files".to_owned(), serde_json::json!({
+                    "type": "array", "maxItems": MAX_UPLOAD_TREE_FILES,
+                    "items": {
+                        "type": "object", "additionalProperties": false,
+                        "required": ["path", "bytes"],
+                        "properties": {
+                            "path": { "type": "string", "minLength": 1 },
+                            "bytes": {
+                                "type": "array",
+                                "maxItems": MAX_UPLOAD_TREE_BYTES,
+                                "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+                            }
+                        }
+                    }
+                })),
+            ]), vec!["rootPath", "files"],
+        )),
         ("systemd.service.start", "Start one validated systemd service", service_schema()),
         ("systemd.service.stop", "Stop one validated systemd service", service_schema()),
         ("systemd.service.restart", "Restart one validated systemd service", service_schema()),
@@ -299,6 +325,473 @@ where
         .await;
         let _ = session.close().await;
         result
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FileRenameArgs {
+    connection: ConnectionHandle,
+    path: String,
+    target: String,
+}
+
+#[derive(Clone)]
+struct FileRenameExecutor<S> {
+    servers: ServerRepository,
+    connections: RusshConnectionManager<S>,
+}
+
+#[async_trait]
+impl<S> ToolExecutor for FileRenameExecutor<S>
+where
+    S: SecretStore + 'static,
+{
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new(
+            "file.rename",
+            1,
+            ToolEffect::Write {
+                minimum_risk: opspilot_domain::RiskLevel::L2,
+                snapshot_required: false,
+                confirmation_arg: None,
+            },
+        )
+        .expect("built-in file rename policy is valid")
+    }
+
+    async fn prepare(&self, call: &ToolCall) -> Result<ToolAction, CoreError> {
+        let args = parse_file_rename_args(&call.args)?;
+        validate_connection_scope(call.server_id, &args.connection)?;
+        self.servers.get(call.server_id).await?;
+        self.verify_precondition(&args).await?;
+        Ok(ToolAction::Write(
+            opspilot_task_engine::OperationPlan::new(
+                call.args.clone(),
+                format!("rename remote path {} to {}", args.path, args.target),
+            )
+            .with_target_label(&args.target),
+        ))
+    }
+
+    async fn execute(&self, operation: ApprovedOperation) -> Result<ToolResult, CoreError> {
+        let args = parse_file_rename_args(operation.args())?;
+        validate_connection_scope(operation.server_id(), &args.connection)?;
+        self.verify_precondition(&args).await?;
+        let session = self.connections.open_sftp(&args.connection).await?;
+        // SFTP v3 rename 在 OpenSSH 服务器上按 POSIX 语义执行，若检查后目标被并发创建会被静默覆盖；
+        // 前置冲突检查与 rename 之间仍存在极小竞态窗口（russh-sftp 未暴露 posix-rename@openssh.com，
+        // 无法做到原子"不覆盖"重命名）。这里在 rename 成功后做结果验证，把异常状态暴露给用户而非静默通过。
+        let result = async {
+            session
+                .rename(&args.path, &args.target)
+                .await
+                .map_err(|error| remote_file_error("rename remote path", error))?;
+            if !session
+                .try_exists(&args.target)
+                .await
+                .map_err(|error| remote_file_error("verify remote rename target", error))?
+            {
+                return Err(CoreError::new(
+                    CoreErrorCode::SshConnection,
+                    "remote rename committed but the target is missing; verify the remote state",
+                    true,
+                ));
+            }
+            Ok(())
+        }
+        .await;
+        let _ = session.close().await;
+        result?;
+        Ok(ToolResult::new(serde_json::json!({
+            "path": args.path,
+            "target": args.target,
+        })))
+    }
+}
+
+impl<S> FileRenameExecutor<S>
+where
+    S: SecretStore + 'static,
+{
+    async fn verify_precondition(&self, args: &FileRenameArgs) -> Result<(), CoreError> {
+        validate_rename_paths(&args.path, &args.target)?;
+        let session = self.connections.open_sftp(&args.connection).await?;
+        let result = async {
+            if !session
+                .try_exists(&args.path)
+                .await
+                .map_err(|error| remote_file_error("check remote rename source", error))?
+            {
+                return Err(CoreError::new(
+                    CoreErrorCode::Conflict,
+                    "remote rename source does not exist",
+                    true,
+                ));
+            }
+            if session
+                .try_exists(&args.target)
+                .await
+                .map_err(|error| remote_file_error("check remote rename target", error))?
+            {
+                return Err(CoreError::new(
+                    CoreErrorCode::Conflict,
+                    "remote rename target already exists",
+                    false,
+                ));
+            }
+            Ok(())
+        }
+        .await;
+        let _ = session.close().await;
+        result
+    }
+}
+
+fn validate_rename_paths(path: &str, target: &str) -> Result<(), CoreError> {
+    RemotePath::try_new(path)?;
+    RemotePath::try_new(target)?;
+    Ok(())
+}
+
+const MAX_UPLOAD_TREE_FILES: usize = 128;
+const MAX_UPLOAD_TREE_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UploadTreeFile {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FileUploadTreeArgs {
+    connection: ConnectionHandle,
+    root_path: String,
+    files: Vec<UploadTreeFile>,
+}
+
+/// Validate an upload tree offline and return the absolute target path of each file,
+/// in the same order as `files`.
+fn resolve_upload_tree(
+    root_path: &str,
+    files: &[UploadTreeFile],
+) -> Result<Vec<String>, CoreError> {
+    let root = root_path.trim_end_matches('/');
+    // "/" alone is rejected by RemotePath but is a legitimate upload root;
+    // every joined target is still validated as a RemotePath below.
+    if root.is_empty() {
+        if root_path.is_empty() {
+            RemotePath::try_new(root_path)?;
+        }
+    } else {
+        RemotePath::try_new(root)?;
+    }
+    if files.is_empty() {
+        return Err(CoreError::new(
+            CoreErrorCode::Validation,
+            "upload tree requires at least one file",
+            false,
+        ));
+    }
+    if files.len() > MAX_UPLOAD_TREE_FILES {
+        return Err(CoreError::new(
+            CoreErrorCode::Validation,
+            "upload tree exceeds the 128 file limit",
+            false,
+        ));
+    }
+    let total_bytes: usize = files.iter().map(|file| file.bytes.len()).sum();
+    if total_bytes > MAX_UPLOAD_TREE_BYTES {
+        return Err(CoreError::new(
+            CoreErrorCode::Validation,
+            "upload tree exceeds the 16 MiB total size limit",
+            false,
+        ));
+    }
+    files
+        .iter()
+        .map(|file| {
+            for segment in file.path.split('/') {
+                if segment.is_empty()
+                    || segment == "."
+                    || segment == ".."
+                    || segment.contains('\\')
+                    || segment.chars().any(char::is_control)
+                {
+                    return Err(CoreError::new(
+                        CoreErrorCode::Validation,
+                        format!("upload tree path segment is invalid: {:?}", file.path),
+                        false,
+                    ));
+                }
+            }
+            let absolute = format!("{root}/{}", file.path);
+            RemotePath::try_new(&absolute)?;
+            Ok(absolute)
+        })
+        .collect()
+}
+
+#[derive(Clone)]
+struct FileUploadTreeExecutor<S> {
+    servers: ServerRepository,
+    connections: RusshConnectionManager<S>,
+}
+
+#[async_trait]
+impl<S> ToolExecutor for FileUploadTreeExecutor<S>
+where
+    S: SecretStore + 'static,
+{
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new(
+            "file.upload_tree",
+            1,
+            ToolEffect::Write {
+                minimum_risk: opspilot_domain::RiskLevel::L2,
+                snapshot_required: false,
+                confirmation_arg: None,
+            },
+        )
+        .expect("built-in upload tree policy is valid")
+    }
+
+    async fn prepare(&self, call: &ToolCall) -> Result<ToolAction, CoreError> {
+        let args = parse_file_upload_tree_args(&call.args)?;
+        let targets = resolve_upload_tree(&args.root_path, &args.files)?;
+        validate_connection_scope(call.server_id, &args.connection)?;
+        self.servers.get(call.server_id).await?;
+        self.verify_precondition(&args, &targets).await?;
+        Ok(ToolAction::Write(
+            opspilot_task_engine::OperationPlan::new(
+                call.args.clone(),
+                format!(
+                    "upload {} files to remote directory {}",
+                    args.files.len(),
+                    args.root_path
+                ),
+            )
+            .with_target_label(&args.root_path),
+        ))
+    }
+
+    async fn execute(&self, operation: ApprovedOperation) -> Result<ToolResult, CoreError> {
+        let args = parse_file_upload_tree_args(operation.args())?;
+        let targets = resolve_upload_tree(&args.root_path, &args.files)?;
+        validate_connection_scope(operation.server_id(), &args.connection)?;
+        self.verify_precondition(&args, &targets).await?;
+
+        let session = self.connections.open_sftp(&args.connection).await?;
+        let result = self
+            .upload_files(&session, &args, &targets, operation.tool_call_id())
+            .await;
+        let _ = session.close().await;
+        result?;
+        Ok(ToolResult::new(serde_json::json!({
+            "rootPath": args.root_path,
+            "uploaded": args.files.len(),
+            "bytes": args.files.iter().map(|file| file.bytes.len()).sum::<usize>(),
+        })))
+    }
+}
+
+impl<S> FileUploadTreeExecutor<S>
+where
+    S: SecretStore + 'static,
+{
+    async fn verify_precondition(
+        &self,
+        args: &FileUploadTreeArgs,
+        targets: &[String],
+    ) -> Result<(), CoreError> {
+        let session = self.connections.open_sftp(&args.connection).await?;
+        let result = async {
+            if !session
+                .try_exists(&args.root_path)
+                .await
+                .map_err(|error| remote_file_error("check remote upload root", error))?
+            {
+                return Err(CoreError::new(
+                    CoreErrorCode::Validation,
+                    "remote upload root does not exist",
+                    false,
+                ));
+            }
+            let metadata = session
+                .symlink_metadata(&args.root_path)
+                .await
+                .map_err(|error| remote_file_error("read remote upload root metadata", error))?;
+            if !metadata.is_dir() {
+                return Err(CoreError::new(
+                    CoreErrorCode::Validation,
+                    "remote upload root is not a directory",
+                    false,
+                ));
+            }
+            for target in targets {
+                if session
+                    .try_exists(target)
+                    .await
+                    .map_err(|error| remote_file_error("check remote upload target", error))?
+                {
+                    return Err(CoreError::new(
+                        CoreErrorCode::Conflict,
+                        format!("remote upload target already exists: {target}"),
+                        false,
+                    ));
+                }
+            }
+            Ok(())
+        }
+        .await;
+        let _ = session.close().await;
+        result
+    }
+
+    async fn upload_files(
+        &self,
+        session: &russh_sftp::client::SftpSession,
+        args: &FileUploadTreeArgs,
+        targets: &[String],
+        operation_id: Id,
+    ) -> Result<(), CoreError> {
+        // 已提交到最终路径的文件；任一步失败时回滚，兑现"原子上传"的承诺。
+        let mut committed: Vec<String> = Vec::new();
+        for (file, target) in args.files.iter().zip(targets) {
+            self.ensure_parent_directories(session, &args.root_path, &file.path)
+                .await?;
+            let temporary = sibling_operation_path(target, operation_id, "tmp")?;
+            if session
+                .try_exists(&temporary)
+                .await
+                .map_err(|error| remote_file_error("check temporary file", error))?
+            {
+                return Err(CoreError::new(
+                    CoreErrorCode::Conflict,
+                    "remote temporary file already exists",
+                    false,
+                ));
+            }
+            let write_result = async {
+                let mut temporary_file = session
+                    .create(&temporary)
+                    .await
+                    .map_err(|error| remote_file_error("create temporary file", error))?;
+                temporary_file
+                    .write_all(&file.bytes)
+                    .await
+                    .map_err(|error| remote_file_error("write temporary file", error))?;
+                temporary_file
+                    .sync_all()
+                    .await
+                    .map_err(|error| remote_file_error("sync temporary file", error))?;
+                temporary_file
+                    .shutdown()
+                    .await
+                    .map_err(|error| remote_file_error("close temporary file", error))?;
+                Self::commit_upload(session, &temporary, target).await?;
+                Ok::<(), CoreError>(())
+            }
+            .await;
+            if let Err(error) = write_result {
+                let _ = session.remove_file(&temporary).await;
+                // 回滚本次操作已经提交的文件，避免失败后残留部分树。
+                for committed_target in committed.iter().rev() {
+                    let _ = session.remove_file(committed_target).await;
+                }
+                return Err(CoreError::new(
+                    error.code(),
+                    format!(
+                        "{}; {} previously uploaded file(s) were rolled back",
+                        error.message(),
+                        committed.len()
+                    ),
+                    error.is_retryable(),
+                ));
+            }
+            committed.push(target.clone());
+        }
+        Ok(())
+    }
+
+    /// Commit `temporary` to `target` without ever overwriting an existing file.
+    ///
+    /// 优先走 `hardlink@openssh.com`（POSIX `link(2)`，目标已存在时原子失败），随后删除临时文件：
+    /// 在 OpenSSH 服务器上是无竞态的原子提交。服务器未声明该扩展时（`Ok(false)`），退化为
+    /// "recheck + rename"，此时检查与 rename 之间仍存在已知的小竞态窗口（russh-sftp 2.3.0
+    /// 未暴露 posix-rename@openssh.com 扩展请求）。
+    async fn commit_upload(
+        session: &russh_sftp::client::SftpSession,
+        temporary: &str,
+        target: &str,
+    ) -> Result<(), CoreError> {
+        match session.hardlink(temporary, target).await {
+            Ok(true) => {
+                let _ = session.remove_file(temporary).await;
+                Ok(())
+            }
+            Ok(false) => {
+                // 服务器不支持 hardlink 扩展：退化路径，提交前再次确认目标不存在。
+                if session
+                    .try_exists(target)
+                    .await
+                    .map_err(|error| remote_file_error("recheck remote upload target", error))?
+                {
+                    return Err(CoreError::new(
+                        CoreErrorCode::Conflict,
+                        format!("remote upload target already exists: {target}"),
+                        false,
+                    ));
+                }
+                session
+                    .rename(temporary, target)
+                    .await
+                    .map_err(|error| remote_file_error("commit remote file", error))
+            }
+            Err(error) => {
+                // hardlink 失败：目标已存在判定为冲突，否则透传远端错误。
+                if session
+                    .try_exists(target)
+                    .await
+                    .map_err(|error| remote_file_error("check remote upload target", error))?
+                {
+                    return Err(CoreError::new(
+                        CoreErrorCode::Conflict,
+                        format!("remote upload target already exists: {target}"),
+                        false,
+                    ));
+                }
+                Err(remote_file_error("commit remote file", error))
+            }
+        }
+    }
+
+    async fn ensure_parent_directories(
+        &self,
+        session: &russh_sftp::client::SftpSession,
+        root_path: &str,
+        relative_path: &str,
+    ) -> Result<(), CoreError> {
+        let root = root_path.trim_end_matches('/');
+        let mut prefix = root.to_owned();
+        let segments: Vec<&str> = relative_path.split('/').collect();
+        for segment in &segments[..segments.len().saturating_sub(1)] {
+            prefix = format!("{prefix}/{segment}");
+            if let Err(error) = session.create_dir(&prefix).await {
+                // Tolerate a directory that already exists; fail otherwise.
+                let is_dir = session
+                    .symlink_metadata(&prefix)
+                    .await
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false);
+                if !is_dir {
+                    return Err(remote_file_error("create remote directory", error));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -619,6 +1112,26 @@ fn parse_file_write_args(value: &serde_json::Value) -> Result<FileWriteArgs, Cor
     })
 }
 
+fn parse_file_rename_args(value: &serde_json::Value) -> Result<FileRenameArgs, CoreError> {
+    serde_json::from_value(value.clone()).map_err(|error| {
+        CoreError::new(
+            CoreErrorCode::Validation,
+            format!("file rename arguments are invalid: {error}"),
+            false,
+        )
+    })
+}
+
+fn parse_file_upload_tree_args(value: &serde_json::Value) -> Result<FileUploadTreeArgs, CoreError> {
+    serde_json::from_value(value.clone()).map_err(|error| {
+        CoreError::new(
+            CoreErrorCode::Validation,
+            format!("upload tree arguments are invalid: {error}"),
+            false,
+        )
+    })
+}
+
 fn validate_sha256(value: &str) -> Result<(), CoreError> {
     if value.len() != 64
         || !value
@@ -782,6 +1295,14 @@ where
         })?
         .register(FileWriteExecutor {
             servers: servers.clone(),
+            connections: connections.clone(),
+        })?
+        .register(FileRenameExecutor {
+            servers: servers.clone(),
+            connections: connections.clone(),
+        })?
+        .register(FileUploadTreeExecutor {
+            servers: servers.clone(),
             connections,
         })?
         .register(ReleaseDeployExecutor {
@@ -892,11 +1413,14 @@ pub(crate) async fn operation_status(
 
 #[cfg(test)]
 mod tests {
-    use opspilot_domain::{AuthType, Id, ServerEnvironment, ServerInput, ToolCall};
+    use opspilot_domain::{AuthType, CoreErrorCode, Id, ServerEnvironment, ServerInput, ToolCall};
     use opspilot_persistence::{Database, ServerRepository};
     use opspilot_task_engine::{OperationGateway, OperationState, PrepareResult};
 
-    use super::{agent_tool_descriptors, operation_gateway, prepare_manual_operation};
+    use super::{
+        MAX_UPLOAD_TREE_BYTES, MAX_UPLOAD_TREE_FILES, UploadTreeFile, agent_tool_descriptors,
+        operation_gateway, prepare_manual_operation, resolve_upload_tree, validate_rename_paths,
+    };
 
     #[test]
     fn agent_write_tools_publish_their_real_required_argument_schema() {
@@ -916,6 +1440,123 @@ mod tests {
             assert!(required.iter().any(|value| value == field));
         }
         assert_eq!(nginx.input_schema["additionalProperties"], false);
+
+        let rename = tools
+            .iter()
+            .find(|tool| tool.name == "file.rename")
+            .unwrap();
+        let required = rename.input_schema["required"].as_array().unwrap();
+        for field in ["connection", "path", "target"] {
+            assert!(required.iter().any(|value| value == field));
+        }
+        assert_eq!(rename.input_schema["additionalProperties"], false);
+
+        let upload_tree = tools
+            .iter()
+            .find(|tool| tool.name == "file.upload_tree")
+            .unwrap();
+        let required = upload_tree.input_schema["required"].as_array().unwrap();
+        for field in ["connection", "rootPath", "files"] {
+            assert!(required.iter().any(|value| value == field));
+        }
+        assert_eq!(upload_tree.input_schema["additionalProperties"], false);
+        let files = &upload_tree.input_schema["properties"]["files"];
+        assert_eq!(files["maxItems"], MAX_UPLOAD_TREE_FILES);
+        assert_eq!(files["items"]["additionalProperties"], false);
+        let item_required = files["items"]["required"].as_array().unwrap();
+        for field in ["path", "bytes"] {
+            assert!(item_required.iter().any(|value| value == field));
+        }
+        assert_eq!(
+            files["items"]["properties"]["bytes"]["maxItems"],
+            MAX_UPLOAD_TREE_BYTES
+        );
+    }
+
+    fn upload_file(path: &str, bytes: &[u8]) -> UploadTreeFile {
+        UploadTreeFile {
+            path: path.to_owned(),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn resolve_upload_tree_accepts_nested_relative_paths() {
+        let files = vec![
+            upload_file("index.html", b"<html>"),
+            upload_file("assets/css/site.css", b"body{}"),
+        ];
+        let targets = resolve_upload_tree("/var/www/site", &files).unwrap();
+        assert_eq!(
+            targets,
+            vec![
+                "/var/www/site/index.html".to_owned(),
+                "/var/www/site/assets/css/site.css".to_owned()
+            ]
+        );
+        let targets = resolve_upload_tree("/var/www/site/", &files[..1]).unwrap();
+        assert_eq!(targets, vec!["/var/www/site/index.html".to_owned()]);
+    }
+
+    #[test]
+    fn resolve_upload_tree_accepts_filesystem_root() {
+        let files = vec![upload_file("bundle/a.txt", b"x")];
+        let targets = resolve_upload_tree("/", &files).unwrap();
+        assert_eq!(targets, vec!["/bundle/a.txt".to_owned()]);
+        let error = resolve_upload_tree("", &files).unwrap_err();
+        assert_eq!(error.code(), CoreErrorCode::Validation);
+    }
+
+    #[test]
+    fn resolve_upload_tree_rejects_unsafe_relative_paths() {
+        for path in [
+            "../escape.txt",
+            "a/../../escape.txt",
+            "a\\b.txt",
+            "a//b.txt",
+            "/leading.txt",
+            ".",
+            "a/./b.txt",
+            "con\ttrol.txt",
+            "",
+        ] {
+            let files = vec![upload_file(path, b"x")];
+            let error = resolve_upload_tree("/srv/app", &files).unwrap_err();
+            assert_eq!(error.code(), CoreErrorCode::Validation, "path: {path:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_upload_tree_enforces_count_and_size_limits() {
+        let error = resolve_upload_tree("/srv/app", &[]).unwrap_err();
+        assert_eq!(error.code(), CoreErrorCode::Validation);
+
+        let too_many = vec![upload_file("f.txt", b"x"); 129];
+        let error = resolve_upload_tree("/srv/app", &too_many).unwrap_err();
+        assert_eq!(error.code(), CoreErrorCode::Validation);
+
+        let too_large = vec![upload_file("big.bin", &vec![0u8; 16 * 1024 * 1024 + 1])];
+        let error = resolve_upload_tree("/srv/app", &too_large).unwrap_err();
+        assert_eq!(error.code(), CoreErrorCode::Validation);
+
+        let split_too_large = vec![
+            upload_file("a.bin", &vec![0u8; 10 * 1024 * 1024]),
+            upload_file("b.bin", &vec![0u8; 7 * 1024 * 1024]),
+        ];
+        let error = resolve_upload_tree("/srv/app", &split_too_large).unwrap_err();
+        assert_eq!(error.code(), CoreErrorCode::Validation);
+    }
+
+    #[test]
+    fn file_rename_rejects_non_absolute_paths_before_touching_sftp() {
+        assert!(validate_rename_paths("/etc/app.conf", "/etc/app.conf.bak").is_ok());
+        for (path, target) in [
+            ("relative.conf", "/etc/app.conf"),
+            ("/etc/app.conf", "relative.conf"),
+            ("/etc/../etc/app.conf", "/etc/app.conf"),
+        ] {
+            assert!(validate_rename_paths(path, target).is_err());
+        }
     }
 
     #[tokio::test]
