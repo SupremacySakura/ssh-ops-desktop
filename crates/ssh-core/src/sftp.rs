@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
 
@@ -29,37 +29,38 @@ impl RemotePath {
         if value.is_empty() || value.contains('\0') || value.chars().any(char::is_control) {
             return Err(validation("remote path contains invalid characters"));
         }
-        let path = Path::new(value);
-        if !path.is_absolute() {
+        if !value.starts_with('/') {
             return Err(validation("remote path must be absolute"));
         }
-        let mut normalized = PathBuf::new();
-        for component in path.components() {
-            match component {
-                Component::RootDir => normalized.push(Path::new("/")),
-                Component::Normal(value) => normalized.push(value),
-                Component::CurDir => {}
-                Component::ParentDir | Component::Prefix(_) => {
-                    return Err(validation("remote path must not escape its root"));
+        // 远程路径是 POSIX 语义，不能用宿主平台 Path 解析：Windows 上 "/etc" 不是绝对路径，
+        // 且 PathBuf 归一化后分隔符会变成反斜杠。这里按 '/' 分段手动归一化。
+        let mut normalized = String::from('/');
+        let mut segments = 0usize;
+        for segment in value.split('/') {
+            match segment {
+                "" | "." => {} // 连续斜杠与当前目录段
+                ".." => return Err(validation("remote path must not escape its root")),
+                _ => {
+                    normalized.push_str(segment);
+                    normalized.push('/');
+                    segments += 1;
                 }
             }
         }
-        if normalized == Path::new("/") {
+        if segments == 0 {
             return Err(validation("remote path must identify a resource"));
         }
-        let normalized = normalized
-            .to_str()
-            .ok_or_else(|| validation("remote path must be valid UTF-8"))?;
-        Ok(Self(normalized.to_owned()))
+        normalized.pop();
+        Ok(Self(normalized))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    fn relative(&self) -> &Path {
-        Path::new(&self.0)
-            .strip_prefix("/")
+    fn relative(&self) -> &str {
+        self.0
+            .strip_prefix('/')
             .expect("validated remote paths are absolute")
     }
 }

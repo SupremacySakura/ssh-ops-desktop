@@ -104,10 +104,10 @@ fn upload_is_atomic_and_resume_requires_matching_source_metadata() {
 #[test]
 fn upload_refuses_symlink_escape_and_explicit_conflicts() {
     let remote = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let _outside = tempfile::tempdir().unwrap();
     fs::create_dir_all(remote.path().join("srv")).unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::symlink(outside.path(), remote.path().join("srv/escape")).unwrap();
+    std::os::unix::fs::symlink(_outside.path(), remote.path().join("srv/escape")).unwrap();
 
     let local = tempfile::tempdir().unwrap();
     let source = local.path().join("payload");
@@ -124,7 +124,7 @@ fn upload_refuses_symlink_escape_and_explicit_conflicts() {
             )
             .expect_err("symlink escape must fail");
         assert_eq!(error.error.code(), CoreErrorCode::Validation);
-        assert!(!outside.path().join("payload").exists());
+        assert!(!_outside.path().join("payload").exists());
     }
 
     fs::write(remote.path().join("srv/existing"), b"old").unwrap();

@@ -1,4 +1,6 @@
-use opspilot_domain::{CoreErrorCode, Id};
+#[cfg(unix)]
+use opspilot_domain::CoreErrorCode;
+use opspilot_domain::Id;
 use opspilot_secrets::{MemorySecretStore, SecretKind, SecretStore, SecretValue};
 use opspilot_ssh_core::{AuthRequest, AuthResolver, ResolvedAuth};
 
