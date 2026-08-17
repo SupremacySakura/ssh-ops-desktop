@@ -299,7 +299,10 @@ fn validate_health_url(value: &str) -> Result<String, CoreError> {
 
 fn sibling_path(live: &str, name: &str) -> String {
     // 远端路径是 POSIX 语义，用字符串取父目录，避免宿主平台 Path 在 Windows 上输出反斜杠。
-    let parent = live.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("/");
+    let parent = live
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("/");
     if parent.is_empty() {
         format!("/{name}")
     } else {

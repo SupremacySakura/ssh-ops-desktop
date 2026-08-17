@@ -363,10 +363,34 @@ fn available_name(parent: &Path, file_name: &str) -> Result<PathBuf, CoreError> 
     ))
 }
 
+#[cfg(not(windows))]
 fn sync_directory(path: &Path) -> Result<(), CoreError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| io_error("sync upload directory", error))
+}
+
+#[cfg(windows)]
+fn sync_directory(_path: &Path) -> Result<(), CoreError> {
+    // Windows does not support syncing directory handles through File::sync_all. The upload
+    // payload is synced before the atomic rename; the directory durability barrier is Unix-only.
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use std::fs;
+
+    use super::sync_directory;
+
+    #[test]
+    fn upload_directory_sync_is_not_required_on_windows() {
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let parent = temporary.path().join("releases");
+        fs::create_dir(&parent).expect("create upload directory");
+
+        sync_directory(&parent).expect("Windows upload completion must not sync directories");
+    }
 }
 
 fn failure(error: CoreError) -> TransferFailure {

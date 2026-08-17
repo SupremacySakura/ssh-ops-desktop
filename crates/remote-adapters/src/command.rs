@@ -58,9 +58,7 @@ impl RemoteCommand {
     pub fn cwd(mut self, value: &str) -> Result<Self, CoreError> {
         let value = validate_text(value, "remote working directory")?;
         // 远端路径是 POSIX 语义：不能用宿主平台 Path 校验（Windows 上 "/srv/app" 不是绝对路径）。
-        if !value.starts_with('/')
-            || value.split('/').any(|segment| segment == "..")
-        {
+        if !value.starts_with('/') || value.split('/').any(|segment| segment == "..") {
             return Err(validation(
                 "remote working directory must be a safe absolute path",
             ));
