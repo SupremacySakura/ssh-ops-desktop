@@ -1,5 +1,3 @@
-use std::path::{Component, Path};
-
 use opspilot_domain::{CoreError, CoreErrorCode, Id};
 use opspilot_ssh_core::ConnectionHandle;
 use serde::{Deserialize, Serialize};
@@ -15,14 +13,12 @@ pub struct NginxPath(String);
 impl NginxPath {
     pub fn try_new(value: &str) -> Result<Self, CoreError> {
         let value = value.trim();
-        let path = Path::new(value);
+        // 远端路径是 POSIX 语义：不能用宿主平台 Path 校验（Windows 上 "/etc/nginx" 不是绝对路径）。
         if value.is_empty()
             || value.len() > 4096
             || value.chars().any(char::is_control)
-            || !path.is_absolute()
-            || path
-                .components()
-                .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+            || !value.starts_with('/')
+            || value.split('/').any(|segment| segment == "..")
         {
             return Err(validation("Nginx path must be a safe absolute path"));
         }
@@ -302,12 +298,13 @@ fn validate_health_url(value: &str) -> Result<String, CoreError> {
 }
 
 fn sibling_path(live: &str, name: &str) -> String {
-    Path::new(live)
-        .parent()
-        .unwrap_or(Path::new("/"))
-        .join(name)
-        .to_string_lossy()
-        .into_owned()
+    // 远端路径是 POSIX 语义，用字符串取父目录，避免宿主平台 Path 在 Windows 上输出反斜杠。
+    let parent = live.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("/");
+    if parent.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("{parent}/{name}")
+    }
 }
 
 fn success(

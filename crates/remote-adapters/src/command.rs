@@ -1,7 +1,4 @@
-use std::{
-    path::{Component, Path},
-    time::Duration,
-};
+use std::time::Duration;
 
 use opspilot_domain::{CoreError, CoreErrorCode};
 use opspilot_secrets::SecretStore;
@@ -15,11 +12,10 @@ pub struct ValidatedProgram(String);
 impl ValidatedProgram {
     pub fn try_new(value: &str) -> Result<Self, CoreError> {
         let value = validate_text(value, "remote program")?;
+        // 远端路径是 POSIX 语义，按 '/' 分段检查，避免宿主平台 Path 的差异（Windows 的 UNC/Prefix）。
         if !value.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '/' | '+' | '-')
-        }) || Path::new(&value)
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+        }) || value.split('/').any(|segment| segment == "..")
         {
             return Err(validation("remote program contains unsupported characters"));
         }
@@ -61,11 +57,9 @@ impl RemoteCommand {
 
     pub fn cwd(mut self, value: &str) -> Result<Self, CoreError> {
         let value = validate_text(value, "remote working directory")?;
-        let path = Path::new(&value);
-        if !path.is_absolute()
-            || path
-                .components()
-                .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+        // 远端路径是 POSIX 语义：不能用宿主平台 Path 校验（Windows 上 "/srv/app" 不是绝对路径）。
+        if !value.starts_with('/')
+            || value.split('/').any(|segment| segment == "..")
         {
             return Err(validation(
                 "remote working directory must be a safe absolute path",

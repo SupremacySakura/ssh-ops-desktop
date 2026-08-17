@@ -1,5 +1,3 @@
-use std::path::{Component, Path};
-
 use serde::{Deserialize, Serialize};
 
 use crate::{CoreError, CoreErrorCode, Id};
@@ -31,13 +29,11 @@ pub struct ProjectRoot(String);
 impl ProjectRoot {
     pub fn try_new(value: &str) -> Result<Self, CoreError> {
         let value = value.trim();
-        let path = Path::new(value);
+        // 远端路径是 POSIX 语义：不能用宿主平台 Path 校验（Windows 上 "/srv/app" 不是绝对路径）。
         if value.is_empty()
             || value.chars().any(char::is_control)
-            || !path.is_absolute()
-            || path
-                .components()
-                .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+            || !value.starts_with('/')
+            || value.split('/').any(|segment| segment == "..")
         {
             return Err(validation(
                 "project root must be a safe absolute remote path",
