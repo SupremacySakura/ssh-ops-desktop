@@ -8,14 +8,15 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workspaceRoot = resolve(packageRoot, '../..');
 const outputDirectory = resolve(workspaceRoot, 'src-tauri/resources/agent-runtime');
 const outputFile = resolve(outputDirectory, 'main.mjs');
-// esbuild 声明为本包 devDependency，pnpm 会在本包 node_modules/.bin 下创建入口；
-// Windows 下可执行入口是 .cmd，直接 spawn 无扩展名文件会 ENOENT。
-const esbuild = process.platform === 'win32'
-  ? resolve(packageRoot, 'node_modules/.bin/esbuild.cmd')
-  : resolve(packageRoot, 'node_modules/.bin/esbuild');
+// esbuild 声明为本包 devDependency；用 node 直接执行其 JS bin，避免依赖 .bin 符号链接，
+// 也规避 Windows 下 spawn .cmd 报 EINVAL 的问题（node 跨平台执行 JS 脚本）。
+const esbuildBin = resolve(
+  dirname(createRequire(import.meta.url).resolve('esbuild/package.json')),
+  'bin/esbuild',
+);
 
 mkdirSync(outputDirectory, { recursive: true });
-execFileSync(esbuild, [
+execFileSync(process.execPath, [esbuildBin,
   'src/main.ts',
   '--bundle',
   '--platform=node',
@@ -24,7 +25,6 @@ execFileSync(esbuild, [
   "--banner:js=import{createRequire as __opspilotCreateRequire}from'node:module';const require=__opspilotCreateRequire(import.meta.url);",
   `--outfile=${outputFile}`,
 ], { cwd: packageRoot, stdio: 'inherit' });
-
 const nativePackage = nativePackageForHost();
 const packageRequire = createRequire(import.meta.url);
 const mastraPackage = packageRequire.resolve('@mastra/libsql/package.json');

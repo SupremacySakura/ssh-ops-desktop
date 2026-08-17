@@ -39,7 +39,10 @@ describe('OpsPilot native Tauri shell', () => {
     expect(await $('body').getText()).toContain('Core 已就绪');
 
     await $('button[title="终端"]').click();
-    await expect($('h1')).toHaveText('远程终端');
+    // keep-alive 下已访问页面保持挂载（隐藏），必须定位目标页面的标题而非第一个 h1。
+    const terminalHeading = await $('.terminal-page h1');
+    await terminalHeading.waitForDisplayed();
+    await expect(terminalHeading).toHaveText('远程终端');
   });
 
   it('allows the server catalog IPC surface through the main window ACL', async () => {
