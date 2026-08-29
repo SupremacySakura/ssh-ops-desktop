@@ -32,6 +32,7 @@ export function CodeEditor({ 'aria-label': ariaLabel, language = 'plaintext', on
   useEffect(() => {
     const element = host.current;
     if (!element) return;
+    const currentTheme = document.documentElement.dataset.theme === 'dark' ? 'vs-dark' : 'vs';
     const editor = monaco.editor.create(element, {
       ariaLabel,
       automaticLayout: true,
@@ -40,14 +41,20 @@ export function CodeEditor({ 'aria-label': ariaLabel, language = 'plaintext', on
       language,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
-      theme: 'vs',
+      theme: currentTheme,
       value,
       wordWrap: 'on',
     });
     const subscription = editor.onDidChangeModelContent(() => onChangeRef.current(editor.getValue()));
     editorRef.current = editor;
+    /* 浅色/暗色主题跟随 */
+    const themeObserver = typeof MutationObserver === 'undefined' ? undefined : new MutationObserver(() => {
+      monaco.editor.setTheme(document.documentElement.dataset.theme === 'dark' ? 'vs-dark' : 'vs');
+    });
+    themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     return () => {
       subscription.dispose();
+      themeObserver?.disconnect();
       editor.dispose();
       editorRef.current = undefined;
     };

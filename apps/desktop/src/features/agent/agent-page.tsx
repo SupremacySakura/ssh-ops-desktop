@@ -1,13 +1,10 @@
 import { useEffect, useState } from 'react';
-import type {
-  AgentRunSummary, AgentThreadSummary, AgentToolDescriptor, ApprovalProof, ApprovalRequest,
-  ModelProfileSummary, ServerSummary,
-} from '@opspilot/contracts';
+import type { AgentRunSummary, ApprovalProof, ApprovalRequest, ModelProfileSummary, ServerSummary } from '@opspilot/contracts';
 
 import type { AgentAvailability, CoreClient } from '../../api/core';
+import { Icon } from '../../app/icons';
+import { PageHeader } from '../../app/ui/layout';
 import { RiskDecisionDialog } from '../../app/risk-decision-dialog';
-import { PageHeader, Panel, SectionHeader } from '../../app/ui/layout';
-import { Select } from '../../app/ui/select';
 import type { ConnectedServer } from '../terminal/terminal-page';
 
 interface AgentPageProps {
@@ -19,28 +16,15 @@ interface AgentPageProps {
 }
 
 export function AgentPage({ availability, connections, core, profiles, servers }: AgentPageProps) {
-  const [catalog, setCatalog] = useState<AgentToolDescriptor[]>([]);
-  const [threads, setThreads] = useState<AgentThreadSummary[]>([]);
-  const [serverId, setServerId] = useState(servers[0]?.id ?? '');
-  const [profileId, setProfileId] = useState(profiles.find((item) => item.isDefault)?.id ?? profiles[0]?.id ?? '');
+  const serverId = servers[0]?.id ?? '';
+  const profileId = profiles.find((item) => item.isDefault)?.id ?? profiles[0]?.id ?? '';
   const [input, setInput] = useState('');
   const [run, setRun] = useState<AgentRunSummary>();
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const [approval, setApproval] = useState<ApprovalRequest>();
   const [approvalMessage, setApprovalMessage] = useState('');
-  const [busy, setBusy] = useState(false);
   const unavailable = availability?.agentAvailable !== true;
-
-  useEffect(() => {
-    let active = true;
-    void Promise.all([
-      core.agentCatalog?.().catch(() => []) ?? Promise.resolve([]),
-      core.agentThreads?.().catch(() => []) ?? Promise.resolve([]),
-    ]).then(([tools, existingThreads]) => {
-      if (active) { setCatalog(tools); setThreads(existingThreads); }
-    });
-    return () => { active = false; };
-  }, [core]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -51,24 +35,15 @@ export function AgentPage({ availability, connections, core, profiles, servers }
     return () => { active = false; unsubscribe?.(); };
   }, [core]);
 
-  useEffect(() => {
-    if (!serverId && servers[0]) setServerId(servers[0].id);
-  }, [serverId, servers]);
-  useEffect(() => {
-    if (!profileId && profiles[0]) {
-      setProfileId(profiles.find((item) => item.isDefault)?.id ?? profiles[0].id);
-    }
-  }, [profileId, profiles]);
-
   const start = async () => {
     setError('');
-    if (!serverId || !profileId || !input.trim()) {
-      setError('请选择服务器和模型，并输入目标');
+    if (!input.trim()) {
+      setError('请输入指令或问题');
       return;
     }
     const connection = connections.find((item) => item.server.id === serverId)?.connection;
-    if (!connection) {
-      setError('请先在服务器页面建立可信连接，再让 Agent 读取实时状态');
+    if (!serverId || !profileId || !connection) {
+      setError('请先在服务器页面建立可信连接');
       return;
     }
     if (!core.startAgentRun || !core.createAgentThread) {
@@ -77,14 +52,9 @@ export function AgentPage({ availability, connections, core, profiles, servers }
     }
     setBusy(true);
     try {
-      let thread = threads[0];
-      if (!thread) {
-        thread = await core.createAgentThread(input.trim().slice(0, 80));
-        setThreads([thread]);
-      }
-      setRun(await core.startAgentRun({
-        threadId: thread.id, serverId, modelProfileId: profileId, connection, input: input.trim(),
-      }));
+      const thread = await core.createAgentThread(input.trim().slice(0, 80));
+      setRun(await core.startAgentRun({ threadId: thread.id, serverId, modelProfileId: profileId, connection, input: input.trim() }));
+      setInput('');
     } catch {
       setError('Agent 运行失败；人工运维功能仍可使用');
     } finally {
@@ -110,29 +80,51 @@ export function AgentPage({ availability, connections, core, profiles, servers }
     } catch { setApprovalMessage('拒绝提交失败，请重试'); }
   };
 
-  const selectedEnvironment = servers.find((server) => server.id === serverId)?.environment ?? 'other';
+  const clear = () => { setInput(''); setRun(undefined); setError(''); };
 
-  return <div className="page-stack agent-page">
-    <PageHeader actions={<a className="button-link" href="#terminal">打开终端</a>} description="Agent 只能调用 Rust 发布的工具目录，写操作与人工操作共用同一审批门。" eyebrow="Local AI operator" title="AI Agent" />
-    {unavailable ? <div className="alert warning-alert" role="alert"><strong>AI Agent 暂不可用</strong><span>{availability?.reason ?? '正在检查本地 Sidecar。'}；人工终端、Docker 和 Nginx 功能不受影响。</span></div> : <div className="alert success-alert">Agent 已就绪</div>}
-    <div className="agent-tool-strip"><span>可用工具</span><div className="tool-chips" aria-label="Agent 工具目录">{catalog.length > 0 ? catalog.map((tool) => <span key={tool.name}>{tool.name}</span>) : <small>Core 尚未返回工具目录</small>}</div></div>
-    <div className="agent-layout">
-      <Panel aria-label="Agent 对话"><SectionHeader description="声明服务器和模型作用域" title="对话" /><div className="agent-scope">
-        <label>服务器<Select aria-label="Agent 服务器" onChange={(value) => setServerId(value)} options={[{ value: '', label: '请选择' }, ...servers.map((server) => ({ value: server.id, label: server.name }))]} value={serverId} /></label>
-        <label>模型<Select aria-label="Agent 模型" onChange={(value) => setProfileId(value)} options={[{ value: '', label: '请选择' }, ...profiles.map((profile) => ({ value: profile.id, label: profile.name }))]} value={profileId} /></label>
-      </div><textarea aria-label="Agent 输入" onChange={(event) => setInput(event.target.value)} placeholder="例如：解释这台服务器的状态，并提出安全建议" value={input} /><button className="primary" disabled={unavailable || busy} onClick={() => void start()} type="button">生成计划并运行</button>{error ? <p role="alert">{error}</p> : null}</Panel>
-      <Panel aria-label="执行计划"><SectionHeader description="Core 可审计执行步骤" title="执行计划" />{run ? <ol className="run-plan"><li><strong>读取服务器概览</strong><span>Rust Core · L0</span></li><li><strong>生成解释</strong><span>远程模型 · 最小上下文</span></li></ol> : <div className="conversation-empty">等待结构化计划</div>}</Panel>
-      <Panel aria-label="审批队列"><SectionHeader description="写操作必须人工确认" title="审批队列" />{run ? <div className="run-result"><span className="status-badge"><i />{statusLabel(run.status)}</span><p>{run.outputSummary ?? '写操作正在等待你的审批。'}</p><small>Run {run.id}</small></div> : <div className="conversation-empty">没有待审批项</div>}</Panel>
+  return (
+    <div className="page-stack agent-page">
+      <PageHeader
+        actions={<button className="btn btn-secondary" onClick={clear} type="button"><Icon name="refresh" size={15} />清空对话</button>}
+        description="用自然语言运维你的服务器"
+        title="AI Agent"
+      />
+      {availability && !availability.agentAvailable ? (
+        <div className="alert warning-alert" role="alert">
+          <strong>AI Agent 暂不可用</strong>
+          <span>{availability.reason ?? '本地 Sidecar 未就绪'}</span>
+        </div>
+      ) : null}
+      <div className="chat-container">
+        <div className="chat-messages">
+          {run ? (
+            <div className="chat-message">
+              <span className="chat-avatar"><Icon name="agent" size={14} /></span>
+              <div className="chat-bubble">{run.outputSummary ?? '任务已提交，等待输出…'}</div>
+            </div>
+          ) : (
+            <div className="conversation-empty">输入指令或问题，Agent 的回复会显示在这里</div>
+          )}
+        </div>
+        <div className="chat-input-area">
+          <div className="chat-input-row">
+            <input
+              aria-label="Agent 输入"
+              className="input"
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void start(); } }}
+              placeholder="输入指令或问题..."
+              type="text"
+              value={input}
+            />
+            <button aria-label="发送" className="btn btn-primary" disabled={unavailable || busy} onClick={() => void start()} type="button"><Icon name="send" size={15} /></button>
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--label-tertiary)' }}>Agent 将只在获得你确认后执行破坏性操作</div>
+          {error ? <p role="alert" style={{ color: 'var(--error)', margin: '8px 0 0' }}>{error}</p> : null}
+        </div>
+      </div>
+      {approval ? <RiskDecisionDialog environment={servers.find((server) => server.id === serverId)?.environment ?? 'other'} request={approval} onApprove={(proof) => void approve(proof)} onReject={() => void reject()} /> : null}
+      {approvalMessage ? <div className="alert success-alert" role="status">{approvalMessage}</div> : null}
     </div>
-    <Panel className="agent-trace-panel"><SectionHeader description="仅展示本地 Core 返回的运行记录" title="Trace" /><div className="table-wrap"><table aria-label="Agent Trace"><thead><tr><th>Run</th><th>输入</th><th>输出</th><th>状态</th><th>更新时间</th></tr></thead><tbody>{run ? <tr><td><strong>{run.id}</strong></td><td>{run.inputSummary}</td><td title={run.outputSummary ?? undefined}>{run.outputSummary ? '已记录输出' : '暂无输出'}</td><td>{run.status}</td><td>{run.updatedAt}</td></tr> : <tr><td className="empty-cell" colSpan={5}>尚无 Agent 运行记录</td></tr>}</tbody></table></div></Panel>
-    {approval ? <RiskDecisionDialog environment={selectedEnvironment} request={approval} onApprove={(proof) => void approve(proof)} onReject={() => void reject()} /> : null}
-    {approvalMessage ? <div className="alert success-alert" role="status">{approvalMessage}</div> : null}
-  </div>;
-}
-
-function statusLabel(status: AgentRunSummary['status']): string {
-  if (status === 'succeeded') return '已完成';
-  if (status === 'awaiting_approval') return '等待审批';
-  if (status === 'failed') return '失败';
-  return '运行中';
+  );
 }

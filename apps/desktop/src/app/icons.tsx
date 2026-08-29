@@ -20,7 +20,25 @@ export type IconName =
   | 'server'
   | 'settings'
   | 'terminal'
-  | 'user';
+  | 'user'
+  | 'sun'
+  | 'moon'
+  | 'chevron-right'
+  | 'chevron-left'
+  | 'plus'
+  | 'check'
+  | 'upload'
+  | 'download'
+  | 'trash'
+  | 'edit'
+  | 'play'
+  | 'stop'
+  | 'copy'
+  | 'refresh'
+  | 'send'
+  | 'log-out'
+  | 'info'
+  | 'expand';
 
 const PATHS: Record<IconName, ReactNode> = {
   activity: <><path d="M3 12h4l2-6 4 12 2-6h6" /></>,
@@ -43,6 +61,24 @@ const PATHS: Record<IconName, ReactNode> = {
   settings: <><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" /></>,
   terminal: <><rect height="16" rx="2" width="18" x="3" y="4" /><path d="m7 9 3 3-3 3M12 16h5" /></>,
   user: <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>,
+  sun: <><circle cx="12" cy="12" r="5" /><path d="M12 1v3M12 20v3M1 12h3M20 12h3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M19.8 4.2l-2.1 2.1M6.3 17.7l-2.1 2.1" /></>,
+  moon: <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" />,
+  'chevron-right': <path d="m9 7 5 5-5 5" />,
+  'chevron-left': <path d="m15 7-5 5 5 5" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  check: <path d="m5 12 5 5 9-10" />,
+  upload: <><path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" /></>,
+  download: <><path d="M12 4v12M7 11l5 5 5-5" /><path d="M4 20h16" /></>,
+  trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /></>,
+  edit: <><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5Z" /></>,
+  play: <path d="M6 4v16l14-8L6 4Z" />,
+  stop: <rect height="14" rx="1" width="14" x="5" y="5" />,
+  copy: <><rect height="13" rx="1" width="13" x="9" y="9" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>,
+  refresh: <><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></>,
+  send: <><path d="M22 2 11 13" /><path d="M22 2 15 22 11 13 2 9l20-7Z" /></>,
+  'log-out': <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /></>,
+  info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></>,
+  expand: <><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></>,
 };
 
 export function Icon({ className, name, size = 18 }: {

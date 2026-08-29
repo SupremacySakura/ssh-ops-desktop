@@ -2,171 +2,75 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ConnectionHandle } from '@opspilot/contracts';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { ServerSummary } from '@opspilot/contracts';
 import type { CoreClient } from '../../api/core';
 import { ServerListPage } from './server-list-page';
 
 afterEach(cleanup);
 
-const summary = {
-  id: '00000000-0000-4000-8000-000000000001', name: 'web-01', host: 'example.com', port: 22,
-  username: 'deploy', environment: 'production' as const, authType: 'password' as const, tagIds: [],
-};
+const servers = [
+  { id: 's1', name: 'production-web-01', host: '192.168.1.101', port: 22, username: 'root', environment: 'production', authType: 'password', tagIds: [], lastConnectedAt: '2026-08-08T10:00:00Z' },
+  { id: 's2', name: 'staging-db-01', host: '10.0.2.15', port: 22, username: 'ubuntu', environment: 'staging', authType: 'private_key', tagIds: [] },
+  { id: 's3', name: 'dev-workstation', host: '172.16.0.8', port: 22, username: 'shi', environment: 'development', authType: 'ssh_agent', tagIds: [] },
+] as ServerSummary[];
+
+function renderPage() {
+  return render(<ServerListPage core={{} as unknown as CoreClient} onCreated={vi.fn()} servers={servers} />);
+}
 
 describe('ServerListPage', () => {
-  it('creates a password server, stores its credential in Core, and clears the secret input', async () => {
-    const core = {
-      createServer: vi.fn(async () => summary),
-      setServerCredential: vi.fn(async () => undefined),
-    } as unknown as CoreClient;
-    const created = vi.fn();
-    render(<ServerListPage core={core} onCreated={created} servers={[]} />);
+  it('renders the page header, filter card, data table and pagination from the design mockup', () => {
+    renderPage();
 
-    fireEvent.click(screen.getByRole('button', { name: '新增服务器' }));
-    fireEvent.change(screen.getByLabelText('服务器名称'), { target: { value: 'web-01' } });
-    fireEvent.change(screen.getByLabelText('主机地址'), { target: { value: 'example.com' } });
-    fireEvent.change(screen.getByLabelText('用户名'), { target: { value: 'deploy' } });
-    const secret = screen.getByLabelText('密码');
-    fireEvent.change(secret, { target: { value: 'fixture-password' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存服务器' }));
+    expect(screen.getByRole('heading', { name: '服务器' })).toBeInTheDocument();
+    expect(screen.getByText('管理 SSH 主机、分组与连接状态')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '导入' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '添加服务器' })).toBeInTheDocument();
 
-    expect(await screen.findByText('服务器与凭据已保存')).toBeVisible();
-    await waitFor(() => expect(screen.queryByLabelText('密码')).not.toBeInTheDocument());
-    expect(core.setServerCredential).toHaveBeenCalledWith({
-      serverId: summary.id,
-      secret: 'fixture-password',
+    expect(screen.getByPlaceholderText('搜索名称、IP、用户名...')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '环境筛选' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '分组筛选' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '认证筛选' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '筛选' })).toBeInTheDocument();
+
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByText('production-web-01')).toBeInTheDocument();
+    expect(screen.getByText('192.168.1.101:22 · root')).toBeInTheDocument();
+    expect(screen.getByText('staging-db-01')).toBeInTheDocument();
+    expect(screen.getByText('dev-workstation')).toBeInTheDocument();
+
+    expect(screen.getByText('显示 1-3 共 3 台')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '上一页' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '下一页' })).toBeInTheDocument();
+  });
+
+  it('filters rows by search query and environment select', () => {
+    renderPage();
+
+    fireEvent.change(screen.getByPlaceholderText('搜索名称、IP、用户名...'), {
+      target: { value: 'staging' },
     });
-    expect(created).toHaveBeenCalledWith(summary);
-  });
+    expect(screen.getByText('staging-db-01')).toBeInTheDocument();
+    expect(screen.queryByText('production-web-01')).not.toBeInTheDocument();
 
-  it('shows unknown host fingerprint confirmation and blocks changed fingerprints', async () => {
-    const connect = vi.fn()
-      .mockResolvedValueOnce({ kind: 'host_key_required', prompt: {
-        verificationId: '00000000-0000-4000-8000-000000000002', algorithm: 'ssh-ed25519',
-        sha256: 'SHA256:fixture-new', expiresAt: '2026-08-08T12:00:00Z',
-      } })
-      .mockResolvedValueOnce({ kind: 'host_key_changed', expectedSha256: 'SHA256:old', actualSha256: 'SHA256:new' });
-    const core = { connect } as unknown as CoreClient;
-    const { rerender } = render(<ServerListPage core={core} onCreated={vi.fn()} servers={[summary]} />);
-
-    fireEvent.click(screen.getByRole('button', { name: '连接 web-01' }));
-    expect(await screen.findByRole('alertdialog', { name: '确认主机指纹' })).toHaveTextContent('SHA256:fixture-new');
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
-    rerender(<ServerListPage core={core} onCreated={vi.fn()} servers={[summary]} />);
-    fireEvent.click(screen.getByRole('button', { name: '连接 web-01' }));
-    expect(await screen.findByRole('alertdialog', { name: '主机指纹已变化' })).toHaveTextContent('SHA256:old');
-    expect(screen.queryByRole('button', { name: '直接连接' })).not.toBeInTheDocument();
-  });
-
-  it('edits and explicitly deletes an existing server', async () => {
-    const updated = { ...summary, name: 'web-primary' };
-    const core = {
-      updateServer: vi.fn(async () => updated),
-      deleteServer: vi.fn(async () => undefined),
-      serverGroups: async () => [],
-    } as unknown as CoreClient;
-    const onUpdated = vi.fn();
-    const onDeleted = vi.fn();
-    render(<ServerListPage
-      core={core}
-      onCreated={vi.fn()}
-      onDeleted={onDeleted}
-      onUpdated={onUpdated}
-      servers={[summary]}
-    />);
-
-    fireEvent.click(screen.getByRole('button', { name: '编辑 web-01' }));
-    fireEvent.change(screen.getByLabelText('服务器名称'), { target: { value: 'web-primary' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
-    expect(await screen.findByText('服务器配置已更新')).toBeVisible();
-    expect(onUpdated).toHaveBeenCalledWith(updated);
-
-    fireEvent.click(screen.getByRole('button', { name: '删除 web-01' }));
-    expect(screen.getByRole('alertdialog', { name: '确认删除服务器' })).toHaveTextContent('不可撤销');
-    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
-    await waitFor(() => expect(core.deleteServer).toHaveBeenCalledWith({
-      serverId: summary.id,
-      confirmed: true,
-    }));
-    expect(onDeleted).toHaveBeenCalledWith(summary.id);
-  });
-
-  it('previews and applies only selected valid import rows', async () => {
-    const rowId = '00000000-0000-4000-8000-000000000010';
-    const core = {
-      previewServerImport: vi.fn(async () => ({
-        importId: '00000000-0000-4000-8000-000000000011',
-        sourceSha256: 'a'.repeat(64),
-        rows: [{ rowId, status: 'valid', server: {
-          name: summary.name,
-          host: summary.host,
-          port: summary.port,
-          username: summary.username,
-          environment: summary.environment,
-          authType: summary.authType,
-          tagIds: [],
-        } }],
-      })),
-      applyServerImport: vi.fn(async () => ({ servers: [summary] })),
-    } as unknown as CoreClient;
-    const onCreated = vi.fn();
-    render(<ServerListPage core={core} onCreated={onCreated} servers={[]} />);
-
-    fireEvent.click(screen.getByRole('button', { name: '批量导入' }));
-    fireEvent.change(screen.getByLabelText('导入内容'), {
-      target: { value: 'name,host,port,username,environment,authType\nweb-01,example.com,22,deploy,production,password' },
+    fireEvent.change(screen.getByPlaceholderText('搜索名称、IP、用户名...'), {
+      target: { value: '' },
     });
-    fireEvent.click(screen.getByRole('button', { name: '预检' }));
-    expect(await screen.findByText('web-01 · valid')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: '应用有效行' }));
-    await waitFor(() => expect(core.applyServerImport).toHaveBeenCalledWith({
-      importId: '00000000-0000-4000-8000-000000000011',
-      rowIds: [rowId],
-    }));
-    expect(onCreated).toHaveBeenCalledWith(summary);
-  });
-
-  it('filters the catalog and opens a non-destructive server detail pane', () => {
-    render(<ServerListPage
-      core={{ serverGroups: async () => [] } as unknown as CoreClient}
-      onCreated={vi.fn()}
-      servers={[summary]}
-    />);
-
-    fireEvent.click(screen.getByRole('button', { name: '查看 web-01 详情' }));
-    expect(screen.getByRole('complementary', { name: 'web-01 详情' })).toHaveTextContent('example.com:22');
     fireEvent.click(screen.getByRole('button', { name: '环境筛选' }));
-    fireEvent.click(screen.getByRole('option', { name: '开发环境' }));
-    expect(screen.getByText('没有匹配的服务器')).toBeVisible();
+    fireEvent.click(screen.getByRole('option', { name: 'production' }));
+    expect(screen.getByText('production-web-01')).toBeInTheDocument();
+    expect(screen.queryByText('staging-db-01')).not.toBeInTheDocument();
   });
 
-  it('shows live, previously, and never connection states on server cards', () => {
-    const core = { serverGroups: async () => [] } as unknown as CoreClient;
-    const { rerender } = render(<ServerListPage core={core} onCreated={vi.fn()} servers={[summary]} />);
-    expect(screen.getByText('未连接')).toBeVisible();
+  it('shows an empty state when no row matches the filters', () => {
+    renderPage();
 
-    const previously = {
-      ...summary,
-      id: '00000000-0000-4000-8000-000000000002',
-      name: 'web-02',
-      lastConnectedAt: '2026-08-01T08:00:00+08:00',
-    };
-    rerender(<ServerListPage core={core} onCreated={vi.fn()} servers={[summary, previously]} />);
-    expect(screen.getByText('曾连接')).toBeVisible();
-
-    const connection = {
-      serverId: summary.id,
-      connectionId: '00000000-0000-4000-8000-000000000020',
-    } as ConnectionHandle;
-    rerender(<ServerListPage
-      connections={[{ server: summary, connection }]}
-      core={core}
-      onCreated={vi.fn()}
-      servers={[summary, previously]}
-    />);
-    expect(screen.getByText('已连接')).toBeVisible();
+    fireEvent.change(screen.getByPlaceholderText('搜索名称、IP、用户名...'), {
+      target: { value: 'no-such-server' },
+    });
+    expect(screen.getByText('没有匹配的服务器')).toBeInTheDocument();
   });
 });

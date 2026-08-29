@@ -24,7 +24,7 @@
 
   function sidebarState() {
     try { return localStorage.getItem(SIDEBAR_KEY) === 'collapsed' ? 'collapsed' : 'expanded'; }
-    catch (e) { return 'expanded'; }
+    catch { return 'expanded'; }
   }
 
   function applySidebar(state) {
@@ -54,7 +54,7 @@
     document.querySelectorAll('.sidebar-collapse-btn').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var next = root.dataset.sidebar === 'collapsed' ? 'expanded' : 'collapsed';
-        try { localStorage.setItem(SIDEBAR_KEY, next); } catch (e) { /* noop */ }
+        try { localStorage.setItem(SIDEBAR_KEY, next); } catch { /* noop */ }
         applySidebar(next);
       });
     });
@@ -179,7 +179,7 @@
       if (idx < 0 || idx >= native.options.length) return;
       if (native.options[idx].disabled) return;
       native.selectedIndex = idx;
-      try { native.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) { /* noop */ }
+      try { native.dispatchEvent(new Event('change', { bubbles: true })); } catch { /* noop */ }
       updateSelected();
       closeMenu(true);
     }

@@ -11,13 +11,13 @@ export interface PageHeaderProps {
 
 export function PageHeader({ actions, description, eyebrow, title }: PageHeaderProps) {
   return (
-    <header className="ui-page-header">
+    <header className="page-header">
       <div>
         {eyebrow ? <p className="ui-eyebrow">{eyebrow}</p> : null}
         <h1>{title}</h1>
         <p className="ui-page-description">{description}</p>
       </div>
-      {actions ? <div className="ui-page-actions">{actions}</div> : null}
+      {actions ? <div className="page-actions">{actions}</div> : null}
     </header>
   );
 }

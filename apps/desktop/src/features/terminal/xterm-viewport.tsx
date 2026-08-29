@@ -2,6 +2,13 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { useEffect, useRef } from 'react';
 
+const LIGHT_TERMINAL_THEME = { background: '#16161A', foreground: '#F2F2F7' };
+const DARK_TERMINAL_THEME = { background: '#0B0B0D', foreground: '#E8E8ED' };
+
+function currentTerminalTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME;
+}
+
 interface XtermViewportProps {
   content: string;
   onInput(value: string): void;
@@ -27,7 +34,7 @@ export function XtermViewport({ content, onInput, onResize, sessionId }: XtermVi
       fontFamily: 'SFMono-Regular, Consolas, monospace',
       fontSize: 13,
       scrollback: 10_000,
-      theme: { background: '#0b1120', foreground: '#c8d4e7' },
+      theme: currentTerminalTheme(),
     });
     const fit = new FitAddon();
     nextTerminal.loadAddon(fit);
@@ -48,8 +55,14 @@ export function XtermViewport({ content, onInput, onResize, sessionId }: XtermVi
     fitAndReport();
     const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(fitAndReport);
     observer?.observe(element);
+    /* 跟随浅色/暗色主题 */
+    const themeObserver = typeof MutationObserver === 'undefined' ? undefined : new MutationObserver(() => {
+      if (nextTerminal.options) nextTerminal.options.theme = currentTerminalTheme();
+    });
+    themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     return () => {
       observer?.disconnect();
+      themeObserver?.disconnect();
       inputSubscription.dispose();
       nextTerminal.dispose();
       terminal.current = null;

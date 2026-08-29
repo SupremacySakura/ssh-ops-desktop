@@ -1,8 +1,9 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import type { ModelProfileSummary, ServerSummary } from '@opspilot/contracts';
 
 import type { AgentAvailability, CoreClient, CoreHealth } from './api/core';
 import { AppShell, type WorkspaceRoute } from './app/app-shell';
+import { ThemeProvider } from './app/theme';
 import { DashboardPage } from './features/dashboard/dashboard-page';
 import { AgentPage } from './features/agent/agent-page';
 import { ServerListPage } from './features/servers/server-list-page';
@@ -42,7 +43,6 @@ export default function App({ core }: AppProps) {
   const [pendingTerminal, setPendingTerminal] = useState<PendingTerminalSession>();
   const [route, setRoute] = useState<WorkspaceRoute>(initialRoute);
   const [visited, setVisited] = useState<ReadonlySet<WorkspaceRoute>>(() => new Set([initialRoute()]));
-  const [environment, setEnvironment] = useState('all');
 
   useEffect(() => {
     setVisited((current) => current.has(route) ? current : new Set(current).add(route));
@@ -71,19 +71,16 @@ export default function App({ core }: AppProps) {
     return () => { active = false; };
   }, [core]);
 
-  const visibleServers = useMemo(() => environment === 'all'
-    ? servers : servers.filter((server) => server.environment === environment), [environment, servers]);
+  const visibleServers = servers;
 
   if (healthState.status === 'loading') return <main className="boot-state"><span className="brand-mark">O</span><p>正在检查 Core</p></main>;
   if (healthState.status === 'error') return <main className="boot-state error"><span className="brand-mark">!</span><p role="alert">无法读取 Core 状态</p><small>请重新启动 OpsPilot；不会尝试执行任何远端操作。</small></main>;
 
   const ready = healthState.health.databaseReady && healthState.health.secretStoreReady;
   const navigate = (next: WorkspaceRoute) => { window.location.hash = next; setRoute(next); };
-  return <AppShell
+  return <ThemeProvider><AppShell
     coreReady={ready}
     coreVersion={healthState.health.version}
-    environment={environment}
-    onEnvironmentChange={setEnvironment}
     onNavigate={navigate}
     route={route}
   >
@@ -94,7 +91,7 @@ export default function App({ core }: AppProps) {
       core={core}
       onAddServer={() => navigate('servers')}
       onOpenAgent={() => navigate('agent')}
-      onOpenTerminal={() => navigate('terminal')}
+      
       servers={visibleServers}
     /></KeepAlivePage> : null}
     {visited.has('servers') ? <KeepAlivePage active={route === 'servers'}><ServerListPage
@@ -124,5 +121,5 @@ export default function App({ core }: AppProps) {
     {visited.has('nginx') ? <KeepAlivePage active={route === 'nginx'}><NginxPage connections={connections} core={core} /></KeepAlivePage> : null}
     {visited.has('tasks') ? <KeepAlivePage active={route === 'tasks'}><TasksPage core={core} /></KeepAlivePage> : null}
     {visited.has('settings') ? <KeepAlivePage active={route === 'settings'}><SettingsPage core={core} /></KeepAlivePage> : null}
-  </AppShell>;
+  </AppShell></ThemeProvider>;
 }

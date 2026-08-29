@@ -2,35 +2,52 @@ import { useEffect, useState } from 'react';
 import { ModelProfileInputSchema, type ModelProfileSummary } from '@opspilot/contracts';
 
 import type { CoreClient } from '../../api/core';
-import { PageHeader, Panel, SectionHeader } from '../../app/ui/layout';
+import { Select } from '../../app/ui/select';
 
-export function ModelSettings({ core }: { core: CoreClient }) {
+const THEME_OPTIONS = [
+  { value: 'system', label: '跟随系统' },
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
+] as const;
+
+type ThemeOption = (typeof THEME_OPTIONS)[number]['value'];
+
+export function SettingsPage({ core }: { core: CoreClient }) {
   const [profiles, setProfiles] = useState<ModelProfileSummary[]>([]);
-  const [name, setName] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [model, setModel] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [message, setMessage] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [themeOption, setThemeOption] = useState<ThemeOption>('system');
+  const [strictHostKey, setStrictHostKey] = useState(true);
+  const [autoRollback, setAutoRollback] = useState(true);
+  const [autoConfirm, setAutoConfirm] = useState(false);
+  const [sidebarMotion, setSidebarMotion] = useState(true);
+  const [reduceTransparency, setReduceTransparency] = useState(false);
 
   useEffect(() => {
     let active = true;
     void (core.modelProfiles?.() ?? Promise.resolve([]))
-      .then((items) => { if (active) setProfiles(items); })
+      .then((items) => {
+        if (!active) return;
+        setProfiles(items);
+        const preferred = items.find((item) => item.isDefault) ?? items[0];
+        if (preferred) setSelectedModel(preferred.model);
+      })
       .catch(() => { if (active) setMessage('无法读取模型配置'); });
     return () => { active = false; };
   }, [core]);
 
   const save = async () => {
     setMessage('');
+    const defaultProfile = profiles.find((item) => item.isDefault) ?? profiles[0];
     const parsed = ModelProfileInputSchema.safeParse({
-      name,
+      name: defaultProfile?.name ?? '默认模型',
       provider: 'openai-compatible',
-      baseUrl,
-      model,
-      timeoutMs: 30_000,
+      baseUrl: defaultProfile?.baseUrl ?? 'https://models.example.com/v1',
+      model: selectedModel,
+      timeoutMs: defaultProfile?.timeoutMs ?? 30_000,
       ...(apiKey ? { apiKey } : {}),
-      isDefault: profiles.length === 0,
+      isDefault: true,
     });
     if (!parsed.success) {
       setMessage(parsed.error.issues[0]?.message ?? '配置无效');
@@ -40,55 +57,131 @@ export function ModelSettings({ core }: { core: CoreClient }) {
       setMessage('当前 Core 不支持保存模型配置');
       return;
     }
-    setBusy(true);
     try {
       const saved = await core.saveModelProfile(parsed.data);
       setProfiles((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
       setApiKey('');
-      setMessage('模型配置已安全保存');
+      setMessage('设置已保存');
     } catch {
       setMessage('模型配置保存失败');
-    } finally {
-      setBusy(false);
     }
   };
 
-  const test = async (profile: ModelProfileSummary) => {
-    if (!core.testModelProfile) return;
-    setMessage('正在测试模型连接…');
-    try {
-      await core.testModelProfile(profile.id);
-      setMessage('模型连接成功');
-    } catch {
-      setMessage('模型连接失败，请检查地址、模型和凭据');
-    }
-  };
+  return <>
+    <div className="page-header">
+      <div>
+        <h1>设置</h1>
+        <p>模型、账户与系统偏好</p>
+      </div>
+      <div className="page-actions">
+        <button className="btn btn-primary" onClick={() => void save()} type="button">保存更改</button>
+      </div>
+    </div>
 
-  return <div className="settings-layout">
-    <Panel aria-label="模型配置" className="model-form">
-      <SectionHeader actions={<span className="provider-badge">OpenAI-compatible</span>} description="请求只发送到明确配置的服务地址" title="模型配置" />
-      <div className="credential-notice"><strong>凭据隔离</strong><p>API Key 保存进系统凭据库，保存成功后立即从页面状态清除。</p></div>
-      <label>配置名称<input aria-label="配置名称" maxLength={128} onChange={(event) => setName(event.target.value)} value={name} /></label>
-      <label>Base URL<input aria-label="Base URL" inputMode="url" onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://models.example.com/v1" value={baseUrl} /></label>
-      <label>Model<input aria-label="Model" maxLength={256} onChange={(event) => setModel(event.target.value)} value={model} /></label>
-      <label>API Key<input aria-label="API Key" autoComplete="new-password" onChange={(event) => setApiKey(event.target.value)} type="password" value={apiKey} /></label>
-      <button className="primary" disabled={busy} onClick={() => void save()} type="button">保存模型配置</button>
-      {message ? <p className="form-message" role="status">{message}</p> : null}
-    </Panel>
-    <Panel aria-label="已保存模型" className="saved-models-panel">
-      <SectionHeader count={profiles.length} description="仅显示非敏感配置摘要" title="已保存模型" />
-      {profiles.length === 0 ? <div className="conversation-empty">尚未配置模型</div> : <ul className="profile-list">{profiles.map((profile) => <li key={profile.id}>
-        <div><strong>{profile.name}</strong><small>{profile.baseUrl} · {profile.model}</small></div>
-        <span className="status-badge"><i />{profile.hasApiKey ? '已配置 API Key' : '无需 API Key'}</span>
-        <button onClick={() => void test(profile)} type="button">测试连接</button>
-      </li>)}</ul>}
-    </Panel>
-  </div>;
-}
+    {message ? <div className="alert success-alert" role="status">{message}</div> : null}
 
-export function SettingsPage({ core }: { core: CoreClient }) {
-  return <div className="page-stack">
-    <PageHeader description="模型凭据存入系统凭据库，页面只显示是否已配置。" eyebrow="Preferences" title="设置" />
-    <ModelSettings core={core} />
-  </div>;
+    <div className="settings-section">
+      <div className="card settings-group">
+        <div className="card-header">
+          <div>
+            <h3 className="card-title">模型配置</h3>
+            <div className="card-subtitle">选择 AI Agent 使用的推理模型</div>
+          </div>
+        </div>
+        <div className="card-body">
+          <div className="form-group">
+            <label className="form-label">默认模型</label>
+            <Select
+              aria-label="默认模型"
+              onChange={(value) => setSelectedModel(value)}
+              options={profiles.map((profile) => ({ value: profile.model, label: `${profile.name} · ${profile.model}` }))}
+              placeholder={profiles.length === 0 ? '尚未配置模型' : '请选择模型'}
+              value={selectedModel}
+            />
+          </div>
+          <div className="form-group mb-0">
+            <label className="form-label">API Key</label>
+            <input aria-label="API Key" autoComplete="new-password" className="input" onChange={(event) => setApiKey(event.target.value)} placeholder="sk-••••••••••••••••" type="password" value={apiKey} />
+            <div className="form-hint">本地加密存储，不会上传到服务器</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card settings-group">
+        <div className="card-header">
+          <div>
+            <h3 className="card-title">SSH 偏好</h3>
+            <div className="card-subtitle">默认终端与连接行为</div>
+          </div>
+        </div>
+        <div className="card-body">
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">严格主机密钥检查</div>
+              <div className="settings-row-desc">首次连接时验证主机指纹</div>
+            </div>
+            <div className={strictHostKey ? 'toggle active' : 'toggle'} onClick={() => setStrictHostKey((value) => !value)} />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">任务失败后自动回滚</div>
+              <div className="settings-row-desc">部署类任务失败时尝试恢复上一个版本</div>
+            </div>
+            <div className={autoRollback ? 'toggle active' : 'toggle'} onClick={() => setAutoRollback((value) => !value)} />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">Agent 自动确认低风险命令</div>
+              <div className="settings-row-desc">如 ls、cat、ps 等只读命令无需手动确认</div>
+            </div>
+            <div className={autoConfirm ? 'toggle active' : 'toggle'} onClick={() => setAutoConfirm((value) => !value)} />
+          </div>
+        </div>
+      </div>
+
+      <div className="card settings-group">
+        <div className="card-header">
+          <div>
+            <h3 className="card-title">外观</h3>
+            <div className="card-subtitle">界面显示与动画</div>
+          </div>
+        </div>
+        <div className="card-body">
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">外观模式</div>
+              <div className="settings-row-desc">跟随系统，或手动切换浅色 / 深色主题</div>
+            </div>
+            <div className="tabs theme-segment" role="radiogroup" aria-label="外观模式">
+              {THEME_OPTIONS.map((option) => (
+                <button
+                  aria-checked={themeOption === option.value}
+                  className={themeOption === option.value ? 'tab active' : 'tab'}
+                  data-theme-option={option.value}
+                  key={option.value}
+                  onClick={() => setThemeOption(option.value)}
+                  role="radio"
+                  type="button"
+                >{option.label}</button>
+              ))}
+            </div>
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">侧边栏动画</div>
+              <div className="settings-row-desc">展开/收起时使用弹簧动画</div>
+            </div>
+            <div className={sidebarMotion ? 'toggle active' : 'toggle'} onClick={() => setSidebarMotion((value) => !value)} />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">减少透明度</div>
+              <div className="settings-row-desc">禁用毛玻璃效果以提升可读性</div>
+            </div>
+            <div className={reduceTransparency ? 'toggle active' : 'toggle'} data-action="reduce-transparency" onClick={() => setReduceTransparency((value) => !value)} />
+          </div>
+        </div>
+      </div>
+    </div>
+  </>;
 }

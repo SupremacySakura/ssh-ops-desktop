@@ -18,7 +18,7 @@
     try {
       var v = localStorage.getItem(STORAGE_KEY);
       return v === 'light' || v === 'dark' ? v : null;
-    } catch (e) { return null; }
+    } catch { return null; }
   }
 
   function systemTheme() { return mq.matches ? 'dark' : 'light'; }
@@ -31,7 +31,7 @@
     try {
       var v = localStorage.getItem(STORAGE_KEY);
       return v === 'light' || v === 'dark' ? v : 'system';
-    } catch (e) { return 'system'; }
+    } catch { return 'system'; }
   }
 
   function syncUI(theme) {
@@ -54,7 +54,7 @@
 
   function apply(theme) {
     root.dataset.theme = theme;
-    try { root.style.colorScheme = theme; } catch (e) { /* noop */ }
+    try { root.style.colorScheme = theme; } catch { /* noop */ }
     syncUI(theme);
   }
 
@@ -67,7 +67,7 @@
     if (!btn) return;
     btn.addEventListener('click', function () {
       var next = resolve() === 'dark' ? 'light' : 'dark';
-      try { localStorage.setItem(STORAGE_KEY, next); } catch (e) { /* noop */ }
+      try { localStorage.setItem(STORAGE_KEY, next); } catch { /* noop */ }
       apply(next);
     });
   }
@@ -80,7 +80,7 @@
         try {
           if (mode === 'system') localStorage.removeItem(STORAGE_KEY);
           else localStorage.setItem(STORAGE_KEY, mode);
-        } catch (e) { /* noop */ }
+        } catch { /* noop */ }
         apply(resolve());
       });
     });
@@ -127,7 +127,7 @@
     mq.addEventListener('change', function () {
       if (!readSaved()) apply(systemTheme());
     });
-  } catch (e) {
+  } catch {
     if (mq.addListener) mq.addListener(function () {
       if (!readSaved()) apply(systemTheme());
     });

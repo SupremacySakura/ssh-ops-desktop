@@ -1,28 +1,109 @@
 import { useEffect, useState } from 'react';
-import type { AuditRecord, TaskEvent } from '@opspilot/contracts';
+import type { TaskEvent } from '@opspilot/contracts';
 
 import type { CoreClient } from '../../api/core';
-import { PageHeader, Panel, SectionHeader } from '../../app/ui/layout';
+import { Icon, type IconName } from '../../app/icons';
+import { PageHeader } from '../../app/ui/layout';
 
 export function TasksPage({ core }: { core: CoreClient }) {
-  const [tab, setTab] = useState<'tasks' | 'audit'>('tasks');
+  const [tab, setTab] = useState<'running' | 'completed' | 'failed'>('running');
   const [tasks, setTasks] = useState<TaskEvent[]>([]);
-  const [audits, setAudits] = useState<AuditRecord[]>([]);
   const [message, setMessage] = useState('');
 
   const refresh = async () => {
     try {
-      const [nextTasks, nextAudits] = await Promise.all([
-        core.tasks?.(200) ?? Promise.resolve([]), core.audits?.(200) ?? Promise.resolve([]),
-      ]);
-      setTasks(nextTasks); setAudits(nextAudits); setMessage('');
-    } catch { setMessage('任务或审计记录读取失败'); }
+      const nextTasks = await (core.tasks?.(200) ?? Promise.resolve([]));
+      setTasks(nextTasks);
+      setMessage('');
+    } catch { setMessage('任务记录读取失败'); }
   };
+
   useEffect(() => { void refresh(); }, [core]);
 
-  return <div className="page-stack tasks-page"><PageHeader actions={<button onClick={() => void refresh()} type="button">刷新数据</button>} description="任务状态来自持久化事件；审计 payload 已在 Rust 写入前脱敏。" eyebrow="Activity & audit" title="任务与日志" />
-    <div aria-label="日志类型" className="segmented" role="group"><button aria-pressed={tab === 'tasks'} className={tab === 'tasks' ? 'active' : ''} onClick={() => setTab('tasks')} type="button">任务中心</button><button aria-pressed={tab === 'audit'} className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')} type="button">审计日志</button></div>
-    {message ? <div className="alert warning-alert" role="alert">{message}</div> : null}
-    {tab === 'tasks' ? <Panel className="task-table-panel"><SectionHeader count={tasks.length} description="Core 持久化任务事件" title="任务中心" /><div className="table-wrap"><table aria-label="任务与日志"><thead><tr><th>任务</th><th>状态</th><th>进度</th><th>当前步骤</th><th>错误</th><th>时间</th></tr></thead><tbody>{tasks.length === 0 ? <tr><td className="empty-cell" colSpan={6}>暂无任务</td></tr> : tasks.map((task) => <tr key={task.taskId}><td><code>{task.taskId}</code></td><td><span className={`status-badge task-status-${task.status}`}><i />{task.status}</span></td><td><div className="task-progress"><progress aria-label={`${task.taskId} 进度`} max={100} value={task.progress} /><span>{task.progress}%</span></div></td><td>{task.currentStep ?? '—'}</td><td>{task.errorCode ?? '—'}</td><td>{task.createdAt}</td></tr>)}</tbody></table></div></Panel> : <Panel className="task-table-panel"><SectionHeader count={audits.length} description="敏感字段已由 Rust Core 脱敏" title="审计日志" /><div className="table-wrap"><table aria-label="审计日志"><thead><tr><th>动作</th><th>资源</th><th>结果</th><th>脱敏详情</th><th>时间</th></tr></thead><tbody>{audits.length === 0 ? <tr><td className="empty-cell" colSpan={5}>暂无审计记录</td></tr> : audits.map((audit) => <tr key={audit.id}><td><strong>{audit.action}</strong><small>{audit.serverId ?? 'local'}</small></td><td>{audit.resourceType}</td><td><span className={`status-badge task-status-${audit.result}`}><i />{audit.result}</span></td><td><code>{JSON.stringify(audit.redactedPayload)}</code></td><td>{audit.createdAt}</td></tr>)}</tbody></table></div></Panel>}
-  </div>;
+  const visible = tasks.filter((task) => {
+    if (tab === 'running') return ['pending', 'running', 'rolling_back'].includes(task.status);
+    if (tab === 'completed') return ['succeeded', 'rolled_back'].includes(task.status);
+    return ['failed', 'rollback_failed', 'cancelled', 'interrupted'].includes(task.status);
+  });
+
+  const toneOf = (task: TaskEvent): 'success' | 'warning' | 'neutral' | 'error' => {
+    if (task.status === 'succeeded' || task.status === 'rolled_back') return 'success';
+    if (task.status === 'failed' || task.status === 'rollback_failed' || task.status === 'cancelled' || task.status === 'interrupted') return 'error';
+    if (task.status === 'rolling_back') return 'warning';
+    return 'neutral';
+  };
+
+  const labelOf = (task: TaskEvent): string => {
+    if (task.status === 'succeeded') return '成功';
+    if (task.status === 'failed' || task.status === 'rollback_failed') return '失败';
+    if (task.status === 'cancelled' || task.status === 'interrupted') return '已取消';
+    return `${task.progress}%`;
+  };
+
+  const iconOf = (task: TaskEvent): IconName => {
+    if (task.status === 'succeeded' || task.status === 'rolled_back') return 'check';
+    if (task.status === 'failed' || task.status === 'rollback_failed' || task.status === 'cancelled' || task.status === 'interrupted') return 'close';
+    return 'activity';
+  };
+
+  const latest = tasks[0];
+
+  return (
+    <div className="page-stack tasks-page">
+      <PageHeader
+        actions={<button className="btn btn-secondary" onClick={() => void refresh()} type="button"><Icon name="download" size={15} />导出日志</button>}
+        description="追踪异步任务与执行历史"
+        title="任务与日志"
+      />
+
+      {message ? <div className="alert warning-alert" role="alert">{message}</div> : null}
+
+      <div className="tabs">
+        <button className={tab === 'running' ? 'tab active' : 'tab'} onClick={() => setTab('running')} type="button">运行中</button>
+        <button className={tab === 'completed' ? 'tab active' : 'tab'} onClick={() => setTab('completed')} type="button">已完成</button>
+        <button className={tab === 'failed' ? 'tab active' : 'tab'} onClick={() => setTab('failed')} type="button">失败</button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div className="card">
+          <div className="card-header">
+            <h3 className="card-title">任务列表</h3>
+          </div>
+          <div className="card-body" style={{ padding: 0 }}>
+            {visible.length === 0
+              ? <div className="conversation-empty" style={{ padding: 16 }}>该分类下暂无任务</div>
+              : visible.map((task) => (
+                <div className="list-item" key={task.taskId}>
+                  <div className="list-item-icon"><Icon name={iconOf(task)} size={18} /></div>
+                  <div className="list-item-content">
+                    <div className="list-item-title">{task.currentStep ?? task.taskId}</div>
+                    <div className="list-item-meta">#{task.taskId.slice(0, 6)} · {task.createdAt}</div>
+                  </div>
+                  <span className={`status-tag ${toneOf(task)}`}>{labelOf(task)}</span>
+                </div>
+              ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h3 className="card-title">{latest ? `任务 #${latest.taskId.slice(0, 6)} 输出` : '任务输出'}</h3>
+            {latest ? <span className={`status-tag ${toneOf(latest)}`}>{labelOf(latest)}</span> : null}
+          </div>
+          <div className="card-body log-view">
+            <div style={{ padding: 16, minHeight: 280, fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap', color: 'var(--label-secondary)' }}>
+              {latest
+                ? [
+                    `[${latest.createdAt}] 任务 ${latest.taskId} 状态：${latest.status}`,
+                    latest.currentStep ? `[step] ${latest.currentStep}` : null,
+                    latest.errorCode ? `[error] ${latest.errorCode}` : null,
+                    `[progress] ${latest.progress}%`,
+                  ].filter(Boolean).join('\n')
+                : '暂无任务输出'}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }

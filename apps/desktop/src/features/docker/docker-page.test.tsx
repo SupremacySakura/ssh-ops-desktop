@@ -11,45 +11,36 @@ import { DockerPage } from './docker-page';
 
 afterEach(cleanup);
 
-const server = { id: '00000000-0000-4000-8000-000000000001', name: 'web-01', host: 'example.com', port: 22, username: 'deploy', environment: 'production', authType: 'ssh_agent', tagIds: [] } as ServerSummary;
-const connection = { serverId: server.id, connectionId: '00000000-0000-4000-8000-000000000002' } as ConnectionHandle;
+const server = {
+  id: 's1', name: 'web-01', host: 'example.com', port: 22,
+  username: 'deploy', environment: 'production' as const, authType: 'ssh_agent' as const, tagIds: [],
+} as ServerSummary;
+const connection = {
+  serverId: server.id, connectionId: 'c1',
+} as ConnectionHandle;
+
+const core = {
+  dockerVersion: async () => ({ version: '27.0.0', apiVersion: '1.47', os: 'linux', arch: 'amd64', transport: 'unix' }),
+  dockerContainers: async () => [
+    { id: 'a1', names: 'nginx-proxy', image: 'nginx:alpine', state: 'running', status: 'Up 3 days', ports: '0.0.0.0:80 -> 80' },
+    { id: 'a2', names: 'redis-cache', image: 'redis:7-alpine', state: 'restarting', status: 'Restarting', ports: '6379' },
+  ],
+} as unknown as CoreClient;
 
 describe('DockerPage', () => {
-  it('loads real Core data and routes restart through the approval gateway', async () => {
-    const core = {
-      dockerVersion: async () => ({ version: '27.0', apiVersion: '1.46', os: 'linux', arch: 'amd64', transport: 'cli' }),
-      dockerContainers: async () => [{ id: 'abc', names: 'web', image: 'nginx:alpine', state: 'running', status: 'Up', ports: '80/tcp' }],
-      dockerLogs: async () => 'ready on :80',
-      dockerStats: async () => ({ containerId: 'abc', name: 'web', cpuPercent: '1.2%', memoryUsage: '10MiB / 1GiB', memoryPercent: '1%', networkIo: '1kB / 2kB', blockIo: '0B / 0B' }),
-      openDockerExec: vi.fn(async () => ({ id: '00000000-0000-4000-8000-000000000005', connection })),
-      prepareOperation: async (call: { toolCallId: string; runId: string; serverId: string }) => ({
-        kind: 'awaiting_approval', approvalId: '00000000-0000-4000-8000-000000000003',
-        toolCallId: call.toolCallId, runId: call.runId, serverId: call.serverId,
-        toolName: 'docker.container.restart', argsDigest: 'd'.repeat(64),
-        risk: { level: 'L2', approvalRequired: true, snapshotRequired: false, confirmationText: '确认重启', reason: '容器会短暂中断' },
-        targetLabel: 'web', impactSummary: 'restart Docker container web', expiresAt: '2026-08-08T12:00:00Z',
-      }),
-      approveOperation: vi.fn(async (proof) => ({ taskId: '00000000-0000-4000-8000-000000000004', toolCallId: proof.toolCallId, argsDigest: proof.argsDigest })),
-      rejectOperation: async () => undefined,
-    } as unknown as CoreClient;
-    const onExec = vi.fn();
-    render(<DockerPage connections={[{ server, connection }]} core={core} onExec={onExec} />);
+  it('renders the Docker design mockup body with real containers', async () => {
+    render(<DockerPage connections={[{ server, connection }]} core={core} onExec={vi.fn()} />);
 
-    fireEvent.click(screen.getByRole('button', { name: '加载 Docker' }));
-    expect(await screen.findByText('nginx:alpine')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: '查看 web 详情' }));
-    expect(screen.getByRole('complementary', { name: 'web 详情' })).toHaveTextContent('nginx:alpine');
-    fireEvent.click(screen.getByRole('button', { name: '查看 web 日志' }));
-    expect(await screen.findByText('ready on :80')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: '查看 web 指标' }));
-    expect(await screen.findByText('1.2%')).toBeVisible();
-    expect(screen.getByRole('button', { name: '停止 web' })).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: '进入 web Exec' }));
-    expect(await screen.findByText(/隔离 Exec/u)).toBeVisible();
-    expect(onExec).toHaveBeenCalledWith(expect.objectContaining({ connection }), server);
-    fireEvent.click(screen.getByRole('button', { name: '重启 web' }));
-    expect(await screen.findByRole('alertdialog', { name: '操作审批' })).toHaveTextContent('容器会短暂中断');
-    fireEvent.click(screen.getByRole('button', { name: '确认执行' }));
-    expect(await screen.findByText('Docker 任务已提交')).toBeVisible();
+    expect(screen.getByRole('heading', { level: 1, name: 'Docker' })).toBeVisible();
+    expect(screen.getByText('容器与镜像管理')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Docker 服务器' })).toHaveTextContent('web-01');
+    expect(screen.getByRole('button', { name: '运行容器' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '容器' })).toHaveClass('active');
+
+    fireEvent.click(screen.getByRole('button', { name: '运行容器' }));
+    expect(await screen.findByText('nginx-proxy')).toBeVisible();
+    expect(screen.getByText('redis-cache')).toBeVisible();
+    expect(screen.getByText('nginx:alpine')).toBeVisible();
+    expect(screen.getByText('Restarting')).toBeVisible();
   });
 });

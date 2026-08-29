@@ -3,7 +3,6 @@ import type { ConnectionHandle, ServerSummary, TerminalSession } from '@opspilot
 
 import type { CoreClient } from '../../api/core';
 import { Modal } from '../../app/ui/modal';
-import { PageHeader } from '../../app/ui/layout';
 import { Select } from '../../app/ui/select';
 import { createTerminalSessionStore } from './session-store';
 import { XtermViewport } from './xterm-viewport';
@@ -28,12 +27,11 @@ export function TerminalPage({ connections, core, onPendingSessionClaimed, pendi
   const [revision, setRevision] = useState(0);
   const [activeId, setActiveId] = useState('');
   const [selectedServerId, setSelectedServerId] = useState(connections[0]?.server.id ?? '');
-  const [input, setInput] = useState('');
   const [pendingPaste, setPendingPaste] = useState('');
   const [message, setMessage] = useState('');
+  const [fullscreen, setFullscreen] = useState(false);
   const sessions = store.list();
   const active = store.get(activeId);
-  const activeConnection = connections.find((item) => item.server.id === (active?.serverId ?? selectedServerId));
 
   useEffect(() => {
     if (!selectedServerId && connections[0]) setSelectedServerId(connections[0].server.id);
@@ -81,13 +79,8 @@ export function TerminalPage({ connections, core, onPendingSessionClaimed, pendi
     if (!active || !core.writeTerminal) return;
     try {
       await core.writeTerminal(active.id, [...new TextEncoder().encode(value)]);
-      setInput('');
       setPendingPaste('');
     } catch { setMessage('终端写入失败，输入没有自动重放'); }
-  };
-
-  const send = () => {
-    if (requiresPasteConfirmation(input, false)) setPendingPaste(input); else void transmit(input);
   };
 
   const terminalInput = (value: string) => {
@@ -111,53 +104,87 @@ export function TerminalPage({ connections, core, onPendingSessionClaimed, pendi
     }
   };
 
-  const reconnect = async () => {
-    if (!active) return;
-    const serverId = active.serverId;
-    await close(active.id);
-    setSelectedServerId(serverId);
-    await open(serverId);
-  };
-
   void revision;
-  return <div className="page-stack terminal-page">
-    <PageHeader
-      actions={<><Select aria-label="选择已连接服务器" onChange={(value) => setSelectedServerId(value)} options={[{ value: '', label: '选择服务器' }, ...connections.map(({ server }) => ({ value: server.id, label: `${server.name} · ${environmentLabel(server.environment)}` }))]} value={selectedServerId} /><button className="primary" onClick={() => void open()} type="button">新建终端会话</button></>}
-      description="每个标签独立接收有序字节流；断线后输入不会自动重放。"
-      eyebrow="Secure shell"
-      title="远程终端"
-    />
-    {message ? <div className="alert success-alert" role="status">{message}</div> : null}
-    <div aria-label="终端连接摘要" className="terminal-connection-strip">
-      <div><span className="status-dot" /><small>当前连接</small><strong>{activeConnection?.server.name ?? '未建立会话'}</strong></div>
-      <div><small>主机</small><strong>{activeConnection ? `${activeConnection.server.host}:${activeConnection.server.port}` : '—'}</strong></div>
-      <div><small>环境</small><strong>{activeConnection ? environmentLabel(activeConnection.server.environment) : '—'}</strong></div>
-      <div><small>用户</small><strong>{activeConnection?.server.username ?? '—'}</strong></div>
-      <div><small>会话</small><strong>{sessions.length}</strong></div>
+  return (
+    <div className={fullscreen ? 'terminal-page fullscreen' : 'terminal-page'}>
+      <div className="page-header">
+        <div>
+          <h1>终端</h1>
+          <p>安全的 SSH 会话管理</p>
+        </div>
+        <div className="page-actions">
+          <div style={{ width: 200 }}>
+            <Select
+              aria-label="选择服务器"
+              onChange={(value) => setSelectedServerId(value)}
+              options={connections.map(({ server }) => ({ value: server.id, label: server.name }))}
+              placeholder={connections.length === 0 ? '选择服务器' : '请选择服务器'}
+              value={selectedServerId}
+            />
+          </div>
+          <button className="btn btn-primary" onClick={() => void open()} type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+            <span>新建会话</span>
+          </button>
+        </div>
+      </div>
+
+      {message ? <div className="alert success-alert" role="status" style={{ marginBottom: 16 }}>{message}</div> : null}
+
+      <div className="tabs" style={{ marginBottom: 20 }}>
+        {sessions.length === 0
+          ? <span className="tab" style={{ background: 'transparent', color: 'var(--label-secondary)' }}>尚无会话</span>
+          : sessions.map((session) => (
+            <button
+              aria-label={`会话 ${session.title}`}
+              className={session.id === activeId ? 'tab active' : 'tab'}
+              key={session.id}
+              onClick={() => setActiveId(session.id)}
+              type="button"
+            >
+              {session.title}
+              <span
+                aria-label={`关闭 ${session.title}`}
+                onClick={(event) => { event.stopPropagation(); void close(session.id); }}
+                style={{ marginLeft: 6, opacity: 0.7 }}
+              >×</span>
+            </button>
+          ))}
+        <button className="tab" onClick={() => void open()} title="新建会话" type="button">+</button>
+      </div>
+
+      <div className="terminal">
+        {active ? (
+          <XtermViewport content={active.output} onInput={terminalInput} onResize={resize} sessionId={active.id} />
+        ) : (
+          <pre style={{ margin: 0, color: 'var(--terminal-dim)' }}>请先从已建立可信连接的服务器创建会话。</pre>
+        )}
+      </div>
+
+      <div style={{ marginTop: 12, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <button className="btn btn-secondary" disabled={!active} onClick={() => { if (active) void close(active.id); }} type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
+          <span>断开</span>
+        </button>
+        <button className="btn btn-secondary" onClick={() => setFullscreen((value) => !value)} type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M8 12h8M12 8v8" /></svg>
+          <span>{fullscreen ? '退出全屏' : '全屏'}</span>
+        </button>
+      </div>
+
+      <Modal onClose={() => setPendingPaste('')} open={!!pendingPaste}>
+        <section aria-label="确认粘贴内容" aria-modal="true" className="risk-dialog" role="alertdialog">
+          <h2>确认粘贴内容</h2>
+          <p>目标：{active?.title} · {pendingPaste.split(/\r?\n/u).length} 行 · {new TextEncoder().encode(pendingPaste).byteLength} 字节</p>
+          <pre className="paste-preview">{pendingPaste.slice(0, 4_096)}</pre>
+          <footer>
+            <button className="btn btn-secondary" onClick={() => setPendingPaste('')} type="button">取消</button>
+            <button className="btn btn-primary" onClick={() => void transmit(pendingPaste)} type="button">确认发送</button>
+          </footer>
+        </section>
+      </Modal>
     </div>
-    <div className="terminal-workspace">
-      <section className="terminal-primary" aria-label="终端工作区">
-        <div className="terminal-shell"><div className="terminal-tabs">{sessions.length === 0 ? <span>尚无会话</span> : sessions.map((session) => <button className={session.id === activeId ? 'active' : ''} key={session.id} onClick={() => setActiveId(session.id)} type="button">{session.title}<span aria-hidden="true" onClick={(event) => { event.stopPropagation(); void close(session.id); }}> ×</span></button>)}</div>{active ? <><XtermViewport content={active.output} onInput={terminalInput} onResize={resize} sessionId={active.id} />{active.outputMayHaveGap ? <div className="terminal-gap" role="alert">输出可能缺段；已从后续序号继续，不会伪造缺失内容。</div> : null}<div className="terminal-input"><textarea aria-label="终端输入" onChange={(event) => setInput(event.target.value)} value={input} /><button disabled={!input} onClick={send} type="button">发送到终端</button><button onClick={() => void reconnect()} type="button">手动重连</button></div></> : <pre>请先从已建立可信连接的服务器创建会话。</pre>}</div>
-      </section>
-      <aside aria-label="终端 AI 助手" className="terminal-assistant ui-panel">
-        <header><span className="assistant-mark">AI</span><div><h2>AI 运维助手</h2><p>基于当前连接上下文</p></div></header>
-        <div className="assistant-context"><span>作用域</span><strong>{activeConnection?.server.name ?? '尚未选择服务器'}</strong><small>{activeConnection ? `${activeConnection.server.username}@${activeConnection.server.host}` : '建立可信连接后可使用 Agent'}</small></div>
-        <div className="assistant-note"><strong>安全边界保持不变</strong><p>Agent 只调用 Rust Core 发布的工具。任何写操作仍会进入风险审批，不会直接注入终端。</p></div>
-        <a className="assistant-link" href="#agent">前往 AI Agent 工作区</a>
-      </aside>
-    </div>
-    <Modal onClose={() => setPendingPaste('')} open={!!pendingPaste}>
-      <section aria-label="确认粘贴内容" aria-modal="true" className="risk-dialog" role="alertdialog">
-        <h2>确认粘贴内容</h2>
-        <p>目标：{active?.title} · {pendingPaste.split(/\r?\n/u).length} 行 · {new TextEncoder().encode(pendingPaste).byteLength} 字节</p>
-        <pre className="paste-preview">{pendingPaste.slice(0, 4_096)}</pre>
-        <footer>
-          <button onClick={() => setPendingPaste('')} type="button">取消</button>
-          <button className="primary" onClick={() => void transmit(pendingPaste)} type="button">确认发送</button>
-        </footer>
-      </section>
-    </Modal>
-  </div>;
+  );
 }
 
 function requiresPasteConfirmation(value: string, allowSingleControl: boolean): boolean {
@@ -170,18 +197,11 @@ function requiresPasteConfirmation(value: string, allowSingleControl: boolean): 
   });
 }
 
-// xterm 的方向键、Home/End、Delete、翻页等功能键会发出 CSI/SS3 转义序列（如 ↑ = "\x1b[A"），
-// 它们是单个按键而非粘贴，不应触发粘贴确认。括号粘贴标记除外，以免绕过多行粘贴的安全确认；
-// 排除必须同时覆盖带修饰符的变体（如 "\x1b[200;1~"），它们也属于粘贴标记而非功能键。
 // eslint-disable-next-line no-control-regex -- 匹配 xterm 功能键的 ESC 转义序列是预期行为
 const KEY_ESCAPE_SEQUENCE = /^\x1b(?:\[\d*(?:;\d+)?[~A-Za-z]|O[A-Za-z])$/u;
-// eslint-disable-next-line no-control-regex -- 匹配括号粘贴标记（含 xterm 修改版粘贴的修饰符变体）是预期行为
+// eslint-disable-next-line no-control-regex -- 匹配括号粘贴标记是预期行为
 const BRACKETED_PASTE_MARKER = /^\x1b\[20[01];?\d*~$/u;
 
 function isKeyEscapeSequence(value: string): boolean {
   return !BRACKETED_PASTE_MARKER.test(value) && KEY_ESCAPE_SEQUENCE.test(value);
-}
-
-function environmentLabel(environment: ServerSummary['environment']): string {
-  return environment === 'production' ? '生产环境' : environment === 'staging' ? '预发布' : environment === 'development' ? '开发环境' : '其他';
 }

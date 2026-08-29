@@ -55,6 +55,7 @@ export function RiskDecisionDialog({
         确认目标资源
         <input
           autoComplete="off"
+          className="input"
           onChange={(event) => setConfirmation({ requestKey, value: event.target.value })}
           placeholder={request.confirmationTarget}
           spellCheck={false}
@@ -63,8 +64,8 @@ export function RiskDecisionDialog({
       </label> : null}
 
       <footer>
-        <button onClick={onReject} type="button">拒绝</button>
-        {!blocked ? <button className="primary" disabled={!targetMatches} onClick={approve} type="button">确认执行</button> : null}
+        <button className="btn btn-secondary" onClick={onReject} type="button">拒绝</button>
+        {!blocked ? <button className="btn btn-primary" disabled={!targetMatches} onClick={approve} type="button">确认执行</button> : null}
       </footer>
     </section>
   </Modal>;

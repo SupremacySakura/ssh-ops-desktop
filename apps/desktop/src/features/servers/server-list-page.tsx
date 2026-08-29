@@ -12,13 +12,10 @@ import type {
 
 import type { CoreClient } from '../../api/core';
 import { Modal } from '../../app/ui/modal';
-import { DetailPane, FilterBar, PageHeader } from '../../app/ui/layout';
 import { Select } from '../../app/ui/select';
-import { environmentLabel } from '../dashboard/dashboard-page';
 import type { ConnectedServer } from '../terminal/terminal-page';
 
 interface ServerListPageProps {
-  /** 当前已建立的可信连接；用于在卡片上展示实时连接状态。 */
   connections?: ConnectedServer[];
   core: CoreClient;
   onConnected?(server: ServerSummary, connection: ConnectionHandle): void;
@@ -32,6 +29,20 @@ const INITIAL_FORM: ServerInput = {
   name: '', host: '', port: 22, username: '', environment: 'production', authType: 'password', tagIds: [],
 };
 
+const ENVIRONMENT_TONE: Record<ServerSummary['environment'], string> = {
+  production: 'neutral',
+  staging: 'warning',
+  development: 'neutral',
+  other: 'neutral',
+};
+
+const AUTH_LABEL: Record<ServerSummary['authType'], string> = {
+  password: '密码',
+  private_key: '密钥',
+  ssh_agent: 'SSH Agent',
+  certificate: '证书',
+};
+
 export function ServerListPage({
   connections = [], core, onConnected, onCreated, onDeleted, onUpdated, servers,
 }: ServerListPageProps) {
@@ -39,7 +50,6 @@ export function ServerListPage({
   const [environmentFilter, setEnvironmentFilter] = useState('all');
   const [groupFilter, setGroupFilter] = useState('all');
   const [authFilter, setAuthFilter] = useState('all');
-  const [selectedServerId, setSelectedServerId] = useState<string>();
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string>();
   const [form, setForm] = useState<ServerInput>(INITIAL_FORM);
@@ -65,21 +75,23 @@ export function ServerListPage({
     return () => { active = false; };
   }, [core]);
 
-  const filtered = useMemo(() => servers.filter((server) => {
-    const matchesQuery = `${server.name} ${server.host} ${server.username}`.toLowerCase().includes(query.toLowerCase());
+  const connectedServerIds = useMemo(
+    () => new Set(connections.map((item) => item.server.id)),
+    [connections],
+  );
+
+  const rows = useMemo(() => servers.filter((server) => {
+    const matchesQuery = `${server.name} ${server.host} ${server.username}`
+      .toLowerCase()
+      .includes(query.trim().toLowerCase());
     const matchesEnvironment = environmentFilter === 'all' || server.environment === environmentFilter;
     const matchesGroup = groupFilter === 'all' || (groupFilter === 'ungrouped' ? !server.groupId : server.groupId === groupFilter);
     const matchesAuth = authFilter === 'all' || server.authType === authFilter;
     return matchesQuery && matchesEnvironment && matchesGroup && matchesAuth;
   }), [authFilter, environmentFilter, groupFilter, query, servers]);
-  const connectedServerIds = useMemo(
-    () => new Set(connections.map((item) => item.server.id)),
-    [connections],
-  );
-  const selectedServer = filtered.find((server) => server.id === selectedServerId);
-  const selectedConnectionState: ConnectionState = selectedServer
-    ? connectionStateOf(selectedServer, connectedServerIds)
-    : 'never';
+
+  const connectionStateOf = (server: ServerSummary): 'connected' | 'previously' | 'never' =>
+    connectedServerIds.has(server.id) ? 'connected' : server.lastConnectedAt ? 'previously' : 'never';
 
   const openCreate = () => {
     setEditingId(undefined);
@@ -230,138 +242,230 @@ export function ServerListPage({
     }
   };
 
-  return <div className="page-stack server-catalog-page">
-    <PageHeader
-      actions={<><button onClick={() => setImportOpen(true)} type="button">批量导入</button><button aria-label="新增服务器" className="primary" onClick={openCreate} type="button">＋ 新增服务器</button></>}
-      description="连接配置、分组、环境边界和认证方式集中管理。"
-      eyebrow="Server catalog"
-      title="服务器管理"
-    />
-    {message ? <div className="alert success-alert" role="status">{message}</div> : null}
-    {formOpen ? <Modal onClose={() => setFormOpen(false)} open>
-      <section aria-label="服务器表单" aria-modal="true" className="server-form-dialog" role="dialog">
-        <header>
-          <h2>{editingId ? '编辑服务器' : '新增服务器'}</h2>
-          <button onClick={() => setFormOpen(false)} type="button">关闭</button>
-        </header>
-        <div className="form-grid"><label>服务器名称<input aria-label="服务器名称" onChange={(event) => setForm({ ...form, name: event.target.value })} value={form.name} /></label><label>主机地址<input aria-label="主机地址" onChange={(event) => setForm({ ...form, host: event.target.value })} value={form.host} /></label><label>端口<input aria-label="端口" max={65535} min={1} onChange={(event) => setForm({ ...form, port: Number(event.target.value) })} type="number" value={form.port} /></label><label>用户名<input aria-label="用户名" onChange={(event) => setForm({ ...form, username: event.target.value })} value={form.username} /></label><label>环境<Select aria-label="服务器环境" onChange={(value) => setForm({ ...form, environment: value as ServerInput['environment'] })} options={[{ value: 'production', label: '生产环境' }, { value: 'staging', label: '预发布' }, { value: 'development', label: '开发环境' }, { value: 'other', label: '其他' }]} value={form.environment} /></label><label>认证方式<Select aria-label="认证方式" onChange={(value) => { setCredential(''); setForm({ ...form, authType: value as ServerInput['authType'] }); }} options={[{ value: 'password', label: '密码' }, { value: 'private_key', label: '私钥' }, { value: 'ssh_agent', label: 'SSH Agent' }, { value: 'certificate', label: '证书' }]} value={form.authType} /></label><label>分组<Select aria-label="服务器分组" onChange={(value) => setForm({ ...form, groupId: value || undefined })} options={[{ value: '', label: '未分组' }, ...groups.map((group) => ({ value: group.id, label: group.name }))]} value={form.groupId ?? ''} /></label>{form.authType !== 'ssh_agent' ? <label>{form.authType === 'password' ? '密码' : '私钥/证书口令'}<input aria-label={form.authType === 'password' ? '密码' : '私钥或证书口令'} autoComplete="new-password" onChange={(event) => setCredential(event.target.value)} placeholder={editingId ? '留空则保留现有凭据' : ''} type="password" value={credential} /></label> : null}</div>
-        <footer>
-          <input aria-label="新分组名称" onChange={(event) => setGroupName(event.target.value)} placeholder="新分组名称" value={groupName} />
-          <button disabled={!groupName.trim()} onClick={() => void createGroup()} type="button">创建分组</button>
-          <button className="primary" onClick={() => void save()} type="button">{editingId ? '保存修改' : '保存服务器'}</button>
-        </footer>
-      </section>
-    </Modal> : null}
-    <FilterBar resultCount={filtered.length}>
-      <input aria-label="搜索服务器" onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、地址或用户" value={query} />
-      <Select aria-label="环境筛选" onChange={(value) => setEnvironmentFilter(value)} options={[{ value: 'all', label: '全部环境' }, { value: 'production', label: '生产环境' }, { value: 'staging', label: '预发布' }, { value: 'development', label: '开发环境' }, { value: 'other', label: '其他' }]} value={environmentFilter} />
-      <Select aria-label="分组筛选" onChange={(value) => setGroupFilter(value)} options={[{ value: 'all', label: '全部分组' }, { value: 'ungrouped', label: '未分组' }, ...groups.map((group) => ({ value: group.id, label: group.name }))]} value={groupFilter} />
-      <Select aria-label="认证筛选" onChange={(value) => setAuthFilter(value)} options={[{ value: 'all', label: '全部认证' }, { value: 'password', label: '密码' }, { value: 'private_key', label: '私钥' }, { value: 'ssh_agent', label: 'SSH Agent' }, { value: 'certificate', label: '证书' }]} value={authFilter} />
-      <button onClick={() => { setQuery(''); setEnvironmentFilter('all'); setGroupFilter('all'); setAuthFilter('all'); }} type="button">重置</button>
-    </FilterBar>
-    <div className={selectedServer ? 'catalog-layout has-detail' : 'catalog-layout'}>
-      <section aria-label="服务器列表" className="panel catalog-cards">
-        {filtered.length === 0 ? <div className="catalog-empty">没有匹配的服务器</div> : <ul className="server-card-grid">{filtered.map((server) => (
-          <ServerCard
-            groups={groups}
-            key={server.id}
-            onConnect={connect}
-            onDelete={setDeleteTarget}
-            onEdit={openEdit}
-            onSelect={setSelectedServerId}
-            selected={selectedServerId === server.id}
-            server={server}
-            state={connectionStateOf(server, connectedServerIds)}
-          />
-        ))}</ul>}
-      </section>
-      {selectedServer ? <DetailPane onClose={() => setSelectedServerId(undefined)} subtitle={`${selectedServer.host}:${selectedServer.port}`} title={selectedServer.name}>
-        <div className="detail-status-line"><span className={`environment-badge ${selectedServer.environment}`}>{environmentLabel(selectedServer.environment)}</span><span className={`status-badge connection-${selectedConnectionState}`}><i />{CONNECTION_LABELS[selectedConnectionState]}</span></div>
-        <dl className="detail-list"><div><dt>登录用户</dt><dd>{selectedServer.username}</dd></div><div><dt>认证方式</dt><dd>{selectedServer.authType.replaceAll('_', ' ')}</dd></div><div><dt>分组</dt><dd>{groups.find((group) => group.id === selectedServer.groupId)?.name ?? '未分组'}</dd></div><div><dt>最近连接</dt><dd>{selectedServer.lastConnectedAt ?? '尚无记录'}</dd></div></dl>
-        <div className="detail-actions"><button aria-label={`从详情连接 ${selectedServer.name}`} className="primary" onClick={() => connect(selectedServer)} type="button">连接服务器</button><button aria-label={`从详情编辑 ${selectedServer.name}`} onClick={() => openEdit(selectedServer)} type="button">编辑配置</button><button aria-label={`从详情删除 ${selectedServer.name}`} className="danger" onClick={() => setDeleteTarget(selectedServer)} type="button">删除</button></div>
-      </DetailPane> : null}
-    </div>
-    {importOpen ? <Modal onClose={() => setImportOpen(false)} open>
-      <section aria-label="批量导入服务器" aria-modal="true" className="risk-dialog" role="dialog">
-        <h2>批量导入服务器</h2>
-        <label>格式<Select aria-label="导入格式" onChange={(value) => setImportFormat(value as ServerImportFormat)} options={[{ value: 'csv', label: 'CSV' }, { value: 'json', label: 'JSON' }]} value={importFormat} /></label>
-        <textarea aria-label="导入内容" onChange={(event) => setImportSource(event.target.value)} placeholder="name,host,port,username,environment,authType" value={importSource} />
-        {importPreview ? <ul className="file-list">{importPreview.rows.map((row) => <li key={row.rowId}><label><input checked={selectedRows.includes(row.rowId)} disabled={row.status !== 'valid'} onChange={(event) => setSelectedRows((current) => event.target.checked ? [...current, row.rowId] : current.filter((id) => id !== row.rowId))} type="checkbox" />{row.status === 'error' ? row.error : `${row.server.name} · ${row.status}`}</label></li>)}</ul> : null}
-        <footer><button onClick={() => setImportOpen(false)} type="button">取消</button><button disabled={!importSource.trim()} onClick={() => void previewImport()} type="button">预检</button><button className="primary" disabled={!importPreview || selectedRows.length === 0} onClick={() => void applyImport()} type="button">应用有效行</button></footer>
-      </section>
-    </Modal> : null}
-    {deleteTarget ? <Modal onClose={() => setDeleteTarget(undefined)} open>
-      <section aria-label="确认删除服务器" aria-modal="true" className="risk-dialog" role="alertdialog">
-        <h2>删除服务器</h2>
-        <p>将删除 {deleteTarget.name}、关联元数据和系统凭据。该操作不可撤销。</p>
-        <footer><button onClick={() => setDeleteTarget(undefined)} type="button">取消</button><button className="danger" onClick={() => void remove()} type="button">确认删除</button></footer>
-      </section>
-    </Modal> : null}
-    {keyPathServer ? <Modal onClose={() => setKeyPathServer(undefined)} open>
-      <section aria-label="连接参数" aria-modal="true" className="risk-dialog" role="dialog">
-        <h2>选择本地私钥</h2>
-        <p>路径只交给 Rust SSH Core，不会写入日志。</p>
-        <label className="confirmation-field">私钥路径<input aria-label="私钥路径" onChange={(event) => setPrivateKeyPath(event.target.value)} value={privateKeyPath} /></label>
-        <footer><button onClick={() => setKeyPathServer(undefined)} type="button">取消</button><button className="primary" disabled={!privateKeyPath} onClick={() => { const server = keyPathServer; setKeyPathServer(undefined); void connectWith(server, server.authType === 'certificate' ? { kind: 'certificate', certificatePath: `${privateKeyPath}-cert.pub`, privateKeyPath, expectedPrincipal: server.username } : { kind: 'private_key', privateKeyPath }); }} type="button">连接</button></footer>
-      </section>
-    </Modal> : null}
-    {hostKey?.outcome.kind === 'host_key_required' ? <Modal onClose={() => setHostKey(undefined)} open>
-      <section aria-label="确认主机指纹" aria-modal="true" className="risk-dialog" role="alertdialog">
-        <h2>首次连接：确认主机指纹</h2>
-        <p>{hostKey.server.host}:{hostKey.server.port} · {hostKey.outcome.prompt.algorithm}</p>
-        <code>{hostKey.outcome.prompt.sha256}</code>
-        <footer><button onClick={() => setHostKey(undefined)} type="button">关闭</button><button className="primary" onClick={() => void trust()} type="button">信任此指纹</button></footer>
-      </section>
-    </Modal> : null}
-    {hostKey?.outcome.kind === 'host_key_changed' ? <Modal onClose={() => setHostKey(undefined)} open>
-      <section aria-label="主机指纹已变化" aria-modal="true" className="risk-dialog" role="alertdialog">
-        <h2>主机指纹已变化</h2>
-        <p>连接已由 Core 阻断。请通过可信渠道人工核验，不能直接继续。</p>
-        <dl className="risk-details"><div><dt>原指纹</dt><dd>{hostKey.outcome.expectedSha256}</dd></div><div><dt>新指纹</dt><dd>{hostKey.outcome.actualSha256}</dd></div></dl>
-        <footer><button onClick={() => setHostKey(undefined)} type="button">关闭</button></footer>
-      </section>
-    </Modal> : null}
-  </div>;
-}
-
-type ConnectionState = 'connected' | 'previously' | 'never';
-
-const CONNECTION_LABELS: Record<ConnectionState, string> = {
-  connected: '已连接',
-  previously: '曾连接',
-  never: '未连接',
-};
-
-function connectionStateOf(server: ServerSummary, connectedIds: ReadonlySet<string>): ConnectionState {
-  return connectedIds.has(server.id) ? 'connected' : server.lastConnectedAt ? 'previously' : 'never';
-}
-
-interface ServerCardProps {
-  groups: ServerGroup[];
-  onConnect(server: ServerSummary): void;
-  onDelete(server: ServerSummary): void;
-  onEdit(server: ServerSummary): void;
-  onSelect(serverId: string): void;
-  selected: boolean;
-  server: ServerSummary;
-  state: ConnectionState;
-}
-
-function ServerCard({
-  groups, onConnect, onDelete, onEdit, onSelect, selected, server, state,
-}: ServerCardProps) {
   return (
-    <li className={selected ? 'server-card selected' : 'server-card'}>
-      <button aria-label={`查看 ${server.name} 详情`} className="server-card-header" onClick={() => onSelect(server.id)} type="button">
-        <span className="server-card-title"><strong>{server.name}</strong><small>{server.username}</small></span>
-        <span className="server-card-badges"><span className={`status-badge connection-${state}`}><i />{CONNECTION_LABELS[state]}</span><span className={`environment-badge ${server.environment}`}>{environmentLabel(server.environment)}</span></span>
-      </button>
-      <dl className="server-card-meta">
-        <div><dt>地址</dt><dd>{server.host}:{server.port}</dd></div>
-        <div><dt>分组</dt><dd>{groups.find((group) => group.id === server.groupId)?.name ?? '未分组'}</dd></div>
-        <div><dt>认证</dt><dd>{server.authType.replaceAll('_', ' ')}</dd></div>
-      </dl>
-      <div className="server-card-actions"><button aria-label={`连接 ${server.name}`} className="link-button" onClick={() => onConnect(server)} type="button">连接</button><button aria-label={`编辑 ${server.name}`} onClick={() => onEdit(server)} type="button">编辑</button><button aria-label={`删除 ${server.name}`} onClick={() => onDelete(server)} type="button">删除</button></div>
-    </li>
+    <div className="page-stack server-catalog-page">
+      <div className="page-header">
+        <div>
+          <h1>服务器</h1>
+          <p>管理 SSH 主机、分组与连接状态</p>
+        </div>
+        <div className="page-actions">
+          <button className="btn btn-secondary" onClick={() => setImportOpen(true)} type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+            <span>导入</span>
+          </button>
+          <button className="btn btn-primary" onClick={openCreate} type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+            <span>添加服务器</span>
+          </button>
+        </div>
+      </div>
+
+      {message ? <div className="alert success-alert" role="status">{message}</div> : null}
+
+      <div className="card mb-2">
+        <div className="card-body" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div className="search-box">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+            <input
+              aria-label="搜索服务器"
+              className="input"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索名称、IP、用户名..."
+              type="text"
+              value={query}
+            />
+          </div>
+          <div style={{ width: 140 }}>
+            <Select
+              aria-label="环境筛选"
+              onChange={(value) => setEnvironmentFilter(value)}
+              options={[
+                { value: 'all', label: '所有环境' },
+                { value: 'production', label: 'production' },
+                { value: 'staging', label: 'staging' },
+                { value: 'development', label: 'development' },
+              ]}
+              value={environmentFilter}
+            />
+          </div>
+          <div style={{ width: 140 }}>
+            <Select
+              aria-label="分组筛选"
+              onChange={(value) => setGroupFilter(value)}
+              options={[
+                { value: 'all', label: '所有分组' },
+                { value: 'ungrouped', label: '未分组' },
+                ...groups.map((group) => ({ value: group.id, label: group.name })),
+              ]}
+              value={groupFilter}
+            />
+          </div>
+          <div style={{ width: 140 }}>
+            <Select
+              aria-label="认证筛选"
+              onChange={(value) => setAuthFilter(value)}
+              options={[
+                { value: 'all', label: '认证方式' },
+                { value: 'password', label: '密码' },
+                { value: 'private_key', label: '密钥' },
+                { value: 'ssh_agent', label: 'SSH Agent' },
+                { value: 'certificate', label: '证书' },
+              ]}
+              value={authFilter}
+            />
+          </div>
+          <button className="btn btn-secondary" onClick={() => { setQuery(''); setEnvironmentFilter('all'); setGroupFilter('all'); setAuthFilter('all'); }} style={{ marginLeft: 'auto' }} type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" /></svg>
+            <span>筛选</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="table-container">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th style={{ width: 40 }}><input type="checkbox" /></th>
+                <th>服务器</th>
+                <th>环境</th>
+                <th>认证</th>
+                <th>状态</th>
+                <th>最近连接</th>
+                <th style={{ width: 120 }}>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0
+                ? <tr><td className="empty-cell" colSpan={7}>没有匹配的服务器</td></tr>
+                : rows.map((server) => {
+                  const state = connectionStateOf(server);
+                  const stateTone = state === 'connected' ? 'success' : state === 'previously' ? 'warning' : 'neutral';
+                  const stateLabel = state === 'connected' ? '已连接' : state === 'previously' ? '未连接' : '离线';
+                  return (
+                    <tr key={server.id}>
+                      <td><input type="checkbox" /></td>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div className="list-item-icon" style={{ width: 32, height: 32 }}>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><path d="M6 6h.01M6 18h.01" /></svg>
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 600 }}>{server.name}</div>
+                            <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>{server.host}:{server.port} · {server.username}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td><span className={`status-tag ${ENVIRONMENT_TONE[server.environment]}`}>{server.environment}</span></td>
+                      <td>{AUTH_LABEL[server.authType]}</td>
+                      <td><span className={`status-tag ${stateTone}`}>{stateLabel}</span></td>
+                      <td>{server.lastConnectedAt ?? '尚未连接'}</td>
+                      <td>
+                        <button aria-label={`连接 ${server.name}`} className="btn btn-icon" onClick={() => connect(server)} type="button">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5" /></svg>
+                        </button>
+                        <button aria-label={`编辑 ${server.name}`} className="btn btn-icon" onClick={() => openEdit(server)} type="button">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                        </button>
+                        <button aria-label={`删除 ${server.name}`} className="btn btn-icon" onClick={() => setDeleteTarget(server)} type="button">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /></svg>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+        <div className="card-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>显示 1-{rows.length} 共 {servers.length} 台</span>
+          <div className="tabs">
+            <button className="tab" type="button">上一页</button>
+            <button className="tab active" type="button">1</button>
+            <button className="tab" type="button">下一页</button>
+          </div>
+        </div>
+      </div>
+
+      {formOpen ? <Modal onClose={() => setFormOpen(false)} open>
+        <section aria-label="服务器表单" aria-modal="true" className="server-form-dialog" role="dialog">
+          <header>
+            <h2>{editingId ? '编辑服务器' : '新增服务器'}</h2>
+            <button className="btn btn-icon" onClick={() => setFormOpen(false)} type="button">关闭</button>
+          </header>
+          <div className="form-grid">
+            <label>服务器名称<input aria-label="服务器名称" onChange={(event) => setForm({ ...form, name: event.target.value })} value={form.name} /></label>
+            <label>主机地址<input aria-label="主机地址" onChange={(event) => setForm({ ...form, host: event.target.value })} value={form.host} /></label>
+            <label>端口<input aria-label="端口" max={65535} min={1} onChange={(event) => setForm({ ...form, port: Number(event.target.value) })} type="number" value={form.port} /></label>
+            <label>用户名<input aria-label="用户名" onChange={(event) => setForm({ ...form, username: event.target.value })} value={form.username} /></label>
+            <label>环境<Select aria-label="服务器环境" onChange={(value) => setForm({ ...form, environment: value as ServerInput['environment'] })} options={[{ value: 'production', label: '生产环境' }, { value: 'staging', label: '预发布' }, { value: 'development', label: '开发环境' }, { value: 'other', label: '其他' }]} value={form.environment} /></label>
+            <label>认证方式<Select aria-label="认证方式" onChange={(value) => { setCredential(''); setForm({ ...form, authType: value as ServerInput['authType'] }); }} options={[{ value: 'password', label: '密码' }, { value: 'private_key', label: '私钥' }, { value: 'ssh_agent', label: 'SSH Agent' }, { value: 'certificate', label: '证书' }]} value={form.authType} /></label>
+            <label>分组<Select aria-label="服务器分组" onChange={(value) => setForm({ ...form, groupId: value || undefined })} options={[{ value: '', label: '未分组' }, ...groups.map((group) => ({ value: group.id, label: group.name }))]} value={form.groupId ?? ''} /></label>
+            {form.authType !== 'ssh_agent' ? <label>{form.authType === 'password' ? '密码' : '私钥/证书口令'}<input aria-label={form.authType === 'password' ? '密码' : '私钥或证书口令'} autoComplete="new-password" onChange={(event) => setCredential(event.target.value)} placeholder={editingId ? '留空则保留现有凭据' : ''} type="password" value={credential} /></label> : null}
+          </div>
+          <footer>
+            <input aria-label="新分组名称" onChange={(event) => setGroupName(event.target.value)} placeholder="新分组名称" value={groupName} />
+            <button className="btn btn-secondary" disabled={!groupName.trim()} onClick={() => void createGroup()} type="button">创建分组</button>
+            <button className="btn btn-primary" onClick={() => void save()} type="button">{editingId ? '保存修改' : '保存服务器'}</button>
+          </footer>
+        </section>
+      </Modal> : null}
+      {importOpen ? <Modal onClose={() => setImportOpen(false)} open>
+        <section aria-label="批量导入服务器" aria-modal="true" className="risk-dialog" role="dialog">
+          <h2>批量导入服务器</h2>
+          <label>格式<Select aria-label="导入格式" onChange={(value) => setImportFormat(value as ServerImportFormat)} options={[{ value: 'csv', label: 'CSV' }, { value: 'json', label: 'JSON' }]} value={importFormat} /></label>
+          <textarea aria-label="导入内容" onChange={(event) => setImportSource(event.target.value)} placeholder="name,host,port,username,environment,authType" value={importSource} />
+          {importPreview ? <ul className="file-list">{importPreview.rows.map((row) => <li key={row.rowId}><label><input checked={selectedRows.includes(row.rowId)} disabled={row.status !== 'valid'} onChange={(event) => setSelectedRows((current) => event.target.checked ? [...current, row.rowId] : current.filter((id) => id !== row.rowId))} type="checkbox" />{row.status === 'error' ? row.error : `${row.server.name} · ${row.status}`}</label></li>)}</ul> : null}
+          <footer>
+            <button className="btn btn-secondary" onClick={() => setImportOpen(false)} type="button">取消</button>
+            <button className="btn btn-secondary" disabled={!importSource.trim()} onClick={() => void previewImport()} type="button">预检</button>
+            <button className="btn btn-primary" disabled={!importPreview || selectedRows.length === 0} onClick={() => void applyImport()} type="button">应用有效行</button>
+          </footer>
+        </section>
+      </Modal> : null}
+      {deleteTarget ? <Modal onClose={() => setDeleteTarget(undefined)} open>
+        <section aria-label="确认删除服务器" aria-modal="true" className="risk-dialog" role="alertdialog">
+          <h2>删除服务器</h2>
+          <p>将删除 {deleteTarget.name}、关联元数据和系统凭据。该操作不可撤销。</p>
+          <footer>
+            <button className="btn btn-secondary" onClick={() => setDeleteTarget(undefined)} type="button">取消</button>
+            <button className="btn btn-primary danger" onClick={() => void remove()} type="button">确认删除</button>
+          </footer>
+        </section>
+      </Modal> : null}
+      {keyPathServer ? <Modal onClose={() => setKeyPathServer(undefined)} open>
+        <section aria-label="连接参数" aria-modal="true" className="risk-dialog" role="dialog">
+          <h2>选择本地私钥</h2>
+          <p>路径只交给 Rust SSH Core，不会写入日志。</p>
+          <label className="confirmation-field">私钥路径<input aria-label="私钥路径" onChange={(event) => setPrivateKeyPath(event.target.value)} value={privateKeyPath} /></label>
+          <footer>
+            <button className="btn btn-secondary" onClick={() => setKeyPathServer(undefined)} type="button">取消</button>
+            <button className="btn btn-primary" disabled={!privateKeyPath} onClick={() => { const server = keyPathServer; setKeyPathServer(undefined); void connectWith(server, server.authType === 'certificate' ? { kind: 'certificate', certificatePath: `${privateKeyPath}-cert.pub`, privateKeyPath, expectedPrincipal: server.username } : { kind: 'private_key', privateKeyPath }); }} type="button">连接</button>
+          </footer>
+        </section>
+      </Modal> : null}
+      {hostKey?.outcome.kind === 'host_key_required' ? <Modal onClose={() => setHostKey(undefined)} open>
+        <section aria-label="确认主机指纹" aria-modal="true" className="risk-dialog" role="alertdialog">
+          <h2>首次连接：确认主机指纹</h2>
+          <p>{hostKey.server.host}:{hostKey.server.port} · {hostKey.outcome.prompt.algorithm}</p>
+          <code>{hostKey.outcome.prompt.sha256}</code>
+          <footer>
+            <button className="btn btn-secondary" onClick={() => setHostKey(undefined)} type="button">关闭</button>
+            <button className="btn btn-primary" onClick={() => void trust()} type="button">信任此指纹</button>
+          </footer>
+        </section>
+      </Modal> : null}
+      {hostKey?.outcome.kind === 'host_key_changed' ? <Modal onClose={() => setHostKey(undefined)} open>
+        <section aria-label="主机指纹已变化" aria-modal="true" className="risk-dialog" role="alertdialog">
+          <h2>主机指纹已变化</h2>
+          <p>连接已由 Core 阻断。请通过可信渠道人工核验，不能直接继续。</p>
+          <dl className="risk-details"><div><dt>原指纹</dt><dd>{hostKey.outcome.expectedSha256}</dd></div><div><dt>新指纹</dt><dd>{hostKey.outcome.actualSha256}</dd></div></dl>
+          <footer>
+            <button className="btn btn-secondary" onClick={() => setHostKey(undefined)} type="button">关闭</button>
+          </footer>
+        </section>
+      </Modal> : null}
+    </div>
   );
 }
