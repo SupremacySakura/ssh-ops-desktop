@@ -83,6 +83,7 @@ function ServerFormModal({
   const [errors, setErrors] = useState<FieldErrors>({});
   const nameRef = useRef<HTMLInputElement>(null);
   const editing = existing !== null;
+  const credentialPending = existing !== null && existing.secretRef === null;
 
   useEffect(() => {
     nameRef.current?.focus();
@@ -301,7 +302,13 @@ function ServerFormModal({
           <Field
             className="mt-4"
             error={errors.credential}
-            hint={editing ? '留空则保留现有凭据；更换认证方式时必须重新输入。' : undefined}
+            hint={
+              credentialPending
+                ? '当前凭据待配置；留空只保存服务器元数据，补充凭据后才能连接。'
+                : editing
+                  ? '留空则保留现有凭据；更换认证方式时必须重新输入。'
+                  : undefined
+            }
             id="server-credential"
             label={authType === 'key' ? '私钥' : '密码'}
           >
@@ -314,7 +321,13 @@ function ServerFormModal({
                 className={`${inputClass(Boolean(errors.credential))} h-28 resize-none py-2 font-mono leading-5`}
                 id="server-credential"
                 onChange={(event) => setCredential(event.target.value)}
-                placeholder={editing ? '留空保留现有私钥' : '-----BEGIN OPENSSH PRIVATE KEY-----'}
+                placeholder={
+                  credentialPending
+                    ? '留空继续待配置'
+                    : editing
+                      ? '留空保留现有私钥'
+                      : '-----BEGIN OPENSSH PRIVATE KEY-----'
+                }
                 spellCheck={false}
                 value={credential}
               />
@@ -326,7 +339,13 @@ function ServerFormModal({
                 className={inputClass(Boolean(errors.credential))}
                 id="server-credential"
                 onChange={(event) => setCredential(event.target.value)}
-                placeholder={editing ? '留空保留现有密码' : '输入密码'}
+                placeholder={
+                  credentialPending
+                    ? '留空继续待配置'
+                    : editing
+                      ? '留空保留现有密码'
+                      : '输入密码'
+                }
                 type="password"
                 value={credential}
               />

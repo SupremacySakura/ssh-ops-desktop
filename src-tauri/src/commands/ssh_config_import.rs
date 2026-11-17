@@ -474,6 +474,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preview_fails_closed_when_a_global_proxy_default_cannot_be_applied() {
+        let directory = tempfile::tempdir().expect("temporary directory should open");
+        let config_path = directory.path().join("config");
+        write_config(
+            &config_path,
+            "Host *\n\
+               ProxyJump bastion\n\
+             Host direct\n\
+               HostName direct.example.com\n\
+               User deploy\n",
+        );
+        let services = test_services(&config_path).await;
+
+        let preview = preview_ssh_config(&services, "main")
+            .await
+            .expect("global proxy defaults should be surfaced in the preview");
+
+        assert_eq!(preview.items.len(), 1);
+        assert_eq!(preview.items[0].status, SshConfigImportStatus::Unsupported);
+        assert_eq!(preview.importable_count, 0);
+        assert!(
+            preview.items[0]
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("文件级配置"))
+        );
+    }
+
+    #[tokio::test]
     async fn apply_persists_only_selected_pending_servers_and_can_be_replayed_safely() {
         let directory = tempfile::tempdir().expect("temporary directory should open");
         let config_path = directory.path().join("config");
@@ -672,6 +701,39 @@ mod tests {
         assert_eq!(value["items"][0]["status"], "duplicateInBatch");
         assert!(value.get("preview_id").is_none());
         assert!(value["items"][0].get("unsupported_directives").is_none());
+    }
+
+    #[test]
+    fn preview_registry_expires_records_and_evicts_the_oldest_entry() {
+        let mut registry = super::SshConfigPreviewRegistry::default();
+        let now = std::time::Instant::now();
+        let expired_id = registry.insert(super::PreviewRecord {
+            window_label: "main".to_owned(),
+            source_path: std::path::PathBuf::from("/tmp/config"),
+            sha256: "digest".to_owned(),
+            created_at: now - super::PREVIEW_TTL - std::time::Duration::from_secs(1),
+            rows: Vec::new(),
+        });
+        assert_eq!(
+            registry.get(expired_id, "main").unwrap_err().code(),
+            CoreErrorCode::NotFound
+        );
+
+        let mut ids = Vec::new();
+        for offset in (1..=super::MAX_PREVIEWS + 1).rev() {
+            ids.push(registry.insert(super::PreviewRecord {
+                window_label: "main".to_owned(),
+                source_path: std::path::PathBuf::from("/tmp/config"),
+                sha256: "digest".to_owned(),
+                created_at: now - std::time::Duration::from_secs(offset as u64),
+                rows: Vec::new(),
+            }));
+        }
+        assert_eq!(
+            registry.get(ids[0], "main").unwrap_err().code(),
+            CoreErrorCode::NotFound
+        );
+        assert!(registry.get(ids[1], "main").is_ok());
     }
 
     async fn test_services(path: &std::path::Path) -> CoreServices<MemorySecretStore> {

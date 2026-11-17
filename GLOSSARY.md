@@ -81,7 +81,7 @@ Server 最近一次成功建立 SSH 连接的时间戳（Unix epoch，秒）。�
 
 ## SSH Config Import
 
-从 `~/.ssh/config` 解析明确 Host 条目并批量导入为 Server 的功能。仅导入 `Host`、`HostName`、`Port` 与 `User`；通配 Host、不完整条目和未支持连接语义不会被猜测或静默执行。已存在的 `(host, port, user)` 三元组与同批重复项自动跳过。导入不复制私钥、不创建 Credential、不信任主机指纹，新 Server 进入“凭据待配置”状态。
+从 `~/.ssh/config` 解析明确 Host 条目并批量导入为 Server 的功能。仅导入 `Host`、`HostName`、`Port` 与 `User`；通配 Host、不完整条目和未支持连接语义不会被猜测或静默执行。顶层、通配 Host 或 Match 中无法安全解释的继承语义会使明确条目标为不可导入。已存在的 `(host, port, user)` 三元组与同批重复项自动跳过。导入不复制私钥、不创建 Credential、不信任主机指纹，新 Server 进入“凭据待配置”状态。
 
 ---
 

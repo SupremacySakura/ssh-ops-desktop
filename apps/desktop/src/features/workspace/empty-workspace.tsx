@@ -43,7 +43,11 @@ export function EmptyWorkspace() {
                 </h2>
                 <p className="mt-1 font-mono text-[11px] text-muted">
                   {selectedServer.user}@{selectedServer.host}:{selectedServer.port} ·{' '}
-                  {selectedServer.authType === 'key' ? '私钥认证' : '密码认证'}
+                  {selectedServer.secretRef === null
+                    ? '认证方式待配置'
+                    : selectedServer.authType === 'key'
+                      ? '私钥认证'
+                      : '密码认证'}
                 </p>
               </div>
               <div className="ml-6 flex shrink-0 items-center gap-2">

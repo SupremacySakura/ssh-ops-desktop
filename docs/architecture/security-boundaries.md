@@ -35,7 +35,7 @@
 
 - Rust 只读取默认 `~/.ssh/config`（测试可注入路径），限制为 1 MiB、普通文件与 UTF-8；错误信息不包含文件正文或私钥内容。
 - 解析器只导入明确的 `Host`、`HostName`、`Port` 与 `User`。通配 Host、`Match` 条件块、缺少 User、非法端口和无法安全解释的主机名会被跳过并产生 warning。
-- `Include`、`Match`、`ProxyJump`、`ProxyCommand` 以及会改变连接目标或主机身份语义的指令必须显式标记为 unsupported；不能静默按直连导入。
+- `Include`、`Match`、`ProxyJump`、`ProxyCommand` 以及会改变连接目标或主机身份语义的指令必须显式标记为 unsupported；不能静默按直连导入。若这些语义位于顶层、通配 Host 或 Match 条件块中，无法证明具体条目不受影响时，preview 会把全部明确 Host 标为 unsupported，而不是猜测其继承结果。
 - Preview 与 apply 只在 Rust 内存中保存服务端行 ID，并与窗口和 15 分钟 TTL 绑定。Apply 只接受 preview ID 与选中行 ID，重新读取文件并校验 SHA-256 后再写入；源文件变化返回 `CONFLICT`。
 - Apply 使用事务内 `ON CONFLICT DO NOTHING` 跳过已存在与批内重复的 `(host, port, user)`，不会因单条重复让整批失败。
 - 导入不复制 `IdentityFile` 内容、不创建系统凭据、不执行代理指令，也不写入 `known_host_keys`。新服务器以 `secret_ref = NULL` 和“凭据待配置”状态进入目录。

@@ -366,7 +366,7 @@ function ImportRow({
 }) {
   const selectable = item.status === 'ready';
   return (
-    <li className={selectable ? 'bg-paper' : 'bg-[#F3F1EC]'}>
+    <li className={selectable ? 'bg-paper' : 'bg-shell/40'}>
       <div className="grid grid-cols-[32px_1.2fr_0.9fr_1.4fr_78px_92px] items-center px-3 py-2.5">
         <label className="grid place-items-center">
           <input

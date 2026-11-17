@@ -84,7 +84,7 @@ fn ssh_config_skips_incomplete_entries_and_keeps_valid_siblings() {
 }
 
 #[test]
-fn ssh_config_marks_proxy_semantics_unsupported_and_does_not_hide_match_blocks() {
+fn ssh_config_marks_global_and_row_proxy_semantics_unsupported() {
     let parsed = SshConfigImporter::parse(
         "Include ~/.ssh/company/*\n\
          Host bastion\n\
@@ -108,7 +108,13 @@ fn ssh_config_marks_proxy_semantics_unsupported_and_does_not_hide_match_blocks()
         ["ProxyJump", "ProxyCommand"]
     );
     assert_eq!(parsed.entries[1].alias, "direct");
-    assert!(parsed.entries[1].importable);
+    assert!(!parsed.entries[1].importable);
+    assert!(
+        parsed.entries[1]
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("文件级配置"))
+    );
     assert!(
         parsed
             .warnings
@@ -120,6 +126,94 @@ fn ssh_config_marks_proxy_semantics_unsupported_and_does_not_hide_match_blocks()
             .warnings
             .iter()
             .any(|warning| warning.line == 7 && warning.message.contains("Match"))
+    );
+}
+
+#[test]
+fn ssh_config_does_not_assign_unterminated_lines_to_the_previous_host() {
+    let parsed = SshConfigImporter::parse(
+        "Host prod\n\
+           User deploy\n\
+         Host \"unterminated\n\
+           HostName attacker.example.com\n\
+           ProxyJump bastion\n",
+    )
+    .expect("unterminated headers should not fail valid siblings");
+
+    assert_eq!(parsed.entries.len(), 1);
+    assert_eq!(parsed.entries[0].alias, "prod");
+    assert_eq!(parsed.entries[0].host, "prod");
+    assert!(parsed.entries[0].importable);
+    assert!(
+        parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.line == 3 && warning.message.contains("引号未闭合"))
+    );
+}
+
+#[test]
+fn ssh_config_skips_hosts_with_unterminated_semantic_directives() {
+    let parsed = SshConfigImporter::parse(
+        "Host prod\n\
+           User deploy\n\
+           HostName \"unterminated\n\
+           ProxyJump bastion\n\
+         Host good\n\
+           HostName good.example.com\n\
+           User deploy\n",
+    )
+    .expect("one malformed directive must not fail its siblings");
+
+    assert_eq!(parsed.entries.len(), 1);
+    assert_eq!(parsed.entries[0].alias, "good");
+    assert!(
+        parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.line == 3 && warning.message.contains("引号未闭合"))
+    );
+}
+
+#[test]
+fn ssh_config_global_proxy_defaults_disable_direct_hosts() {
+    let parsed = SshConfigImporter::parse(
+        "Host *\n\
+           ProxyJump bastion\n\
+         Host direct\n\
+           HostName direct.example.com\n\
+           User deploy\n",
+    )
+    .expect("a proxy default must not fail the whole file");
+
+    assert_eq!(parsed.entries.len(), 1);
+    assert_eq!(parsed.entries[0].alias, "direct");
+    assert!(!parsed.entries[0].importable);
+    assert!(
+        parsed.entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("文件级配置"))
+    );
+}
+
+#[test]
+fn ssh_config_top_level_identity_defaults_disable_direct_hosts() {
+    let parsed = SshConfigImporter::parse(
+        "Port 2222\n\
+         Host direct\n\
+           HostName direct.example.com\n\
+           User deploy\n",
+    )
+    .expect("top-level defaults must remain visible");
+
+    assert_eq!(parsed.entries.len(), 1);
+    assert!(!parsed.entries[0].importable);
+    assert!(
+        parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("顶层"))
     );
 }
 
@@ -159,6 +253,15 @@ fn ssh_config_rejects_files_without_any_recognized_host_declaration() {
     let error = SshConfigImporter::parse("this is not an ssh config\n")
         .expect_err("a structurally invalid file must not masquerade as an empty import");
 
+    assert!(error.message().contains("格式异常"));
+}
+
+#[test]
+fn ssh_config_rejects_a_file_with_only_unterminated_host_headers() {
+    let error = SshConfigImporter::parse("Host \"unterminated\n  User deploy\n")
+        .expect_err("a malformed-only file is not a usable SSH config");
+
+    assert_eq!(error.code(), CoreErrorCode::Validation);
     assert!(error.message().contains("格式异常"));
 }
 

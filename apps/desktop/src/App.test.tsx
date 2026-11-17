@@ -242,6 +242,50 @@ describe('Harbor empty shell', () => {
     expect(core.calls).toContainEqual(expect.objectContaining({ method: 'updateServer' }));
   });
 
+  it('keeps imported servers visibly pending while their metadata is edited', async () => {
+    const core = createFakeCoreClient({
+      servers: [{
+        id: '019c62b2-2970-7000-8000-000000000015',
+        name: 'imported-pending',
+        host: 'pending.example.com',
+        port: 22,
+        user: 'deploy',
+        authType: 'key',
+        secretRef: null,
+        groupId: null,
+        favorite: false,
+        lastConnectedAt: null,
+        createdAt: 1_699_000_000,
+      }],
+    });
+
+    render(<App core={core} />);
+    const server = await screen.findByRole('button', {
+      name: /^打开服务器 imported-pending/u,
+    });
+    expect(screen.getByText('凭据待配置')).toBeVisible();
+    fireEvent.click(server);
+    expect(screen.getByText(/认证方式待配置/u)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '编辑服务器' }));
+
+    const dialog = screen.getByRole('dialog', { name: '编辑服务器' });
+    expect(within(dialog).getByText(
+      '当前凭据待配置；留空只保存服务器元数据，补充凭据后才能连接。',
+    )).toBeVisible();
+    expect(within(dialog).getByPlaceholderText('留空继续待配置')).toBeVisible();
+
+    fireEvent.change(within(dialog).getByLabelText('名称'), {
+      target: { value: 'imported-pending-renamed' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存服务器' }));
+
+    expect(await screen.findByRole('heading', {
+      name: 'imported-pending-renamed',
+    })).toBeVisible();
+    expect(screen.getByText(/认证方式待配置/u)).toBeVisible();
+    expect(core.calls).toContainEqual(expect.objectContaining({ method: 'updateServer' }));
+  });
+
   it('requires confirmation before deleting the selected server', async () => {
     const core = createFakeCoreClient({
       servers: [{

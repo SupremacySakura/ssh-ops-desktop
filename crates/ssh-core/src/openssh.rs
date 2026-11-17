@@ -136,7 +136,7 @@ impl SshConfigImporter {
             }
 
             let Some(tokens) = tokenize_line(raw_line) else {
-                parser.warning(line_number, "该行引号未闭合，已忽略。");
+                parser.handle_unterminated_line(raw_line, line_number);
                 continue;
             };
             if tokens.is_empty() {
@@ -153,18 +153,35 @@ impl SshConfigImporter {
                 continue;
             }
             if parser.inside_match {
-                parser.warning(
-                    line_number,
-                    format!(
-                        "Match 条件块中的 {} 暂不支持，已忽略。",
-                        canonical_directive(directive)
-                    ),
-                );
+                let directive_name = canonical_directive(directive);
+                if directive_affects_import(directive) {
+                    parser.block_globally(
+                        line_number,
+                        format!(
+                            "Match 条件块中的 {directive_name} 会影响匹配 Host 的目标或认证语义，暂不支持；全部明确 Host 已停用导入。"
+                        ),
+                    );
+                } else {
+                    parser.warning(
+                        line_number,
+                        format!("Match 条件块中的 {directive_name} 暂不支持，已忽略。"),
+                    );
+                }
                 continue;
             }
 
             if parser.current.is_some() {
                 parser.apply_host_directive(directive, &tokens[1..], line_number);
+            } else if directive.eq_ignore_ascii_case("include")
+                || directive_affects_import(directive)
+            {
+                parser.block_globally(
+                    line_number,
+                    format!(
+                        "顶层的 {} 会影响所有明确 Host 的目标或认证语义，暂不支持；全部导入项已停用。",
+                        canonical_directive(directive)
+                    ),
+                );
             } else {
                 parser.warning(
                     line_number,
@@ -179,6 +196,26 @@ impl SshConfigImporter {
 
         if !parser.saw_host_declaration {
             return Err(validation("SSH Config 格式异常：未发现有效的 Host 条目"));
+        }
+        if let Some(first) = parser.global_blockers.first() {
+            let count = parser.global_blockers.len();
+            let mut summary = format!(
+                "文件级配置包含未支持语义（第 {} 行：{}）",
+                first.line, first.message
+            );
+            if count > 1 {
+                summary.push_str(&format!("，另有 {} 条", count - 1));
+            }
+            summary.push_str("；该 Host 已停用，避免按错误目标直连。");
+            for entry in &mut parser.entries {
+                if entry.importable {
+                    entry.importable = false;
+                    entry.warnings.push(SshConfigWarning {
+                        line: first.line,
+                        message: summary.clone(),
+                    });
+                }
+            }
         }
 
         Ok(SshConfigParse {
@@ -219,7 +256,7 @@ pub fn read_ssh_config(path: &Path) -> Result<SshConfigFile, CoreError> {
         return Err(validation("SSH Config 文件超过 1 MiB，无法导入"));
     }
 
-    let mut file = fs::File::open(path).map_err(|error| {
+    let file = fs::File::open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::PermissionDenied {
             CoreError::new(
                 CoreErrorCode::Internal,
@@ -235,13 +272,15 @@ pub fn read_ssh_config(path: &Path) -> Result<SshConfigFile, CoreError> {
         }
     })?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|_| {
-        CoreError::new(
-            CoreErrorCode::Internal,
-            "无法读取 SSH Config 文件，请重试",
-            true,
-        )
-    })?;
+    file.take(MAX_SSH_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| {
+            CoreError::new(
+                CoreErrorCode::Internal,
+                "无法读取 SSH Config 文件，请重试",
+                true,
+            )
+        })?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SSH_CONFIG_BYTES {
         return Err(validation("SSH Config 文件超过 1 MiB，无法导入"));
     }
@@ -256,6 +295,7 @@ pub fn read_ssh_config(path: &Path) -> Result<SshConfigFile, CoreError> {
 struct Parser {
     entries: Vec<SshConfigEntry>,
     warnings: Vec<SshConfigWarning>,
+    global_blockers: Vec<SshConfigWarning>,
     current: Option<HostBlock>,
     inside_match: bool,
     saw_host_declaration: bool,
@@ -277,12 +317,96 @@ struct HostBlock {
     invalid: bool,
 }
 
+impl HostBlock {
+    fn invalid(declaration_line: usize) -> Self {
+        Self {
+            declaration_line,
+            aliases: Vec::new(),
+            wildcard: false,
+            discard: false,
+            host_name: None,
+            username: None,
+            port: None,
+            identity_file: None,
+            unsupported: Vec::new(),
+            warnings: Vec::new(),
+            blocked: false,
+            invalid: true,
+        }
+    }
+}
+
 impl Parser {
     fn warning(&mut self, line: usize, message: impl Into<String>) {
         self.warnings.push(SshConfigWarning {
             line,
             message: message.into(),
         });
+    }
+
+    fn block_globally(&mut self, line: usize, message: impl Into<String>) {
+        let warning = SshConfigWarning {
+            line,
+            message: message.into(),
+        };
+        if !self.global_blockers.contains(&warning) {
+            self.global_blockers.push(warning.clone());
+            self.warnings.push(warning);
+        }
+    }
+
+    fn handle_unterminated_line(&mut self, raw_line: &str, line: usize) {
+        let directive = leading_directive(raw_line).map(str::to_ascii_lowercase);
+        match directive.as_deref() {
+            Some("host") => {
+                self.finish_current();
+                self.inside_match = false;
+                self.warning(
+                    line,
+                    "Host 行引号未闭合，该配置块已忽略；后续指令不会附加到上一个 Host。",
+                );
+                self.current = Some(HostBlock::invalid(line));
+            }
+            Some("match") => {
+                self.finish_current();
+                self.inside_match = true;
+                self.warning(line, "Match 行引号未闭合，其后的条件配置已忽略。");
+            }
+            Some(directive) => {
+                if let Some(current) = &mut self.current {
+                    current.invalid = true;
+                    current.warnings.push(SshConfigWarning {
+                        line,
+                        message: format!(
+                            "{} 行引号未闭合；该 Host 已跳过，避免错误归属后续指令。",
+                            canonical_directive(directive)
+                        ),
+                    });
+                } else if directive_affects_import(directive) {
+                    self.block_globally(
+                        line,
+                        format!(
+                            "{} 行引号未闭合，无法安全解释其全局影响；全部明确 Host 已停用导入。",
+                            canonical_directive(directive)
+                        ),
+                    );
+                } else {
+                    self.warning(line, "该行引号未闭合，已忽略。");
+                }
+            }
+            None => {
+                if let Some(current) = &mut self.current {
+                    current.invalid = true;
+                    current.warnings.push(SshConfigWarning {
+                        line,
+                        message: "该行引号未闭合；该 Host 已跳过，避免错误归属后续指令。"
+                            .to_owned(),
+                    });
+                } else {
+                    self.warning(line, "该行引号未闭合，已忽略。");
+                }
+            }
+        }
     }
 
     fn start_host(&mut self, aliases: &[String], line: usize) {
@@ -467,6 +591,16 @@ impl Parser {
                 block.declaration_line,
                 "通配 Host 已忽略；不会猜测其匹配目标或将其规则套用到导入项。",
             );
+            let affecting_directives = wildcard_affecting_directives(&block);
+            if !affecting_directives.is_empty() {
+                self.block_globally(
+                    block.declaration_line,
+                    format!(
+                        "通配 Host 包含影响目标或认证语义的 {}；无法安全判断其继承范围，全部明确 Host 已停用导入。",
+                        affecting_directives.join("、")
+                    ),
+                );
+            }
             if !block.unsupported.is_empty() {
                 let names = block
                     .unsupported
@@ -534,6 +668,14 @@ impl Parser {
             });
         }
     }
+}
+
+fn leading_directive(line: &str) -> Option<&str> {
+    let directive = line
+        .trim_start()
+        .split(|character: char| character.is_whitespace() || character == '=')
+        .next()?;
+    (!directive.is_empty()).then_some(directive)
 }
 
 fn tokenize_line(line: &str) -> Option<Vec<String>> {
@@ -636,6 +778,33 @@ fn is_blocking_directive(value: &str) -> bool {
             | "knownhostscommand"
             | "remotecommand"
     )
+}
+
+fn directive_affects_import(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "hostname" | "user" | "port" | "proxyjump" | "proxycommand" | "include"
+    ) || is_blocking_directive(value)
+}
+
+fn wildcard_affecting_directives(block: &HostBlock) -> Vec<String> {
+    let mut directives = std::collections::BTreeSet::new();
+    if block.host_name.is_some() {
+        directives.insert("HostName".to_owned());
+    }
+    if block.username.is_some() {
+        directives.insert("User".to_owned());
+    }
+    if block.port.is_some() {
+        directives.insert("Port".to_owned());
+    }
+    for (_, directive) in &block.unsupported {
+        if directive_affects_import(directive) {
+            directives.insert(directive.clone());
+        }
+    }
+
+    directives.into_iter().collect()
 }
 
 fn canonical_directive(value: &str) -> String {
