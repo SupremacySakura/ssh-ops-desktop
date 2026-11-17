@@ -259,6 +259,7 @@ export function DockerPane({ active, onExecOpened, server }: DockerPaneProps) {
 
       {docker?.logs ? (
         <DockerLogsDialog
+          active={active}
           logs={docker.logs}
           onClose={() => closeLogs(server.id)}
           onTailChange={(tail) => {
@@ -303,6 +304,7 @@ export function DockerPane({ active, onExecOpened, server }: DockerPaneProps) {
 
       {shellChoice ? (
         <DockerShellDialog
+          active={active}
           busy={execBusy}
           container={shellChoice}
           error={execError ? dockerErrorMessage(execError) : null}
@@ -611,10 +613,12 @@ function DockerStatePanel({
 }
 
 function DockerLogsDialog({
+  active,
   logs,
   onClose,
   onTailChange,
 }: {
+  active: boolean;
   logs: DockerLogsState;
   onClose(): void;
   onTailChange(tail: number): void;
@@ -622,7 +626,7 @@ function DockerLogsDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
-  useModalFocus(dialogRef, closeRef, onClose);
+  useModalFocus(dialogRef, closeRef, onClose, active);
 
   return (
     <div
@@ -717,12 +721,14 @@ function DockerLogsDialog({
 }
 
 function DockerShellDialog({
+  active,
   busy,
   container,
   error,
   onCancel,
   onChoose,
 }: {
+  active: boolean;
   busy: boolean;
   container: DockerContainer;
   error: string | null;
@@ -732,9 +738,14 @@ function DockerShellDialog({
   const dialogRef = useRef<HTMLElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
-  useModalFocus(dialogRef, cancelRef, () => {
-    if (!busy) onCancel();
-  });
+  useModalFocus(
+    dialogRef,
+    cancelRef,
+    () => {
+      if (!busy) onCancel();
+    },
+    active,
+  );
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-ink/45 p-6">
@@ -848,11 +859,13 @@ function useModalFocus(
   dialogRef: RefObject<HTMLElement | null>,
   initialFocusRef: RefObject<HTMLElement | null>,
   onClose: () => void,
+  active: boolean,
 ) {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
   useEffect(() => {
+    if (!active) return;
     const previous = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
@@ -892,5 +905,5 @@ function useModalFocus(
       window.removeEventListener('keydown', handleKeyDown);
       previous?.focus();
     };
-  }, [dialogRef, initialFocusRef]);
+  }, [active, dialogRef, initialFocusRef]);
 }

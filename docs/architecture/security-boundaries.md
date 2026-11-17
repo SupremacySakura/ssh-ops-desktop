@@ -1,6 +1,6 @@
 # Harbor 安全边界
 
-本文记录当前 Harbor 已实现的权限边界，以及后续功能不得绕过的约束。当前已实现服务器目录、SSH Config 导入、SSH 连接与终端；不把尚未实现的 SFTP、文件、监控或 Docker 能力写成已有能力。
+本文记录当前 Harbor 已实现的权限边界，以及后续功能不得绕过的约束。当前已实现服务器目录、SSH Config 导入、SSH 连接、终端、SFTP 文件（含写操作）、系统监控与 Docker 管理；命令面共 **32** 个，以 `src-tauri/build.rs` 的 manifest 为准。
 
 ## 信任区域
 
@@ -13,7 +13,7 @@
 
 ## WebView 与 IPC
 
-- 主窗口 capability 只授予显式生成的 `core_health`、服务器目录、SSH Config 导入、连接与终端命令权限，以及 terminal/connection 事件桥所需的 `core:event:allow-listen`、`core:event:allow-unlisten`；不包含 `core:event:default`、`shell:*`、`fs:*`、HTTP 通配权限或远程 URL 访问能力。
+- 主窗口 capability 只授予显式生成的 32 个命令权限：`core_health`、服务器/分组目录、SSH Config 导入、连接、终端、文件（列表/读取/写入/下载/上传/新建目录/重命名/删除）、监控快照与 Docker（列表/日志/操作/exec），以及 terminal/connection 事件桥所需的 `core:event:allow-listen`、`core:event:allow-unlisten`；不包含 `core:event:default`、`shell:*`、`fs:*`、HTTP 通配权限或远程 URL 访问能力。
 - 应用 command 同时在 `src-tauri/build.rs` 的 manifest、`src-tauri/src/lib.rs` 的 invoke handler、权限文件与主窗口 capability 中显式注册。
 - `core_health` 只返回版本、数据库 readiness 和凭据库 readiness；不返回数据库路径、环境变量、系统凭据名称或后端错误详情。
 - React 只依赖 `CoreClient` 接口；Tauri `invoke` 被限制在适配器内。IPC 拒绝时 UI 显示通用错误，不向用户暴露原始后端错误。
@@ -23,7 +23,7 @@
 ## SQLite 与凭据
 
 - SQLite 文件位于 Tauri 的应用私有数据目录，并启用 WAL、外键与 busy timeout。
-- schema 只包含 `groups`、`servers` 与内部 `known_host_keys`。不创建 tasks、audits、agent、model、projects、tags 或 tunnel 表。
+- schema 只包含 `groups`、`servers` 与内部 `known_host_keys`。不创建旧子系统、标签或隧道表。
 - `servers.secret_ref` 是可空的不透明引用；非空值只指向系统凭据库，`NULL` 仅表示“凭据待配置”，不得写入空字符串、占位引用或猜测的凭据。
 - 迁移将 `servers` 重建为允许可空 `secret_ref` 的表，并在同一事务中备份和恢复 `known_host_keys`，避免服务器表重建级联丢失已信任指纹。
 - 删除分组时通过外键 `ON DELETE SET NULL` 清空服务器分组，不级联删除服务器。
@@ -55,6 +55,7 @@
 - 每台服务器最多 8 个 open 会话；关闭或断连事件只能关闭匹配连接，处理后会清理 Session 与输出缓冲，避免占用限额。
 - `last_connected_at` 只在连接成功、连接注册与时间戳写入都成功后更新。
 - 前端只通过 `CoreClient` 调用连接、终端与事件桥命令；`connection:state` 的 ready/error 事件不覆盖本地 connect 返回值，closed 只接受当前连接 ID 与更高序号。
+- 四个 Tab（终端/文件/监控/Docker）始终挂载；切换 Tab 只改变可见性，不销毁 xterm、Monaco 草稿或监控缓冲。切换服务器时旧 Workspace 保持挂载但不可交互，后台采样与迟到响应必须按 server/connection generation 丢弃，不得污染当前服务器。
 
 ## 远程路径与文件操作
 
@@ -64,11 +65,18 @@
 - 上传批次硬上限为单文件与整批各 16 MiB、最多 32 个文件；这是为控制 JSON/IPC 峰值内存的刻意限制，Rust、契约与 UI 必须同步，超限在读取文件前拒绝并给出中文提示。
 - 前端不得直接调用系统 shell 或文件系统；远程操作只能经由 Rust Core 的类型化 command。
 
+## 监控与 Docker
+
+- `monitor_snapshot` 只读取当前已就绪连接的系统指标；采样每 2 秒一次，最多保留 150 个点，只存在前端内存，不写入 SQLite、日志或磁盘。
+- 监控、文件与 Docker 操作只消费 Workspace 已建立的连接，不各自创建 SSH 连接；离线或重连时停止旧采样，迟到快照按 connection ID 丢弃。
+- Docker 操作只允许列表、日志、start/stop/restart 与 exec；exec 复用终端会话限额与连接归属校验，不新建独立 shell 后端。
+- Docker 命令参数不拼接用户输入到本地 shell；容器 ID 与 shell 经 Rust 侧校验后执行。
+
 ## 测试边界
 
 - Playwright renderer 测试只运行 Vite fixture 与 Chromium，使用注入的 fake `CoreClient`，不声称覆盖 Tauri、Rust、系统 WebView、Keychain 或 SSH。
 - Rust 命令测试使用 `CoreServices` + 内存 SQLite + `MemorySecretStore`；真实系统凭据库不可用时，必须报告未就绪而不是伪造 readiness。
-- 旧 WebdriverIO native E2E、测试专用 capability 与测试驱动 feature 已删除；不得在普通构建或发布构建中重新加入测试入口。
+- 测试专用 capability 与测试驱动 feature 已删除；不得在普通构建或发布构建中重新加入测试入口。
 
 ## CI 边界
 

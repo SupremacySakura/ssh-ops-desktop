@@ -80,6 +80,9 @@ jobs:
       - name: Run TypeScript tests
         run: pnpm test
 
+      - name: Run cross-boundary integration tests
+        run: pnpm test:integration
+
       - name: Run Rust tests
         run: cargo test --workspace
 
@@ -89,5 +92,5 @@ jobs:
       - name: Run renderer E2E
         run: pnpm test:e2e:renderer
 
-      - name: Build debug desktop shell without test driver
+      - name: Build debug desktop shell
         run: pnpm tauri build --debug

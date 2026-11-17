@@ -6,6 +6,8 @@
 
 web
 
+交付形态是 Tauri 2 桌面应用（macOS 优先，Windows 同步支持），渲染层仍是 WebView 中的 React 应用；这里按 impeccable 的 `web` 平台记录视觉与交互基线，不表示产品以浏览器网站分发。
+
 ## Users
 
 个人开发者（单人），日常维护 5–20 台 Linux 服务器（个人 VPS、个人项目、少量生产环境）。使用场景：坐在 Mac 前，打开桌面应用，快速连接、看状态、传文件、重启容器，然后离开。不是团队协作场景，没有多角色、权限、审批链。
@@ -16,7 +18,7 @@ Harbor 是一款本地优先的纯 SSH 运维台：以服务器列表为入口�
 
 ## Positioning
 
-把"服务器"当作唯一一等公民的运维台：左侧选服务器，右侧在同一上下文里完成终端、文件、监控、Docker 四件事。没有 AI、没有项目部署、没有团队协作、没有审计——所有设计预算集中在单台服务器的高频操作上。
+把"服务器"当作唯一一等公民的运维台：左侧选服务器，右侧在同一上下文里完成终端、文件、监控、Docker 四件事。没有团队协作，也没有与单机运维无关的功能——所有设计预算集中在单台服务器的高频操作上。
 
 ## Operating Context
 
@@ -28,8 +30,9 @@ Harbor 是一款本地优先的纯 SSH 运维台：以服务器列表为入口�
 
 ## Capabilities and Constraints
 
-- 五个核心能力：服务器列表（分组 / 搜索 / favorite）、多标签 SSH 终端、SFTP 文件管理（含在线编辑）、系统监控（近 5 分钟）、Docker 容器管理（列出 / 日志 / start / stop / restart / exec）。
+- 五个核心能力：服务器列表（分组 / 搜索 / favorite）、多标签 SSH 终端、SFTP 文件管理（浏览 / 上传 / 下载 / 新建 / 重命名 / 删除 / Monaco 在线编辑）、系统监控（五卡 / 近 5 分钟曲线 / Top 10）、Docker 容器管理（列出 / 日志 / start / stop / restart / exec）。
 - 单服务器聚焦：同一时刻只有一个 Workspace 激活；切换服务器时终端会话保活。
+- 四个 Tab 始终挂载：切换 Tab 不销毁终端、文件草稿或监控采样；后台采样与迟到响应按服务器/连接隔离。
 - 每个 Workspace 最多 8 个并发终端 Session。
 - 监控数据只保留最近 5 分钟在内存中，不落盘。
 - 术语以仓库根目录 `GLOSSARY.md` 为准（Server / Group / Workspace / Tab / Session / Favorite / Command History / Remote Path）。
@@ -37,8 +40,8 @@ Harbor 是一款本地优先的纯 SSH 运维台：以服务器列表为入口�
 ## Brand Commitments
 
 - 产品名：Harbor（港湾——服务器停靠的地方）。
-- 定位：纯 SSH 运维工具，不掺 AI。
-- 旧 OpsPilot UI（侧栏 + 10 个页面）是**反参考**，不作为视觉继承；只保留其中被验证过的功能事实。
+- 定位：纯 SSH 运维工具，只做单机远程操作。
+- 旧 OpsPilot UI 是**反参考**，不作为视觉继承；只保留其中被验证过的功能事实。
 
 ## Evidence on Hand
 

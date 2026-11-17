@@ -3,7 +3,7 @@
 议题保存在本仓库的 GitHub Issues 中，使用 `gh` CLI 读写。
 
 - 仓库：`SupremacySakura/ssh-ops-desktop`
-- 默认分支：`master`
+- 当前开发分支：`rebuild`（`master` 是旧 OpsPilot 历史分支）
 
 ## 常用命令
 

@@ -27,6 +27,24 @@ vi.mock('./features/terminal/xterm-viewport', () => ({
   ),
 }));
 
+vi.mock('./features/files/code-editor', () => ({
+  CodeEditor: ({
+    'aria-label': ariaLabel,
+    onChange,
+    value,
+  }: {
+    'aria-label'?: string;
+    onChange(value: string): void;
+    value: string;
+  }) => (
+    <textarea
+      aria-label={ariaLabel}
+      onChange={(event) => onChange(event.target.value)}
+      value={value}
+    />
+  ),
+}));
+
 const readyCore = createFakeCoreClient({
   health: {
     version: 'test-version',
@@ -823,8 +841,15 @@ describe('Harbor empty shell', () => {
       name: /^打开服务器 prod-web-01/u,
     }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('SSH 认证失败');
-    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    const terminalPanel = document.querySelector(
+      '[data-workspace-panel="terminal"]',
+    );
+    expect(terminalPanel).not.toBeNull();
+    expect(await within(terminalPanel as HTMLElement).findByRole('alert'))
+      .toHaveTextContent('SSH 认证失败');
+    fireEvent.click(
+      within(terminalPanel as HTMLElement).getByRole('button', { name: '重试' }),
+    );
     expect(await screen.findByRole('tab', { name: '切换到 终端 1' })).toBeVisible();
   });
 
@@ -946,6 +971,58 @@ describe('Harbor empty shell', () => {
     });
   });
 
+  it('keeps a hidden Docker log dialog open and ignores its Escape key', async () => {
+    const server = terminalServer('prod-web-01');
+    const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const core = createFakeCoreClient({
+      servers: [server],
+      dockerContainers: [{
+        id: containerId,
+        names: ['web'],
+        image: 'nginx:alpine',
+        state: 'running',
+        status: 'Up 3 hours',
+        ports: [],
+        startedAt: '2026-11-17T12:00:00Z',
+      }],
+      dockerLogs: {
+        [containerId]: {
+          containerId,
+          tail: 500,
+          stdout: 'request completed\n',
+          stderr: '',
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看 web 日志' }));
+
+    const logsDialog = await screen.findByRole('dialog', {
+      name: '容器日志 web',
+    });
+    expect(await within(logsDialog).findByText(/request completed/u)).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: /^终端$/u }));
+    const hiddenDialog = screen.getByRole('dialog', {
+      hidden: true,
+      name: '容器日志 web',
+    });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(hiddenDialog).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+    expect(screen.getByRole('dialog', { name: '容器日志 web' })).toBeVisible();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '容器日志 web' }))
+      .not.toBeInTheDocument();
+  });
+
   it('execs the selected container with sh and selects the new terminal session', async () => {
     const server = terminalServer('prod-web-01');
     const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -1051,8 +1128,15 @@ describe('Harbor empty shell', () => {
       name: /^打开服务器 offline-box/u,
     }));
     fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
-    expect(await screen.findByText(/服务器离线/u)).toBeVisible();
-    expect(screen.getByRole('button', { name: '重新连接' })).toBeVisible();
+    const dockerPanel = document.querySelector(
+      '[data-workspace-panel="docker"]',
+    );
+    expect(dockerPanel).not.toBeNull();
+    expect(await within(dockerPanel as HTMLElement).findByText(/服务器离线/u))
+      .toBeVisible();
+    expect(
+      within(dockerPanel as HTMLElement).getByRole('button', { name: '重新连接' }),
+    ).toBeVisible();
     first.unmount();
     cleanup();
     useHarborStore.getState().reset();
@@ -1273,6 +1357,131 @@ describe('Harbor monitoring workspace', () => {
     const table = screen.getByRole('table', { name: 'Top 10 进程' });
     expect(within(table).getByText('nginx worker')).toBeVisible();
     expect(within(table).getAllByText('postgres').length).toBeGreaterThan(0);
+  });
+
+  it('keeps all four tab panels mounted across tab and server switches', async () => {
+    const prod = terminalServer('prod-web-01');
+    const dev = terminalServer(
+      'dev-box',
+      '019c62b2-2970-7000-8000-000000000007',
+    );
+    const core = createFakeCoreClient({
+      servers: [prod, dev],
+      files: { entriesByDirectory: { '/': [] } },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    const prodSession = useTerminalStore.getState()
+      .runtimes[prod.id]?.sessions[0]?.id;
+    expect(prodSession).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '监控' }));
+    expect(await screen.findByRole('heading', { name: '系统监控' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '按内存排序' }));
+    expect(screen.getByRole('button', { name: '按内存排序' }))
+      .toHaveAttribute('aria-pressed', 'true');
+
+    const prodWorkspace = screen.getByRole('main', { hidden: true });
+    const prodPanels = within(prodWorkspace);
+    expect(prodPanels.getByTestId(`terminal-viewport-${prodSession}`))
+      .toBeInTheDocument();
+    expect(prodPanels.getByRole('region', { name: 'CPU 概览' }))
+      .toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+    fireEvent.click(screen.getByRole('button', { name: '文件' }));
+    expect(await screen.findByText('目录为空')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '监控' }));
+    expect(screen.getByRole('button', { name: '按内存排序' }))
+      .toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId(`terminal-viewport-${prodSession}`))
+      .toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 dev-box/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: '监控' }));
+    fireEvent.click(screen.getByRole('button', { name: '按 CPU 排序' }));
+    fireEvent.click(screen.getByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    fireEvent.click(screen.getByRole('button', { name: '监控' }));
+
+    expect(screen.getByRole('button', { name: '按内存排序' }))
+      .toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId(`terminal-viewport-${prodSession}`))
+      .toBeInTheDocument();
+    expect(core.calls.filter((call) => call.method === 'connect')).toHaveLength(2);
+  });
+
+  it('keeps a hidden Monaco draft and ignores its Escape key', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const server = terminalServer('prod-web-01');
+    const core = createFakeCoreClient({
+      servers: [server],
+      files: {
+        entriesByDirectory: {
+          '/': [{
+            name: 'app.conf',
+            path: '/app.conf',
+            kind: 'file',
+            size: 6,
+            modifiedAt: 1_700_000_100,
+            permissions: 0o640,
+          }],
+        },
+        documents: {
+          '/app.conf': {
+            path: '/app.conf',
+            text: 'hello\n',
+            sha256: 'fixture',
+            size: 6,
+            modifiedAt: 1_700_000_100,
+          },
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: /^文件$/u }));
+    fireEvent.doubleClick(await screen.findByRole('button', {
+      name: '打开文件 app.conf',
+    }));
+
+    const editor = await screen.findByRole('dialog', { name: '编辑 app.conf' });
+    const input = await within(editor).findByRole('textbox', {
+      name: 'app.conf 的远程文本内容',
+    });
+    fireEvent.change(input, { target: { value: 'draft kept\n' } });
+    expect(within(editor).getByText('有未保存修改')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: /^终端$/u }));
+    const hiddenEditor = screen.getByRole('dialog', {
+      hidden: true,
+      name: '编辑 app.conf',
+    });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(hiddenEditor).toBeInTheDocument();
+    expect(within(hiddenEditor).getByRole('textbox', {
+      name: 'app.conf 的远程文本内容',
+    })).toHaveValue('draft kept\n');
+
+    fireEvent.click(screen.getByRole('button', { name: /^文件$/u }));
+    expect(screen.getByRole('dialog', { name: '编辑 app.conf' })).toBeVisible();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '编辑 app.conf' }))
+      .not.toBeInTheDocument();
+    confirm.mockRestore();
   });
 });
 

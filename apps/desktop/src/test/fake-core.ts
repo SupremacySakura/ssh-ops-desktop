@@ -60,6 +60,9 @@ export interface FakeCoreOptions {
   servers?: Server[];
   groups?: Group[];
   health?: CoreHealth;
+  terminalEcho?: boolean;
+  terminalOsc7?: boolean;
+  persistence?: FakeCorePersistence;
   dockerContainers?: DockerContainer[];
   dockerLogs?: Record<string, DockerLogs>;
   dockerStartedAtWarning?: string | null;
@@ -72,6 +75,16 @@ export interface FakeCoreOptions {
   ) => MonitorSnapshot | Promise<MonitorSnapshot>);
   sshConfigImport?: SshConfigImportPreview;
   overrides?: Partial<CoreClient>;
+}
+
+export interface FakeCoreSnapshot {
+  servers: Server[];
+  groups: Group[];
+}
+
+export interface FakeCorePersistence {
+  load(): FakeCoreSnapshot | null;
+  save(snapshot: FakeCoreSnapshot): void;
 }
 
 export interface FakeFileSystem {
@@ -97,6 +110,9 @@ export function createFakeCoreClient({
   servers: initialServers = [],
   groups: initialGroups = [],
   health = readyHealth,
+  terminalEcho = false,
+  terminalOsc7 = false,
+  persistence,
   dockerContainers: initialDockerContainers = [],
   dockerLogs = {},
   dockerStartedAtWarning = null,
@@ -108,8 +124,15 @@ export function createFakeCoreClient({
   overrides = {},
 }: FakeCoreOptions = {}): FakeCoreClient {
   const calls: CoreCall[] = [];
-  let servers = initialServers.map(cloneServer);
-  let groups = initialGroups.map((group) => ({ ...group }));
+  const persisted = persistence?.load() ?? null;
+  let servers = (persisted?.servers ?? initialServers).map(cloneServer);
+  let groups = (persisted?.groups ?? initialGroups).map((group) => ({ ...group }));
+  const persist = () => {
+    persistence?.save({
+      servers: servers.map(cloneServer),
+      groups: groups.map((group) => ({ ...group })),
+    });
+  };
   let entriesByDirectory = Object.fromEntries(
     Object.entries(files?.entriesByDirectory ?? {}).map(([path, entries]) => [
       path,
@@ -135,6 +158,8 @@ export function createFakeCoreClient({
   const terminalClosedHandlers = new Set<(event: TerminalClosedEvent) => void>();
   let connectionSequence = 0;
   let monitorSequence = 0;
+  const terminalEchoSequences = new Map<string, number>();
+  const terminalInputLines = new Map<string, string>();
 
   const emitConnectionState = (event: ConnectionStateEvent) => {
     for (const handler of connectionStateHandlers) handler(event);
@@ -172,6 +197,7 @@ export function createFakeCoreClient({
         createdAt: currentTimestamp(),
       };
       servers = [...servers, created];
+      persist();
       return cloneServer(created);
     },
     updateServer: async (id, input, credential) => {
@@ -189,12 +215,14 @@ export function createFakeCoreClient({
           : secretReference(credential),
       };
       servers = servers.map((server) => (server.id === id ? updated : server));
+      persist();
       return cloneServer(updated);
     },
     deleteServer: async (id) => {
       remember(calls, 'deleteServer', [id]);
       requireServer(servers, id);
       servers = servers.filter((server) => server.id !== id);
+      persist();
     },
     setServerCredential: async (id, input) => {
       remember(calls, 'setServerCredential', [id, input]);
@@ -204,6 +232,7 @@ export function createFakeCoreClient({
         secretRef: secretReference(input),
       };
       servers = servers.map((server) => (server.id === id ? updated : server));
+      persist();
       return cloneServer(updated);
     },
     listGroups: async () => {
@@ -218,6 +247,7 @@ export function createFakeCoreClient({
         sortOrder: input.sortOrder,
       };
       groups = [...groups, created];
+      persist();
       return { ...created };
     },
     updateGroup: async (id, input) => {
@@ -225,6 +255,7 @@ export function createFakeCoreClient({
       requireGroup(groups, id);
       const updated: Group = { id, ...input };
       groups = groups.map((group) => (group.id === id ? updated : group));
+      persist();
       return { ...updated };
     },
     deleteGroup: async (id) => {
@@ -234,6 +265,7 @@ export function createFakeCoreClient({
       servers = servers.map((server) => (
         server.groupId === id ? { ...server, groupId: null } : server
       ));
+      persist();
     },
     connect: async (serverId) => {
       remember(calls, 'connect', [serverId]);
@@ -256,6 +288,7 @@ export function createFakeCoreClient({
             ? { ...candidate, lastConnectedAt: currentTimestamp() }
             : candidate
         ));
+        persist();
         connectionSequence += 1;
         emitConnectionState({
           serverId,
@@ -294,6 +327,27 @@ export function createFakeCoreClient({
     },
     writeTerminal: async (terminalSessionId, bytes) => {
       remember(calls, 'writeTerminal', [terminalSessionId, Array.from(bytes)]);
+      if (terminalEcho || terminalOsc7) {
+        const sequence = (terminalEchoSequences.get(terminalSessionId) ?? 1) + 1;
+        terminalEchoSequences.set(terminalSessionId, sequence);
+        const text = new TextDecoder().decode(bytes);
+        const completedLines = terminalOsc7
+          ? takeCompletedLines(terminalInputLines, terminalSessionId, text)
+          : [];
+        const osc7 = completedLines
+          .map(osc7ForDirectoryChange)
+          .filter((directory): directory is string => directory !== null)
+          .at(-1) ?? null;
+        emitTerminalData({
+          terminalSessionId,
+          sequence,
+          bytes: ptyEchoBytes(
+            new TextEncoder().encode(
+              osc7 ? `\u001b]7;file://fixture${osc7}\u0007${text}` : text,
+            ),
+          ),
+        });
+      }
     },
     resizeTerminal: async (terminalSessionId, columns, rows) => {
       remember(calls, 'resizeTerminal', [terminalSessionId, columns, rows]);
@@ -734,6 +788,7 @@ export function createFakeCoreClient({
         created.push(server);
       }
       servers = [...servers, ...created.map(cloneServer)];
+      persist();
       const result: SshConfigImportResult = {
         importedCount: created.length,
         skippedCount: rows.length - created.length,
@@ -1062,4 +1117,28 @@ function secretReference(credential: ServerCredentialInput): string {
 
 function currentTimestamp(): number {
   return Math.floor(Date.now() / 1_000);
+}
+
+function ptyEchoBytes(bytes: Uint8Array): number[] {
+  const normalized = new TextDecoder()
+    .decode(bytes)
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
+    .replaceAll('\n', '\r\n');
+  return Array.from(new TextEncoder().encode(normalized));
+}
+
+function osc7ForDirectoryChange(text: string): string | null {
+  const match = /^\s*cd\s+(\/[^\s\r\n]*)\s*$/u.exec(text);
+  return match?.[1] ?? null;
+}
+
+function takeCompletedLines(
+  buffers: Map<string, string>,
+  sessionId: string,
+  text: string,
+): string[] {
+  const parts = `${buffers.get(sessionId) ?? ''}${text}`.split(/\r\n|\r|\n/u);
+  buffers.set(sessionId, parts.pop() ?? '');
+  return parts.filter((line) => line.trim().length > 0);
 }

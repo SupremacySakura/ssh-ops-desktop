@@ -219,6 +219,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
           ) : (
             <>
               <div
+                data-workspace-panel="terminal"
                 className={
                   activeTab === 'terminal'
                     ? 'flex min-h-0 flex-1 flex-col'
@@ -232,6 +233,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
                 />
               </div>
               <div
+                data-workspace-panel="files"
                 className={
                   activeTab === 'files'
                     ? 'flex min-h-0 flex-1 flex-col'
@@ -255,20 +257,30 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
                   </div>
                 )}
               </div>
-              <div className={activeTab === 'docker' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+              <div
+                data-workspace-panel="docker"
+                className={activeTab === 'docker' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}
+              >
                 <DockerPane
                   active={active && activeTab === 'docker'}
                   onExecOpened={() => setActiveTab('terminal')}
                   server={canonicalServer}
                 />
               </div>
-              {activeTab === 'monitor' ? (
+              <div
+                data-workspace-panel="monitor"
+                className={
+                  activeTab === 'monitor'
+                    ? 'flex min-h-0 flex-1 flex-col'
+                    : 'hidden'
+                }
+              >
                 <MonitorPanel
                   connectionId={runtime?.connection?.connectionId ?? null}
                   connectionStatus={connectionStatus}
                   serverId={canonicalServer.id}
                 />
-              ) : null}
+              </div>
             </>
           )}
         </section>
