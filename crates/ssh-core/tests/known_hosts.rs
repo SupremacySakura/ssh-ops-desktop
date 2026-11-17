@@ -115,6 +115,65 @@ async fn expired_or_mismatched_verification_never_writes_trust() {
     ));
 }
 
+#[tokio::test]
+async fn concurrent_pending_keys_cannot_replace_an_already_trusted_fingerprint() {
+    let database = Database::open(":memory:")
+        .await
+        .expect("in-memory database should open");
+    let server_id = Id::new();
+    insert_server(&database, server_id, "concurrent.example.com").await;
+    let verifier = HostKeyVerifier::new(database.clone(), Duration::from_secs(600));
+    let endpoint = HostEndpoint::try_new(server_id, "concurrent.example.com", 22).unwrap();
+    let key_a = HostPublicKey::try_new("ssh-ed25519", b"concurrent-key-a").unwrap();
+    let key_b = HostPublicKey::try_new("ssh-ed25519", b"concurrent-key-b").unwrap();
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(3_000_000);
+
+    let first_pending = pending_id(verifier.verify_at(&endpoint, &key_a, now).await.unwrap());
+    let second_pending = pending_id(verifier.verify_at(&endpoint, &key_b, now).await.unwrap());
+
+    verifier
+        .trust_at(first_pending, &endpoint, &key_a, now)
+        .await
+        .expect("the first explicit trust should persist");
+    let takeover = verifier
+        .trust_at(second_pending, &endpoint, &key_b, now)
+        .await
+        .expect_err("a second pending key must not replace trusted identity");
+    assert!(matches!(
+        takeover.code(),
+        CoreErrorCode::Conflict | CoreErrorCode::SshHostKeyChanged
+    ));
+
+    assert_eq!(
+        verifier.verify_at(&endpoint, &key_a, now).await.unwrap(),
+        HostKeyDecision::Trusted
+    );
+    assert!(matches!(
+        verifier.verify_at(&endpoint, &key_b, now).await.unwrap(),
+        HostKeyDecision::Changed { .. }
+    ));
+    let persisted: (String,) = sqlx::query_as(
+        "SELECT sha256 FROM known_host_keys
+         WHERE server_id = ? AND host = ? AND port = ?",
+    )
+    .bind(server_id.to_string())
+    .bind("concurrent.example.com")
+    .bind(22_i64)
+    .fetch_one(database.pool())
+    .await
+    .unwrap();
+    assert_eq!(persisted.0, key_a.sha256());
+}
+
+fn pending_id(decision: HostKeyDecision) -> Id {
+    match decision {
+        HostKeyDecision::Unknown {
+            verification_id, ..
+        } => verification_id,
+        other => panic!("expected unknown key, got {other:?}"),
+    }
+}
+
 async fn insert_server(database: &Database, id: Id, host: &str) {
     sqlx::query(
         "INSERT INTO servers (

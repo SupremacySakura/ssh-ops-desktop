@@ -45,3 +45,103 @@ test('Command-K opens the command palette and runs an action', async ({ page }) 
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: '添加服务器' })).toHaveCount(0);
 });
+
+test('selecting a server opens a live xterm with sessions, history, and keepalive', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+
+  const firstTerminal = page.getByRole('log', { name: '终端 1' });
+  await expect(firstTerminal).toBeVisible();
+  await expect(firstTerminal).toContainText('harbor renderer fixture');
+  await expect(page.locator('.xterm')).toHaveCSS(
+    'font-family',
+    /IBM Plex Mono/u,
+  );
+  await expect(firstTerminal).toHaveCSS('background-color', 'rgb(20, 19, 17)');
+
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.type('echo harbor-history');
+  await page.keyboard.press('Enter');
+  await expect(firstTerminal).toContainText('echo harbor-history');
+  await page.context().grantPermissions(
+    ['clipboard-read', 'clipboard-write'],
+    { origin: 'http://127.0.0.1:1421' },
+  );
+  await page.evaluate(() => navigator.clipboard.writeText('echo pasted'));
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  await expect(firstTerminal).toContainText('echo pasted');
+  await page.keyboard.press('Control+KeyR');
+
+  const history = page.getByRole('dialog', { name: '命令历史' });
+  await expect(history).toBeVisible();
+  await history.getByRole('searchbox', { name: '搜索命令历史' }).fill('harbor');
+  await expect(history.getByRole('option', {
+    name: /echo harbor-history/u,
+  })).toBeVisible();
+  await history.getByRole('searchbox', { name: '搜索命令历史' }).press('Enter');
+  await expect(history).toHaveCount(0);
+
+  await page.getByRole('button', { name: '新增终端会话' }).click();
+  await expect(page.getByRole('tab', { name: '切换到 终端 2' })).toBeVisible();
+  await expect(page.getByLabel('终端会话数量')).toContainText('2/8');
+  await page.getByRole('button', { name: '关闭会话 终端 2' }).click();
+  await expect(page.getByRole('tab', { name: '切换到 终端 2' })).toHaveCount(0);
+  await expect(page.getByLabel('终端会话数量')).toContainText('1/8');
+
+  await page.getByRole('button', { name: /^打开服务器 dev-box/u }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  await page.getByRole('button', { name: /^打开服务器 prod-web-01/u }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'echo harbor-history',
+  );
+  await expect(
+    page.locator('main:visible').getByLabel('终端会话数量'),
+  ).toContainText('1/8');
+});
+
+test('unknown host keys require explicit trust and a closed session can reconnect', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=host-key');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+
+  const hostKeyDialog = page.getByRole('dialog', {
+    name: '首次连接，核对主机指纹',
+  });
+  await expect(hostKeyDialog).toBeVisible();
+  await expect(hostKeyDialog).toContainText('SHA256:rendererFixtureHostKey');
+  const trust = hostKeyDialog.getByRole('button', {
+    name: '信任并以 SSH 连接',
+  });
+  await expect(trust).toBeDisabled();
+  await hostKeyDialog.getByLabel(
+    '我已通过独立渠道核对上述 SHA-256 主机指纹。',
+  ).check();
+  await trust.click();
+
+  await expect(hostKeyDialog).toHaveCount(0);
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'harbor renderer fixture',
+  );
+
+  await page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: { disconnectFirstSession(): void };
+    };
+    runtime.__harborRuntime.disconnectFirstSession();
+  });
+  await expect(page.getByRole('heading', {
+    name: 'SSH 连接已断开',
+  })).toBeVisible();
+  await page.getByRole('button', { name: '重连会话' }).click();
+  await expect(page.getByRole('heading', { name: 'SSH 连接已断开' })).toHaveCount(0);
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'harbor renderer fixture',
+  );
+});

@@ -11,6 +11,13 @@ fn main() {
             "server_group_create",
             "server_group_update",
             "server_group_delete",
+            "connection_connect",
+            "connection_trust_host_key",
+            "connection_disconnect",
+            "terminal_open",
+            "terminal_write",
+            "terminal_resize",
+            "terminal_close",
         ]));
     tauri_build::try_build(attributes).expect("failed to build Tauri command manifest");
 }

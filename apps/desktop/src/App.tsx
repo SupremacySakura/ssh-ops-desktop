@@ -1,11 +1,20 @@
-import { useEffect } from 'react';
+import type { UnlistenFn } from '@tauri-apps/api/event';
+import { useEffect, useState } from 'react';
 
 import type { CoreClient } from './api/core';
 import { HarborShell } from './app/harbor-shell';
 import { GroupManagerDialog } from './features/catalog/group-manager-dialog';
 import { ServerFormDialog } from './features/catalog/server-form-dialog';
 import { CommandPalette } from './features/command-palette/command-palette';
+import {
+  CommandHistoryContext,
+  createDefaultCommandHistory,
+} from './features/terminal/command-history';
 import { useHarborStore } from './store/harbor-store';
+import {
+  attachTerminalEvents,
+  useTerminalStore,
+} from './store/terminal-store';
 
 interface AppProps {
   core: CoreClient;
@@ -15,11 +24,31 @@ export default function App({ core }: AppProps) {
   const configureCore = useHarborStore((state) => state.configureCore);
   const loadCatalog = useHarborStore((state) => state.loadCatalog);
   const setCoreHealth = useHarborStore((state) => state.setCoreHealth);
+  const [commandHistory] = useState(createDefaultCommandHistory);
 
   useEffect(() => {
     configureCore(core);
     void loadCatalog();
   }, [configureCore, core, loadCatalog]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+
+    void attachTerminalEvents(core).then((stop) => {
+      if (disposed) {
+        stop();
+      } else {
+        unlisten = stop;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      useTerminalStore.getState().reset();
+    };
+  }, [core]);
 
   useEffect(() => {
     let active = true;
@@ -39,11 +68,11 @@ export default function App({ core }: AppProps) {
   }, [core, setCoreHealth]);
 
   return (
-    <>
+    <CommandHistoryContext.Provider value={commandHistory}>
       <HarborShell />
       <ServerFormDialog />
       <GroupManagerDialog />
       <CommandPalette />
-    </>
+    </CommandHistoryContext.Provider>
   );
 }

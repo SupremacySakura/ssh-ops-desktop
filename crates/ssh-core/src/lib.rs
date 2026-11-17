@@ -23,6 +23,8 @@ pub use sftp::{
     UploadOptions, UploadResult,
 };
 pub use terminal::{
-    ConnectionHandle, InMemoryShellBackend, PtySize, ShellBackend, TerminalCommand, TerminalData,
-    TerminalManager, TerminalSession,
+    ConnectionHandle, InMemoryShellBackend, MAX_TERMINAL_SESSIONS_PER_SERVER,
+    MAX_TERMINAL_WRITE_BYTES, PtySize, SHELL_EVENT_CHANNEL_CAPACITY, ShellBackend, ShellEvent,
+    ShellEventReceiver, TerminalCloseReason, TerminalClosed, TerminalCommand, TerminalData,
+    TerminalEvent, TerminalGap, TerminalManager, TerminalSession,
 };

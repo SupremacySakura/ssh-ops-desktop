@@ -177,6 +177,24 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the connection_connect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-connection-connect",
+          "markdownDescription": "Enables the connection_connect command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the connection_disconnect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-connection-disconnect",
+          "markdownDescription": "Enables the connection_disconnect command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the connection_trust_host_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-connection-trust-host-key",
+          "markdownDescription": "Enables the connection_trust_host_key command without any pre-configured scope."
+        },
+        {
           "description": "Enables the core_health command without any pre-configured scope.",
           "type": "string",
           "const": "allow-core-health",
@@ -237,6 +255,48 @@
           "markdownDescription": "Enables the server_update command without any pre-configured scope."
         },
         {
+          "description": "Enables the terminal_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-terminal-close",
+          "markdownDescription": "Enables the terminal_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the terminal_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-terminal-open",
+          "markdownDescription": "Enables the terminal_open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the terminal_resize command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-terminal-resize",
+          "markdownDescription": "Enables the terminal_resize command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the terminal_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-terminal-write",
+          "markdownDescription": "Enables the terminal_write command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the connection_connect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-connection-connect",
+          "markdownDescription": "Denies the connection_connect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the connection_disconnect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-connection-disconnect",
+          "markdownDescription": "Denies the connection_disconnect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the connection_trust_host_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-connection-trust-host-key",
+          "markdownDescription": "Denies the connection_trust_host_key command without any pre-configured scope."
+        },
+        {
           "description": "Denies the core_health command without any pre-configured scope.",
           "type": "string",
           "const": "deny-core-health",
@@ -295,6 +355,30 @@
           "type": "string",
           "const": "deny-server-update",
           "markdownDescription": "Denies the server_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the terminal_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-terminal-close",
+          "markdownDescription": "Denies the terminal_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the terminal_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-terminal-open",
+          "markdownDescription": "Denies the terminal_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the terminal_resize command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-terminal-resize",
+          "markdownDescription": "Denies the terminal_resize command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the terminal_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-terminal-write",
+          "markdownDescription": "Denies the terminal_write command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

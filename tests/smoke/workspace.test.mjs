@@ -128,7 +128,7 @@ test('removed OpsPilot subsystems and native E2E sources are absent', () => {
   }
 });
 
-test('Harbor catalog commands are registered and authorized exactly once', () => {
+test('Harbor commands are registered and authorized exactly once', () => {
   const expectedCommands = [
     'core_health',
     'server_list',
@@ -140,10 +140,21 @@ test('Harbor catalog commands are registered and authorized exactly once', () =>
     'server_group_create',
     'server_group_update',
     'server_group_delete',
+    'connection_connect',
+    'connection_trust_host_key',
+    'connection_disconnect',
+    'terminal_open',
+    'terminal_write',
+    'terminal_resize',
+    'terminal_close',
   ];
   const expectedAllowPermissions = expectedCommands.map(
     (command) => `allow-${command.replaceAll('_', '-')}`,
   );
+  const expectedCapabilityPermissions = [
+    ...expectedAllowPermissions,
+    'core:event:default',
+  ];
   const expectedPermissions = expectedCommands
     .flatMap((command) => [
       `allow-${command.replaceAll('_', '-')}`,
@@ -179,13 +190,16 @@ test('Harbor catalog commands are registered and authorized exactly once', () =>
   }
 
   const mainCapability = readJson('src-tauri/capabilities/main.json');
-  assert.deepEqual(mainCapability.permissions, expectedAllowPermissions);
+  assert.deepEqual(mainCapability.permissions, expectedCapabilityPermissions);
   assert.equal(
     new Set(mainCapability.permissions).size,
     mainCapability.permissions.length,
   );
   const generatedCapabilities = readJson('src-tauri/gen/schemas/capabilities.json');
-  assert.deepEqual(generatedCapabilities.main.permissions, expectedAllowPermissions);
+  assert.deepEqual(
+    generatedCapabilities.main.permissions,
+    expectedCapabilityPermissions,
+  );
   assert.equal(
     new Set(generatedCapabilities.main.permissions).size,
     generatedCapabilities.main.permissions.length,

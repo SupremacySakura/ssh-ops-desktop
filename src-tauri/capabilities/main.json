@@ -13,6 +13,14 @@
     "allow-server-group-list",
     "allow-server-group-create",
     "allow-server-group-update",
-    "allow-server-group-delete"
+    "allow-server-group-delete",
+    "allow-connection-connect",
+    "allow-connection-trust-host-key",
+    "allow-connection-disconnect",
+    "allow-terminal-open",
+    "allow-terminal-write",
+    "allow-terminal-resize",
+    "allow-terminal-close",
+    "core:event:default"
   ]
 }

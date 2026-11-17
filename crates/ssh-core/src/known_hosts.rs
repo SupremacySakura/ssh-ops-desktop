@@ -162,7 +162,9 @@ impl HostKeyVerifier {
         let expires_at = now.checked_add(self.ttl).ok_or_else(|| {
             CoreError::new(CoreErrorCode::Internal, "host-key expiry overflow", false)
         })?;
-        self.pending.lock().await.insert(
+        let mut pending = self.pending.lock().await;
+        pending.retain(|_, candidate| candidate.expires_at >= now);
+        pending.insert(
             verification_id,
             PendingVerification {
                 endpoint: endpoint.clone(),
@@ -170,6 +172,7 @@ impl HostKeyVerifier {
                 expires_at,
             },
         );
+        drop(pending);
         Ok(HostKeyDecision::Unknown {
             verification_id,
             algorithm: key.algorithm.clone(),
@@ -247,7 +250,7 @@ impl HostKeyVerifier {
         }
 
         let trusted_at = DateTime::<Utc>::from(now).to_rfc3339_opts(SecondsFormat::Millis, true);
-        sqlx::query(
+        let persisted = sqlx::query_scalar::<_, String>(
             "INSERT INTO known_host_keys (
                 server_id, host, port, algorithm, public_key_base64, sha256, trusted_at
              ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -255,7 +258,9 @@ impl HostKeyVerifier {
                 algorithm = excluded.algorithm,
                 public_key_base64 = excluded.public_key_base64,
                 sha256 = excluded.sha256,
-                trusted_at = excluded.trusted_at",
+                trusted_at = excluded.trusted_at
+             WHERE known_host_keys.sha256 = excluded.sha256
+             RETURNING sha256",
         )
         .bind(endpoint.server_id.to_string())
         .bind(&endpoint.host)
@@ -264,9 +269,40 @@ impl HostKeyVerifier {
         .bind(&key.encoded)
         .bind(&key.sha256)
         .bind(trusted_at)
-        .execute(self.database.pool())
+        .fetch_optional(self.database.pool())
         .await
         .map_err(|error| persistence_error("persist trusted SSH host key", error))?;
+
+        if persisted.is_none() {
+            self.pending.lock().await.remove(&verification_id);
+            let current: Option<(String,)> = sqlx::query_as(
+                "SELECT sha256 FROM known_host_keys
+                 WHERE server_id = ? AND host = ? AND port = ?",
+            )
+            .bind(endpoint.server_id.to_string())
+            .bind(&endpoint.host)
+            .bind(i64::from(endpoint.port))
+            .fetch_optional(self.database.pool())
+            .await
+            .map_err(|error| persistence_error("re-read trusted SSH host key", error))?;
+            return match current {
+                Some((expected_sha256,)) if expected_sha256 != key.sha256 => Err(CoreError::new(
+                    CoreErrorCode::SshHostKeyChanged,
+                    "SSH host key changed; the trusted fingerprint cannot be replaced implicitly",
+                    false,
+                )),
+                Some(_) => Err(CoreError::new(
+                    CoreErrorCode::Internal,
+                    "trusted SSH host key write did not complete",
+                    false,
+                )),
+                None => Err(CoreError::new(
+                    CoreErrorCode::Conflict,
+                    "SSH host-key trust raced with a concurrent change",
+                    true,
+                )),
+            };
+        }
         self.pending.lock().await.remove(&verification_id);
         Ok(())
     }
