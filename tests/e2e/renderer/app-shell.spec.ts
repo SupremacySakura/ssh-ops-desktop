@@ -67,6 +67,58 @@ test('file browser opens Monaco in a renderer with a frozen Object prototype', a
   expect(pageErrors).toEqual([]);
 });
 
+test('file browser uploads, creates, renames, and deletes without overwriting', async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => Object.freeze(Object.prototype));
+
+  await page.goto('/?scenario=files');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  await page.getByRole('button', { name: '文件', exact: true }).click();
+  await expect(page.getByRole('table', { name: '目录内容' })).toBeVisible();
+
+  await page.getByLabel('选择上传文件').setInputFiles({
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('harbor upload\n'),
+  });
+  const upload = page.getByRole('dialog', { name: '上传文件到 /' });
+  await expect(upload).toContainText('notes.txt');
+  await upload.getByRole('button', { name: '确认上传' }).click();
+  await expect(page.getByText(/已上传 1 个文件/u)).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开文件 notes.txt' })).toBeVisible();
+
+  await page.getByRole('button', { name: '新建文件夹' }).click();
+  const mkdir = page.getByRole('dialog', { name: '新建文件夹' });
+  await mkdir.getByLabel('文件夹名称').fill('release');
+  await mkdir.getByRole('button', { name: '创建文件夹' }).click();
+  await expect(page.getByText('已创建 /release')).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开目录 release' })).toBeVisible();
+
+  await page.getByRole('button', { name: '重命名 notes.txt' }).click();
+  const rename = page.getByRole('dialog', { name: '重命名 notes.txt' });
+  await rename.getByLabel('新名称').fill('renamed.txt');
+  await rename.getByRole('button', { name: '确认重命名' }).click();
+  await expect(page.getByText(
+    '已将 /notes.txt 重命名为 /renamed.txt',
+  )).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开文件 renamed.txt' })).toBeVisible();
+
+  await page.getByRole('button', { name: '删除 renamed.txt' }).click();
+  const confirm = page.getByRole('alertdialog', { name: '删除文件' });
+  await expect(confirm.getByRole('button', { name: '取消' })).toBeFocused();
+  await confirm.getByRole('button', { name: '确认删除' }).click();
+  await expect(page.getByText('已删除 /renamed.txt')).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开文件 renamed.txt' })).toHaveCount(0);
+
+  expect(pageErrors).toEqual([]);
+});
+
 test('Command-K opens the command palette and runs an action', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core 已就绪');
