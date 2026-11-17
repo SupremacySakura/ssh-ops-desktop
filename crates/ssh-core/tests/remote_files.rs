@@ -584,6 +584,72 @@ async fn rejects_unsafe_directory_entry_names_and_still_closes_the_session() {
 }
 
 #[tokio::test]
+async fn rejects_paths_that_traverse_a_symlinked_ancestor() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/alias", FakeNode::symlink()),
+        ("/alias/passwd", FakeNode::file("secret\n")),
+        ("/alias/sub", FakeNode::directory()),
+        ("/alias/sub/file.txt", FakeNode::file("file")),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let read = service
+        .read(
+            &connection(),
+            &RemotePath::try_new("/alias/passwd").unwrap(),
+        )
+        .await
+        .expect_err("reads through a symlinked ancestor must fail closed");
+    assert_eq!(read.code(), CoreErrorCode::Validation);
+    assert!(read.message().contains("/alias"));
+
+    let list = service
+        .list(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/alias/sub").unwrap(),
+        )
+        .await
+        .expect_err("listing through a symlinked ancestor must fail closed");
+    assert_eq!(list.code(), CoreErrorCode::Validation);
+
+    let download = service
+        .download(
+            &connection(),
+            &RemotePath::try_new("/alias/passwd").unwrap(),
+        )
+        .await
+        .expect_err("downloads through a symlinked ancestor must fail closed");
+    assert_eq!(download.code(), CoreErrorCode::Validation);
+
+    let upload = service
+        .upload_batch(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/alias/sub").unwrap(),
+            &[RemoteUploadFile {
+                name: "new.txt".to_owned(),
+                bytes: b"new".to_vec(),
+            }],
+        )
+        .await
+        .expect_err("uploads through a symlinked ancestor must fail closed");
+    assert_eq!(upload.code(), CoreErrorCode::Validation);
+
+    assert_eq!(connector.closes().await, 4);
+    assert_eq!(
+        connector.paths().await,
+        vec![
+            "/",
+            "/alias",
+            "/alias/passwd",
+            "/alias/sub",
+            "/alias/sub/file.txt",
+        ]
+    );
+}
+
+#[tokio::test]
 async fn reads_only_bounded_utf8_regular_files_without_nul() {
     let connector = FakeConnector::with_nodes([
         ("/", FakeNode::directory()),

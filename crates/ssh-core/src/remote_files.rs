@@ -255,6 +255,7 @@ impl RemoteFileService {
     ) -> Result<Vec<RemoteFileEntry>, CoreError> {
         let session = self.connector.open_scoped(connection).await?;
         let result = async {
+            require_no_symlink_ancestors(session.as_ref(), directory.as_str(), true).await?;
             let metadata = session
                 .directory_metadata(directory)
                 .await?
@@ -348,6 +349,7 @@ impl RemoteFileService {
     ) -> Result<RemoteFileDownload, CoreError> {
         let session = self.connector.open_scoped(connection).await?;
         let result = async {
+            require_no_symlink_ancestors(session.as_ref(), path.as_str(), true).await?;
             let metadata = session
                 .symlink_metadata(path)
                 .await?
@@ -478,6 +480,7 @@ async fn delete_with_session(
     session: &dyn ScopedSftp,
     path: &RemotePath,
 ) -> Result<RemoteFileMutationResult, CoreError> {
+    require_no_symlink_ancestors(session, path.as_str(), false).await?;
     let parent = path.parent_directory();
     let parent_metadata = session
         .directory_metadata(&parent)
@@ -511,6 +514,7 @@ async fn create_directory_with_session(
     session: &dyn ScopedSftp,
     path: &RemotePath,
 ) -> Result<RemoteFileMutationResult, CoreError> {
+    require_no_symlink_ancestors(session, path.as_str(), false).await?;
     let parent = path.parent_directory();
     let parent_metadata = session
         .directory_metadata(&parent)
@@ -550,6 +554,8 @@ async fn rename_with_session(
     source: &RemotePath,
     target: &RemotePath,
 ) -> Result<RemoteRenameResult, CoreError> {
+    require_no_symlink_ancestors(session, source.as_str(), true).await?;
+    require_no_symlink_ancestors(session, target.as_str(), true).await?;
     let parent = source.parent_directory();
     let parent_metadata = session
         .directory_metadata(&parent)
@@ -703,6 +709,7 @@ async fn upload_with_session(
     directory: &RemoteDirectoryPath,
     files: &[RemoteUploadFile],
 ) -> Result<RemoteUploadOutcome, CoreError> {
+    require_no_symlink_ancestors(session, directory.as_str(), true).await?;
     let directory_metadata = session
         .directory_metadata(directory)
         .await?
@@ -955,6 +962,7 @@ async fn read_with_session(
     session: &dyn ScopedSftp,
     path: &RemotePath,
 ) -> Result<RemoteTextFile, CoreError> {
+    require_no_symlink_ancestors(session, path.as_str(), true).await?;
     let metadata = session
         .symlink_metadata(path)
         .await?
@@ -995,6 +1003,7 @@ async fn write_with_session(
     content: &str,
     expected_sha256: &str,
 ) -> Result<RemoteFileWriteResult, CoreError> {
+    require_no_symlink_ancestors(session, path.as_str(), true).await?;
     let metadata = session.symlink_metadata(path).await?.ok_or_else(|| {
         CoreError::new(
             CoreErrorCode::Conflict,
@@ -1154,6 +1163,52 @@ fn require_regular_file(metadata: &ScopedMetadata, operation: &str) -> Result<()
             "该路径不是普通文件，不能用于{operation}"
         ))),
     }
+}
+
+async fn require_no_symlink_ancestors(
+    session: &dyn ScopedSftp,
+    path: &str,
+    include_leaf: bool,
+) -> Result<(), CoreError> {
+    // SFTP v3 has no openat-style no-follow handle, so this is a fail-closed preflight,
+    // not an atomic guarantee: a component can be swapped to a symlink between this
+    // lstat walk and the subsequent operation. Callers that open a file re-check the
+    // leaf after open; ancestor races remain a documented protocol limitation.
+    if path == "/" {
+        return Ok(());
+    }
+    let segments = path
+        .strip_prefix('/')
+        .unwrap_or(path)
+        .split('/')
+        .collect::<Vec<_>>();
+    let checked = if include_leaf {
+        segments.len()
+    } else {
+        segments.len().saturating_sub(1)
+    };
+    let mut current = String::new();
+    for segment in segments.into_iter().take(checked) {
+        current.push('/');
+        current.push_str(segment);
+        match session
+            .symlink_metadata(&RemotePath::try_new(&current)?)
+            .await?
+        {
+            Some(metadata) if metadata.kind == RemoteFileKind::Symlink => {
+                return Err(CoreError::new(
+                    CoreErrorCode::Validation,
+                    format!(
+                        "路径 {current} 是符号链接，出于安全考虑不允许经由符号链接访问远程路径"
+                    ),
+                    false,
+                ));
+            }
+            Some(_) => {}
+            None => {}
+        }
+    }
+    Ok(())
 }
 
 async fn finish_strict<T>(
