@@ -11,6 +11,7 @@ import {
   DockerShellSchema,
   GroupInputSchema,
   GroupSchema,
+  MonitorSnapshotSchema,
   ServerCredentialInputSchema,
   ServerInputSchema,
   ServerSchema,
@@ -31,6 +32,7 @@ import {
   type DockerShell,
   type Group,
   type GroupInput,
+  type MonitorSnapshot,
   type Server,
   type ServerCredentialInput,
   type ServerInput,
@@ -87,6 +89,7 @@ export interface CoreClient {
     columns: number,
     rows: number,
   ): Promise<TerminalSession>;
+  monitorSnapshot(connection: ConnectionHandle): Promise<MonitorSnapshot>;
   subscribeConnectionState(handler: (event: ConnectionStateEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalData(handler: (event: TerminalDataEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalGap(handler: (event: TerminalGapEvent) => void): Promise<UnlistenFn>;
@@ -197,6 +200,9 @@ export function createTauriCoreClient(): CoreClient {
         columns,
         rows,
       }),
+    ),
+    monitorSnapshot: async (connection) => MonitorSnapshotSchema.parse(
+      await invoke('monitor_snapshot', { connection }),
     ),
     subscribeConnectionState: async (handler) => listen('connection:state', (event) => {
       const parsed = ConnectionStateEventSchema.safeParse(event.payload);

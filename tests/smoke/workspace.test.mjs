@@ -151,6 +151,7 @@ test('Harbor commands are registered and authorized exactly once', () => {
     'docker_logs',
     'docker_action',
     'docker_exec',
+    'monitor_snapshot',
     'ssh_config_import_preview',
     'ssh_config_import_apply',
   ];

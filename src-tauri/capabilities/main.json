@@ -25,6 +25,7 @@
     "allow-docker-logs",
     "allow-docker-action",
     "allow-docker-exec",
+    "allow-monitor-snapshot",
     "allow-ssh-config-import-preview",
     "allow-ssh-config-import-apply",
     "core:event:allow-listen",
