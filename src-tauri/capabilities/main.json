@@ -21,6 +21,7 @@
     "allow-terminal-write",
     "allow-terminal-resize",
     "allow-terminal-close",
+    "allow-monitor-snapshot",
     "allow-ssh-config-import-preview",
     "allow-ssh-config-import-apply",
     "core:event:allow-listen",

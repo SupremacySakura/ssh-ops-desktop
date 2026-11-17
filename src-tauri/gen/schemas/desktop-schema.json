@@ -201,6 +201,12 @@
           "markdownDescription": "Enables the core_health command without any pre-configured scope."
         },
         {
+          "description": "Enables the monitor_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-monitor-snapshot",
+          "markdownDescription": "Enables the monitor_snapshot command without any pre-configured scope."
+        },
+        {
           "description": "Enables the server_create command without any pre-configured scope.",
           "type": "string",
           "const": "allow-server-create",
@@ -313,6 +319,12 @@
           "type": "string",
           "const": "deny-core-health",
           "markdownDescription": "Denies the core_health command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the monitor_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-monitor-snapshot",
+          "markdownDescription": "Denies the monitor_snapshot command without any pre-configured scope."
         },
         {
           "description": "Denies the server_create command without any pre-configured scope.",
