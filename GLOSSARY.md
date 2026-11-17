@@ -10,6 +10,8 @@
 
 **字段**：`id` / `name` / `host` / `port` / `user` / `auth_type` / `secret_ref` / `group_id` / `favorite` / `last_connected_at` / `created_at`。
 
+`secret_ref` 可为 `NULL`，仅用于表达“凭据待配置”；非空值必须是指向系统凭据库的 SecretRef。
+
 **不属于 Server 的信息**：标签（tags）、备注（notes）、自定义颜色——v1 不提供这些字段。
 
 ---
@@ -27,6 +29,8 @@ Server 的逻辑分组（如"生产"、"测试"、"个人"），用于在左侧�
 **Credential**：连接 Server 所需的敏感信息（密码或私钥），**永远只存放在系统 Keychain**（macOS Keychain / Windows Credential Manager），不写入 SQLite / 日志 / 审计。
 
 **SecretRef**：指向 Keychain 中某条 Credential 的不透明引用（UUID 字符串），只有它被存入 SQLite 的 `servers.secret_ref` 字段。
+
+**凭据待配置**：`servers.secret_ref = NULL` 的显式状态，表示 Server 元数据已存在但尚未关联任何 Credential。它不是空字符串、占位引用或可尝试使用的秘密；连接前必须先由用户补充密码或私钥。
 
 ---
 
@@ -77,7 +81,7 @@ Server 最近一次成功建立 SSH 连接的时间戳（Unix epoch，秒）。�
 
 ## SSH Config Import
 
-从 `~/.ssh/config` 解析 Host 条目并批量导入为 Server 的功能。已存在的 `(host, port, user)` 三元组自动跳过。
+从 `~/.ssh/config` 解析明确 Host 条目并批量导入为 Server 的功能。仅导入 `Host`、`HostName`、`Port` 与 `User`；通配 Host、不完整条目和未支持连接语义不会被猜测或静默执行。已存在的 `(host, port, user)` 三元组与同批重复项自动跳过。导入不复制私钥、不创建 Credential、不信任主机指纹，新 Server 进入“凭据待配置”状态。
 
 ---
 
