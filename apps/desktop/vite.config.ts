@@ -1,16 +1,34 @@
+import { fileURLToPath } from 'node:url';
+
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
-import { monacoFreezePrototypeCompatibility } from './vite/monaco-freeze-prototype.ts';
-import { xtermFreezePrototypeCompatibility } from './vite/xterm-freeze-prototype.ts';
+const desktopModules = new URL('./node_modules/', import.meta.url);
 
 export default defineConfig({
   clearScreen: false,
-  optimizeDeps: {
-    // 预打包会绕过 freezePrototype 兼容层插件的 transform，这两个包必须保持逐文件加载。
-    exclude: ['@xterm/xterm', 'monaco-editor'],
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: [
+      {
+        find: /^react$/,
+        replacement: fileURLToPath(new URL('react', desktopModules)),
+      },
+      {
+        find: /^react\//,
+        replacement: `${fileURLToPath(new URL('react', desktopModules))}/`,
+      },
+      {
+        find: /^react-dom$/,
+        replacement: fileURLToPath(new URL('react-dom', desktopModules)),
+      },
+      {
+        find: /^react-dom\//,
+        replacement: `${fileURLToPath(new URL('react-dom', desktopModules))}/`,
+      },
+    ],
   },
-  plugins: [react(), monacoFreezePrototypeCompatibility(), xtermFreezePrototypeCompatibility()],
   server: {
     host: '127.0.0.1',
     port: 1420,

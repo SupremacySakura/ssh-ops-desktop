@@ -9,7 +9,6 @@ mod openssh;
 mod russh_backend;
 mod sftp;
 mod terminal;
-mod tunnel;
 
 pub use auth::{AuthRequest, AuthResolver, ResolvedAuth};
 pub use connection::{ConnectionEvent, ConnectionMachine, ConnectionState};
@@ -27,4 +26,3 @@ pub use terminal::{
     ConnectionHandle, InMemoryShellBackend, PtySize, ShellBackend, TerminalCommand, TerminalData,
     TerminalManager, TerminalSession,
 };
-pub use tunnel::{ActiveTunnel, RemoteSocketPath, TunnelDirection, TunnelManager, TunnelRule};

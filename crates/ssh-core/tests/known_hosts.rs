@@ -105,7 +105,7 @@ async fn expired_or_mismatched_verification_never_writes_trust() {
             .expect_err("mismatched or expired verification must fail closed");
         assert!(matches!(
             error.code(),
-            CoreErrorCode::ApprovalMismatch | CoreErrorCode::NotFound
+            CoreErrorCode::Conflict | CoreErrorCode::NotFound
         ));
     }
 
@@ -118,10 +118,9 @@ async fn expired_or_mismatched_verification_never_writes_trust() {
 async fn insert_server(database: &Database, id: Id, host: &str) {
     sqlx::query(
         "INSERT INTO servers (
-            id, name, host, port, username, environment, auth_type, created_at, updated_at
-         ) VALUES (?, 'Host key fixture', ?, 22, 'deploy', 'other', 'ssh_agent',
-                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            id, name, host, port, user, auth_type, secret_ref, created_at
+         ) VALUES (?, 'Host key fixture', ?, 22, 'deploy', 'key', 'secret-ref',
+                   strftime('%s', 'now'))",
     )
     .bind(id.to_string())
     .bind(host)

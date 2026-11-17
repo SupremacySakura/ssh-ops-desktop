@@ -3,14 +3,13 @@
 import '@testing-library/jest-dom/vitest';
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import App from './App';
-import { ThemeProvider } from './app/theme';
+import type { CoreClient } from './api/core';
+import { useHarborStore } from './store/harbor-store';
 
-afterEach(cleanup);
-
-const readyCore = {
+const readyCore: CoreClient = {
   health: async () => ({
     version: 'test-version',
     databaseReady: true,
@@ -18,40 +17,73 @@ const readyCore = {
   }),
 };
 
-describe('App health status', () => {
-  it('shows explicit readiness returned through the CoreClient boundary', async () => {
-    render(<ThemeProvider><App core={readyCore} /></ThemeProvider>);
+beforeEach(() => {
+  useHarborStore.getState().reset();
+});
 
-    expect(await screen.findByText('Core 运行正常 · test-version')).toBeVisible();
+afterEach(cleanup);
+
+describe('Harbor empty shell', () => {
+  it('shows the brand, search, empty catalog, empty workspace, and ready Core', async () => {
+    render(<App core={readyCore} />);
+
+    expect(screen.getByText('HARBOR')).toBeVisible();
+    expect(screen.getByRole('searchbox', { name: '搜索服务器' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '还没有服务器' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '未选择服务器' })).toBeVisible();
+    expect(await screen.findByText('Core 已就绪')).toBeVisible();
+    expect(screen.getByText('test-version')).toBeVisible();
   });
 
-  it('shows an error instead of loading forever when Core health rejects', async () => {
-    const core = {
+  it('contains no legacy OpsPilot navigation or feature entry points', async () => {
+    render(<App core={readyCore} />);
+    await screen.findByText('Core 已就绪');
+
+    for (const legacyLabel of [
+      'AI Agent',
+      '仪表盘',
+      '项目',
+      'Nginx',
+      '任务与日志',
+      '设置',
+    ]) {
+      expect(screen.queryByText(legacyLabel)).not.toBeInTheDocument();
+    }
+  });
+
+  it('makes the catalog search reachable with Command-K', async () => {
+    render(<App core={readyCore} />);
+
+    const search = screen.getByRole('searchbox', { name: '搜索服务器' });
+    expect(search).not.toHaveFocus();
+    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    expect(search).toHaveFocus();
+  });
+
+  it('keeps the shell visible and reports a Core failure explicitly', async () => {
+    const unavailableCore: CoreClient = {
       health: () => Promise.reject(new Error('IPC unavailable')),
     };
 
-    render(<ThemeProvider><App core={core} /></ThemeProvider>);
+    render(<App core={unavailableCore} />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent('无法读取 Core 状态');
-    expect(screen.queryByText('正在检查 Core')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '还没有服务器' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '未选择服务器' })).toBeVisible();
   });
 
-  it('keeps visited pages mounted so in-page state survives tab switches', async () => {
-    render(<ThemeProvider><App core={readyCore} /></ThemeProvider>);
-    expect(await screen.findByRole('heading', { name: '仪表盘' })).toBeVisible();
+  it('reports a reachable but unready Core without hiding the workspace', async () => {
+    const unreadyCore: CoreClient = {
+      health: async () => ({
+        version: 'test-version',
+        databaseReady: true,
+        secretStoreReady: false,
+      }),
+    };
 
-    fireEvent.click(screen.getByRole('button', { name: '服务器' }));
-    const search = await screen.findByPlaceholderText('搜索名称、IP、用户名...');
-    fireEvent.change(search, { target: { value: 'web-01' } });
+    render(<App core={unreadyCore} />);
 
-    fireEvent.click(screen.getByRole('button', { name: '仪表盘' }));
-    expect(screen.getByRole('heading', { name: '仪表盘' })).toBeVisible();
-    // 离开的页面保持挂载但隐藏，搜索词不丢失。
-    expect(screen.getByRole('heading', { name: '服务器', hidden: true })).not.toBeVisible();
-    expect(screen.getByPlaceholderText('搜索名称、IP、用户名...')).toHaveValue('web-01');
-
-    fireEvent.click(screen.getByRole('button', { name: '服务器' }));
-    expect(screen.getByPlaceholderText('搜索名称、IP、用户名...')).toHaveValue('web-01');
-    expect(screen.getByRole('heading', { name: '服务器', hidden: true })).toBeVisible();
+    expect(await screen.findByText('Core 未就绪')).toBeVisible();
+    expect(screen.getByRole('heading', { name: '未选择服务器' })).toBeVisible();
   });
 });

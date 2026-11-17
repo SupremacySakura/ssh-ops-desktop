@@ -240,7 +240,7 @@ impl HostKeyVerifier {
         }
         if pending.endpoint != *endpoint || pending.key != *key {
             return Err(CoreError::new(
-                CoreErrorCode::ApprovalMismatch,
+                CoreErrorCode::Conflict,
                 "host-key verification does not match the connection target",
                 false,
             ));

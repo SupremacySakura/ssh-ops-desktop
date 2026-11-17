@@ -6,10 +6,7 @@ license.workspace = true
 
 [dependencies]
 opspilot-domain = { path = "../domain" }
-opspilot-secrets = { path = "../secrets" }
-serde.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 tokio.workspace = true

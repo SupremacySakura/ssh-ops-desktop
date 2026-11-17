@@ -17,7 +17,6 @@ use russh::{
 use russh_sftp::client::SftpSession;
 use serde::Serialize;
 use tokio::sync::{Mutex, broadcast};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 use crate::{
     AuthRequest, AuthResolver, ConnectionHandle, HostEndpoint, HostKeyDecision, HostKeyVerifier,
@@ -349,58 +348,6 @@ where
             ));
         }
         Ok(client)
-    }
-
-    pub(crate) async fn pipe_direct_tcpip(
-        &self,
-        connection: &ConnectionHandle,
-        mut local: TcpStream,
-        target_host: &str,
-        target_port: u16,
-        originator: std::net::SocketAddr,
-    ) -> Result<(), CoreError> {
-        let client = self.client(connection).await?;
-        let channel = client
-            .lock()
-            .await
-            .channel_open_direct_tcpip(
-                target_host,
-                u32::from(target_port),
-                originator.ip().to_string(),
-                u32::from(originator.port()),
-            )
-            .await
-            .map_err(|error| ssh_error("open direct TCP/IP channel", error, true))?;
-        let mut remote = channel.into_stream();
-        tokio::io::copy_bidirectional(&mut local, &mut remote)
-            .await
-            .map_err(|error| ssh_error("forward tunnel traffic", error, true))?;
-        remote
-            .shutdown()
-            .await
-            .map_err(|error| ssh_error("close tunnel stream", error, false))?;
-        Ok(())
-    }
-
-    pub async fn open_streamlocal(
-        &self,
-        connection: &ConnectionHandle,
-        socket_path: &crate::RemoteSocketPath,
-    ) -> Result<russh::ChannelStream<Msg>, CoreError> {
-        let client = self.client(connection).await?;
-        let channel = client
-            .lock()
-            .await
-            .channel_open_direct_streamlocal(socket_path.as_str())
-            .await
-            .map_err(|error| {
-                CoreError::new(
-                    CoreErrorCode::CapabilityUnavailable,
-                    format!("server does not support direct streamlocal channels: {error}"),
-                    false,
-                )
-            })?;
-        Ok(channel.into_stream())
     }
 
     #[doc(hidden)]

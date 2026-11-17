@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use serde::{Deserialize, Serialize};
 
 use crate::{CoreError, CoreErrorCode, Id};
@@ -8,58 +6,22 @@ use crate::{CoreError, CoreErrorCode, Id};
 #[serde(rename_all = "snake_case")]
 pub enum AuthType {
     Password,
-    PrivateKey,
-    SshAgent,
-    Certificate,
+    Key,
 }
 
 impl AuthType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Password => "password",
-            Self::PrivateKey => "private_key",
-            Self::SshAgent => "ssh_agent",
-            Self::Certificate => "certificate",
+            Self::Key => "key",
         }
     }
 
     pub fn from_persisted(value: &str) -> Result<Self, CoreError> {
         match value {
             "password" => Ok(Self::Password),
-            "private_key" => Ok(Self::PrivateKey),
-            "ssh_agent" => Ok(Self::SshAgent),
-            "certificate" => Ok(Self::Certificate),
+            "key" => Ok(Self::Key),
             _ => Err(validation_error("persisted server auth type is invalid")),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ServerEnvironment {
-    Development,
-    Staging,
-    Production,
-    Other,
-}
-
-impl ServerEnvironment {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Development => "development",
-            Self::Staging => "staging",
-            Self::Production => "production",
-            Self::Other => "other",
-        }
-    }
-
-    pub fn from_persisted(value: &str) -> Result<Self, CoreError> {
-        match value {
-            "development" => Ok(Self::Development),
-            "staging" => Ok(Self::Staging),
-            "production" => Ok(Self::Production),
-            "other" => Ok(Self::Other),
-            _ => Err(validation_error("persisted server environment is invalid")),
         }
     }
 }
@@ -79,8 +41,14 @@ impl TryFrom<&str> for Host {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let value = normalized_required(value, "host")?.to_lowercase();
-        if value.contains("://") {
-            return Err(validation_error("host must not include a URL scheme"));
+        if value.contains("://")
+            || value
+                .chars()
+                .any(|character| character.is_ascii_whitespace())
+        {
+            return Err(validation_error(
+                "host must be a hostname without a URL scheme or whitespace",
+            ));
         }
 
         Ok(Self(value))
@@ -115,11 +83,11 @@ pub struct ServerInput {
     name: String,
     host: Host,
     port: ServerPort,
-    username: String,
-    environment: ServerEnvironment,
+    user: String,
     auth_type: AuthType,
+    secret_ref: String,
     group_id: Option<Id>,
-    tag_ids: Vec<Id>,
+    favorite: bool,
 }
 
 impl ServerInput {
@@ -128,26 +96,21 @@ impl ServerInput {
         name: &str,
         host: &str,
         port: u32,
-        username: &str,
-        environment: ServerEnvironment,
+        user: &str,
         auth_type: AuthType,
+        secret_ref: &str,
         group_id: Option<Id>,
-        tag_ids: Vec<Id>,
+        favorite: bool,
     ) -> Result<Self, CoreError> {
-        let unique_tag_ids = tag_ids.iter().copied().collect::<HashSet<_>>();
-        if unique_tag_ids.len() != tag_ids.len() {
-            return Err(validation_error("tag IDs must not contain duplicates"));
-        }
-
         Ok(Self {
             name: normalized_required(name, "server name")?,
             host: Host::try_from(host)?,
             port: ServerPort::try_from(port)?,
-            username: normalized_required(username, "username")?,
-            environment,
+            user: normalized_identity(user, "user")?,
             auth_type,
+            secret_ref: normalized_required(secret_ref, "secret reference")?,
             group_id,
-            tag_ids,
+            favorite,
         })
     }
 
@@ -163,42 +126,43 @@ impl ServerInput {
         self.port
     }
 
-    pub fn username(&self) -> &str {
-        &self.username
-    }
-
-    pub fn environment(&self) -> ServerEnvironment {
-        self.environment
+    pub fn user(&self) -> &str {
+        &self.user
     }
 
     pub fn auth_type(&self) -> AuthType {
         self.auth_type
     }
 
+    pub fn secret_ref(&self) -> &str {
+        &self.secret_ref
+    }
+
     pub fn group_id(&self) -> Option<Id> {
         self.group_id
     }
 
-    pub fn tag_ids(&self) -> &[Id] {
-        &self.tag_ids
+    pub fn favorite(&self) -> bool {
+        self.favorite
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServerSummary {
+pub struct Server {
     pub id: Id,
     pub name: String,
     pub host: String,
     pub port: u16,
-    pub username: String,
-    pub environment: ServerEnvironment,
+    pub user: String,
     pub auth_type: AuthType,
+    pub secret_ref: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<Id>,
-    pub tag_ids: Vec<Id>,
+    pub favorite: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_connected_at: Option<String>,
+    pub last_connected_at: Option<i64>,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -209,11 +173,14 @@ pub struct ServerGroup {
     pub sort_order: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServerTag {
-    pub id: Id,
-    pub name: String,
+impl ServerGroup {
+    pub fn try_new(name: &str, sort_order: i64) -> Result<Self, CoreError> {
+        Ok(Self {
+            id: Id::new(),
+            name: normalized_required(name, "group name")?,
+            sort_order,
+        })
+    }
 }
 
 fn normalized_required(value: &str, field: &str) -> Result<String, CoreError> {
@@ -227,36 +194,16 @@ fn normalized_required(value: &str, field: &str) -> Result<String, CoreError> {
     Ok(value.to_owned())
 }
 
-fn validation_error(message: impl Into<String>) -> CoreError {
-    CoreError::new(CoreErrorCode::Validation, message, false)
+fn normalized_identity(value: &str, field: &str) -> Result<String, CoreError> {
+    let value = normalized_required(value, field)?;
+    if value.chars().any(char::is_whitespace) {
+        return Err(validation_error(format!(
+            "{field} must not contain whitespace"
+        )));
+    }
+    Ok(value)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{AuthType, ServerEnvironment, ServerInput};
-    use crate::{CoreErrorCode, Id};
-
-    #[test]
-    fn server_input_rejects_duplicate_tag_ids() {
-        let tag_id = Id::new();
-
-        let error = ServerInput::try_new(
-            "Duplicate tags",
-            "duplicate-tags.example.com",
-            22,
-            "deploy",
-            ServerEnvironment::Production,
-            AuthType::SshAgent,
-            None,
-            vec![tag_id, tag_id],
-        )
-        .expect_err("duplicate tag IDs must be rejected at the domain boundary");
-
-        assert_eq!(error.code(), CoreErrorCode::Validation);
-        assert!(
-            error
-                .message()
-                .contains("tag IDs must not contain duplicates")
-        );
-    }
+fn validation_error(message: impl Into<String>) -> CoreError {
+    CoreError::new(CoreErrorCode::Validation, message, false)
 }
