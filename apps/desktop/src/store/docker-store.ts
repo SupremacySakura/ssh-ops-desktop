@@ -74,6 +74,7 @@ export const useDockerStore = create<DockerStore>((set, get) => ({
       previous.connectionId !== null
       && previous.connectionId !== connection.connectionId
     );
+    const actionInFlight = !connectionChanged && previous.action !== null;
     updateState(set, serverId, {
       ...previous,
       connectionId: connection.connectionId,
@@ -81,9 +82,9 @@ export const useDockerStore = create<DockerStore>((set, get) => ({
       containers: connectionChanged ? [] : previous.containers,
       startedAtWarning: connectionChanged ? null : previous.startedAtWarning,
       error: null,
-      action: null,
-      actionError: null,
-      notice: null,
+      action: actionInFlight ? previous.action : null,
+      actionError: actionInFlight ? previous.actionError : null,
+      notice: actionInFlight ? previous.notice : null,
       logs: connectionChanged ? null : previous.logs,
     });
     if (!core) {
@@ -126,16 +127,29 @@ export const useDockerStore = create<DockerStore>((set, get) => ({
   runDockerAction: async (serverId, connection, container, action) => {
     const core = get().core;
     const previous = get().states[serverId] ?? emptyState();
-    if (!core || previous.connectionId !== connection.connectionId) {
+    if (
+      previous.connectionId !== null
+      && previous.connectionId !== connection.connectionId
+    ) {
       updateState(set, serverId, {
         ...previous,
-        connectionId: connection.connectionId,
+        action: null,
         actionError: internalError('Docker 连接已变化，请刷新容器列表'),
       });
       return;
     }
+    if (!core) {
+      updateState(set, serverId, {
+        ...previous,
+        action: null,
+        actionError: internalError('Core 尚未连接，无法执行 Docker 操作'),
+      });
+      return;
+    }
+    if (previous.action !== null) return;
     updateState(set, serverId, {
       ...previous,
+      connectionId: connection.connectionId,
       action: { containerId: container.id, action },
       actionError: null,
       notice: null,

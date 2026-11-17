@@ -147,6 +147,7 @@ export function DockerPane({ active, onExecOpened, server }: DockerPaneProps) {
             <button
               aria-label="刷新容器列表"
               className="inline-flex h-6 items-center gap-1 border border-hairline bg-paper px-2 text-[10px] text-ink hover:border-ink disabled:opacity-40"
+              disabled={actionBusy !== null}
               onClick={() => {
                 if (connection) {
                   void loadContainers(server.id, connection);

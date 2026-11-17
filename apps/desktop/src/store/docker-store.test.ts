@@ -206,6 +206,60 @@ describe('Docker store', () => {
     });
   });
 
+  it('keeps the action busy across a manual refresh', async () => {
+    const pendingAction = deferred<void>();
+    const core = createFakeCoreClient({
+      dockerContainers: [container],
+      overrides: {
+        runDockerAction: async () => pendingAction.promise,
+      },
+    });
+    useDockerStore.getState().setCore(core);
+    await useDockerStore.getState().loadContainers(serverId, connection);
+
+    const action = useDockerStore.getState().runDockerAction(
+      serverId,
+      connection,
+      container,
+      'restart',
+    );
+    await useDockerStore.getState().loadContainers(serverId, connection);
+
+    expect(useDockerStore.getState().states[serverId]?.action).toEqual({
+      containerId,
+      action: 'restart',
+    });
+
+    pendingAction.resolve();
+    await action;
+    expect(useDockerStore.getState().states[serverId]?.action).toBeNull();
+  });
+
+  it('does not let a stale action overwrite a newer connection', async () => {
+    const core = createFakeCoreClient({ dockerContainers: [container] });
+    useDockerStore.getState().setCore(core);
+    await useDockerStore.getState().loadContainers(serverId, nextConnection);
+
+    await useDockerStore.getState().runDockerAction(
+      serverId,
+      connection,
+      container,
+      'stop',
+    );
+
+    expect(useDockerStore.getState().states[serverId]).toMatchObject({
+      connectionId: nextConnection.connectionId,
+      action: null,
+      actionError: {
+        code: 'INTERNAL',
+        message: 'Docker 连接已变化，请刷新容器列表',
+      },
+    });
+    expect(
+      core.calls.filter((call) => call.method === 'runDockerAction'),
+    ).toHaveLength(0);
+  });
+
   it('maps stable Docker error codes to actionable Chinese messages', () => {
     expect(dockerErrorMessage({
       code: 'DOCKER_NOT_INSTALLED',
