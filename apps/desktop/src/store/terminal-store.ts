@@ -117,6 +117,7 @@ const terminalOutput = new Map<string, OutputBuffer>();
 const connectionRequests = new Map<string, ConnectionRequest>();
 const connectionGenerations = new Map<string, number>();
 const reconnectRequests = new Map<string, Promise<void>>();
+const closingSessionCounts = new Map<string, number>();
 const terminalWriteQueues = new Map<string, Promise<void>>();
 
 export function serverConnectionIdentity(server: Server): string {
@@ -355,20 +356,25 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   },
   closeSession: async (serverId, sessionId) => {
     const core = get().core;
-    if (core) {
-      try {
-        await core.closeTerminal(sessionId);
-      } catch (error) {
-        if (coreErrorCode(error) !== 'NOT_FOUND') {
-          updateRuntime(set, serverId, (current) => ({
-            ...current,
-            error: openSessionErrorMessage(error),
-          }));
-          return;
+    markSessionClosing(sessionId);
+    try {
+      if (core) {
+        try {
+          await core.closeTerminal(sessionId);
+        } catch (error) {
+          if (coreErrorCode(error) !== 'NOT_FOUND') {
+            updateRuntime(set, serverId, (current) => ({
+              ...current,
+              error: openSessionErrorMessage(error),
+            }));
+            return;
+          }
         }
       }
+      removeTerminalSession(set, serverId, sessionId);
+    } finally {
+      unmarkSessionClosing(sessionId);
     }
-    removeTerminalSession(set, serverId, sessionId);
   },
   reconnectSession: async (serverId, sessionId) => {
     const existing = reconnectRequests.get(sessionId);
@@ -376,17 +382,23 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const core = get().core;
     const runtime = get().runtimes[serverId];
     const session = runtime?.sessions.find((candidate) => candidate.id === sessionId);
-    if (!core || !runtime || !session) return;
+    if (!core || !runtime || !session || isSessionClosing(sessionId)) return;
     const identity = runtime.connectionIdentity;
+    const generation = connectionGenerations.get(serverId) ?? 0;
+    const currentRuntime = () => {
+      if ((connectionGenerations.get(serverId) ?? 0) !== generation) return null;
+      const current = get().runtimes[serverId];
+      return current?.connectionIdentity === identity ? current : null;
+    };
     const replace = async (
       opened: TerminalSession,
       expectedConnection: ConnectionHandle,
     ): Promise<boolean> => {
-      const current = get().runtimes[serverId];
+      const current = currentRuntime();
       if (
         !current
-        || current.connectionIdentity !== identity
         || !current.sessions.some((candidate) => candidate.id === sessionId)
+        || isSessionClosing(sessionId)
         || !sameConnection(opened.connection, expectedConnection)
       ) {
         discardPendingTerminalEvents(opened.id);
@@ -401,6 +413,32 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       }
       drainPendingTerminalEvents(set, opened.id);
       return true;
+    };
+    const releaseUnusedReconnectConnection = async (
+      connection: ConnectionHandle,
+    ) => {
+      const current = currentRuntime();
+      if (
+        !current?.connection
+        || !sameConnection(current.connection, connection)
+        || countOpenSessions(current) > 0
+      ) {
+        return;
+      }
+      try {
+        await core.disconnect(connection);
+      } catch (error) {
+        const after = currentRuntime();
+        if (
+          after?.connection
+          && sameConnection(after.connection, connection)
+        ) {
+          updateRuntime(set, serverId, (runtime) => ({
+            ...runtime,
+            error: connectionErrorMessage(error),
+          }));
+        }
+      }
     };
 
     const request = (async () => {
@@ -425,19 +463,54 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           // Reconnect must still be able to replace a dead connection.
         }
       }
+      const afterDisconnect = currentRuntime();
+      if (!afterDisconnect) return;
+      if (!afterDisconnect.sessions.some((candidate) => candidate.id === sessionId)) {
+        updateRuntime(set, serverId, (current) => ({
+          ...current,
+          connection: null,
+          status: 'closed',
+          error: '终端会话已关闭，未重新建立 SSH 连接',
+        }));
+        return;
+      }
       updateRuntime(set, serverId, (current) => ({
         ...current,
         connection: null,
         status: 'idle',
         error: null,
       }));
-      await get().connectServer(serverId);
+      await startConnection(set, get, serverId, identity, false);
       const connected = get().runtimes[serverId];
       if (
-        !connected?.connection
+        !connected
+        || (connectionGenerations.get(serverId) ?? 0) !== generation
         || connected.connectionIdentity !== identity
+      ) {
+        return;
+      }
+      if (!connected.connection) return;
+      if (
+        isSessionClosing(sessionId)
         || !connected.sessions.some((candidate) => candidate.id === sessionId)
       ) {
+        try {
+          await core.disconnect(connected.connection);
+        } catch {
+          // The original tab is gone; keep the handle visible if teardown fails.
+        }
+        const current = get().runtimes[serverId];
+        if (
+          current
+          && (connectionGenerations.get(serverId) ?? 0) === generation
+          && current.connectionIdentity === identity
+          && current.connection?.connectionId === connected.connection.connectionId
+        ) {
+          updateRuntime(set, serverId, (runtime) => ({
+            ...runtime,
+            error: '终端会话已关闭，重新建立的 SSH 连接已释放',
+          }));
+        }
         return;
       }
       try {
@@ -446,9 +519,22 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           DEFAULT_COLUMNS,
           DEFAULT_ROWS,
         );
-        await replace(opened, connected.connection);
+        if (!await replace(opened, connected.connection)) {
+          await releaseUnusedReconnectConnection(connected.connection);
+        }
       } catch (error) {
-        if (get().runtimes[serverId]) {
+        const currentRuntimeState = currentRuntime();
+        if (
+          currentRuntimeState
+          && (
+            isSessionClosing(sessionId)
+            || !currentRuntimeState.sessions.some(
+              (candidate) => candidate.id === sessionId,
+            )
+          )
+        ) {
+          await releaseUnusedReconnectConnection(connected.connection);
+        } else if (get().runtimes[serverId]) {
           updateRuntime(set, serverId, (current) => ({
             ...current,
             error: openSessionErrorMessage(error),
@@ -514,7 +600,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   disconnectServer: async (serverId) => {
     const core = get().core;
     const runtime = get().runtimes[serverId];
-    invalidateConnectionRequests(serverId);
+    const generation = invalidateConnectionRequests(serverId);
     if (core && runtime?.connection) {
       try {
         await core.disconnect(runtime.connection);
@@ -528,6 +614,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         }
       }
     }
+    if ((connectionGenerations.get(serverId) ?? 0) !== generation) return;
     clearServerSessions(set, serverId, 'connectionClosed');
     updateRuntime(set, serverId, (current) => ({
       ...current,
@@ -582,6 +669,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     connectionRequests.clear();
     connectionGenerations.clear();
     reconnectRequests.clear();
+    closingSessionCounts.clear();
     terminalWriteQueues.clear();
     set({
       core: null,
@@ -693,13 +781,17 @@ async function startConnection(
   get: () => TerminalStore,
   serverId: string,
   identity: string | null,
+  openInitialSession = true,
 ) {
   const existing = connectionRequests.get(serverId);
   if (existing) return existing.promise;
   const runtime = get().runtimes[serverId];
   if (runtime?.status === 'connecting' || runtime?.status === 'host-key') return;
   if (runtime?.status === 'ready') {
-    if (countOpenSessions(runtime) + runtime.openingSessions === 0) {
+    if (
+      openInitialSession
+      && countOpenSessions(runtime) + runtime.openingSessions === 0
+    ) {
       await get().openSession(serverId);
     }
     return;
@@ -744,7 +836,8 @@ async function startConnection(
         }
         const connected = get().runtimes[serverId];
         if (
-          outcome.kind === 'ready'
+          openInitialSession
+          && outcome.kind === 'ready'
           && connected
           && countOpenSessions(connected) + connected.openingSessions === 0
         ) {
@@ -770,12 +863,31 @@ async function startConnection(
   }
 }
 
-function invalidateConnectionRequests(serverId: string) {
+function invalidateConnectionRequests(serverId: string): number {
   connectionRequests.delete(serverId);
-  connectionGenerations.set(
-    serverId,
-    (connectionGenerations.get(serverId) ?? 0) + 1,
+  const generation = (connectionGenerations.get(serverId) ?? 0) + 1;
+  connectionGenerations.set(serverId, generation);
+  return generation;
+}
+
+function isSessionClosing(sessionId: string): boolean {
+  return (closingSessionCounts.get(sessionId) ?? 0) > 0;
+}
+
+function markSessionClosing(sessionId: string) {
+  closingSessionCounts.set(
+    sessionId,
+    (closingSessionCounts.get(sessionId) ?? 0) + 1,
   );
+}
+
+function unmarkSessionClosing(sessionId: string) {
+  const count = closingSessionCounts.get(sessionId) ?? 0;
+  if (count <= 1) {
+    closingSessionCounts.delete(sessionId);
+  } else {
+    closingSessionCounts.set(sessionId, count - 1);
+  }
 }
 
 function applyConnectOutcome(

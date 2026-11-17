@@ -241,6 +241,305 @@ describe('terminal workspace store', () => {
     ).toBe(orphanId);
   });
 
+  it('does not open an extra session when reconnect rebuilds the transport', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const original = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: original?.id as string,
+      reason: 'disconnected',
+    });
+    const openTerminal = core.openTerminal;
+    let openAttempts = 0;
+    core.openTerminal = async (connection, columns, rows) => {
+      openAttempts += 1;
+      if (openAttempts === 1) throw new Error('stale transport');
+      return openTerminal(connection, columns, rows);
+    };
+
+    await useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+
+    const runtime = useTerminalStore.getState().runtimes[server.id];
+    expect(openAttempts).toBe(2);
+    expect(runtime?.sessions).toHaveLength(1);
+    expect(runtime?.sessions[0]?.id).not.toBe(original?.id);
+    expect(runtime && countOpenSessions(runtime)).toBe(1);
+  });
+
+  it('releases a rebuilt connection when the original tab closes during connect', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const original = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: original?.id as string,
+      reason: 'disconnected',
+    });
+    core.openTerminal = async () => {
+      throw new Error('stale transport');
+    };
+    let markConnectStarted!: () => void;
+    const connectStarted = new Promise<void>((resolve) => {
+      markConnectStarted = resolve;
+    });
+    let releaseConnect!: () => void;
+    const blockedConnect = new Promise<void>((resolve) => {
+      releaseConnect = resolve;
+    });
+    const rebuiltConnection: ConnectionHandle = {
+      serverId: server.id,
+      connectionId: '019c62b2-2970-7000-8000-000000000097',
+    };
+    core.connect = async () => {
+      markConnectStarted();
+      await blockedConnect;
+      return { kind: 'ready', connection: rebuiltConnection };
+    };
+
+    const reconnecting = useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+    await connectStarted;
+    await useTerminalStore.getState().closeSession(
+      server.id,
+      original?.id as string,
+    );
+    releaseConnect();
+    await reconnecting;
+
+    const runtime = useTerminalStore.getState().runtimes[server.id];
+    expect(runtime?.sessions).toHaveLength(0);
+    expect(runtime?.connection).toBeNull();
+    expect(core.calls).toContainEqual({
+      method: 'disconnect',
+      args: [rebuiltConnection],
+    });
+  });
+
+  it('does not replace a tab while its close request is still in flight', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const original = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: original?.id as string,
+      reason: 'disconnected',
+    });
+    let openAttempts = 0;
+    core.openTerminal = async () => {
+      openAttempts += 1;
+      throw new Error('stale transport');
+    };
+    const disconnect = core.disconnect;
+    let disconnectCalls = 0;
+    let markFallbackDisconnectStarted!: () => void;
+    const fallbackDisconnectStarted = new Promise<void>((resolve) => {
+      markFallbackDisconnectStarted = resolve;
+    });
+    let releaseFallbackDisconnect!: () => void;
+    const blockedFallbackDisconnect = new Promise<void>((resolve) => {
+      releaseFallbackDisconnect = resolve;
+    });
+    core.disconnect = async (connection) => {
+      disconnectCalls += 1;
+      if (disconnectCalls === 1) {
+        markFallbackDisconnectStarted();
+        await blockedFallbackDisconnect;
+      }
+      await disconnect(connection);
+    };
+    const closeTerminal = core.closeTerminal;
+    let markCloseStarted!: () => void;
+    const closeStarted = new Promise<void>((resolve) => {
+      markCloseStarted = resolve;
+    });
+    let releaseClose!: () => void;
+    const blockedClose = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    core.closeTerminal = async (sessionId) => {
+      if (sessionId === original?.id) {
+        markCloseStarted();
+        await blockedClose;
+      }
+      await closeTerminal(sessionId);
+    };
+
+    const reconnecting = useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+    await fallbackDisconnectStarted;
+    const closing = useTerminalStore.getState().closeSession(
+      server.id,
+      original?.id as string,
+    );
+    await closeStarted;
+    releaseFallbackDisconnect();
+    await reconnecting;
+
+    const duringClose = useTerminalStore.getState().runtimes[server.id];
+    expect(openAttempts).toBe(1);
+    expect(duringClose?.sessions.map((session) => session.id)).toEqual([
+      original?.id,
+    ]);
+    expect(duringClose?.connection).toBeNull();
+
+    releaseClose();
+    await closing;
+    const afterClose = useTerminalStore.getState().runtimes[server.id];
+    expect(afterClose?.sessions).toHaveLength(0);
+    expect(afterClose?.connection).toBeNull();
+  });
+
+  it('releases a rebuilt connection when close starts during replacement open', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const original = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: original?.id as string,
+      reason: 'disconnected',
+    });
+    let openAttempts = 0;
+    let markReplacementOpenStarted!: () => void;
+    const replacementOpenStarted = new Promise<void>((resolve) => {
+      markReplacementOpenStarted = resolve;
+    });
+    let releaseReplacementOpen!: () => void;
+    const blockedReplacementOpen = new Promise<void>((resolve) => {
+      releaseReplacementOpen = resolve;
+    });
+    const replacementId = '019c62b2-2970-7000-8000-000000000096';
+    core.openTerminal = async (connection) => {
+      openAttempts += 1;
+      if (openAttempts === 1) throw new Error('stale transport');
+      markReplacementOpenStarted();
+      await blockedReplacementOpen;
+      return { id: replacementId, connection };
+    };
+    const closeTerminal = core.closeTerminal;
+    let markCloseStarted!: () => void;
+    const closeStarted = new Promise<void>((resolve) => {
+      markCloseStarted = resolve;
+    });
+    let releaseClose!: () => void;
+    const blockedClose = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    core.closeTerminal = async (sessionId) => {
+      if (sessionId === original?.id) {
+        markCloseStarted();
+        await blockedClose;
+      }
+      await closeTerminal(sessionId);
+    };
+
+    const reconnecting = useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+    await replacementOpenStarted;
+    const closing = useTerminalStore.getState().closeSession(
+      server.id,
+      original?.id as string,
+    );
+    await closeStarted;
+    releaseReplacementOpen();
+    await reconnecting;
+
+    const duringClose = useTerminalStore.getState().runtimes[server.id];
+    expect(openAttempts).toBe(2);
+    expect(duringClose?.sessions.map((session) => session.id)).toEqual([
+      original?.id,
+    ]);
+    expect(duringClose?.connection).toBeNull();
+    expect(core.calls).toContainEqual({
+      method: 'closeTerminal',
+      args: [replacementId],
+    });
+
+    releaseClose();
+    await closing;
+    const afterClose = useTerminalStore.getState().runtimes[server.id];
+    expect(afterClose?.sessions).toHaveLength(0);
+    expect(afterClose?.connection).toBeNull();
+  });
+
+  it('releases a rebuilt connection when replacement open rejects during close', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const original = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: original?.id as string,
+      reason: 'disconnected',
+    });
+    let openAttempts = 0;
+    let markReplacementOpenStarted!: () => void;
+    const replacementOpenStarted = new Promise<void>((resolve) => {
+      markReplacementOpenStarted = resolve;
+    });
+    let rejectReplacementOpen!: () => void;
+    const blockedReplacementOpen = new Promise<void>((_resolve, reject) => {
+      rejectReplacementOpen = () => reject(new Error('replacement failed'));
+    });
+    core.openTerminal = async () => {
+      openAttempts += 1;
+      if (openAttempts === 1) throw new Error('stale transport');
+      markReplacementOpenStarted();
+      await blockedReplacementOpen;
+      throw new Error('unreachable');
+    };
+    const closeTerminal = core.closeTerminal;
+    let markCloseStarted!: () => void;
+    const closeStarted = new Promise<void>((resolve) => {
+      markCloseStarted = resolve;
+    });
+    let releaseClose!: () => void;
+    const blockedClose = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    core.closeTerminal = async (sessionId) => {
+      if (sessionId === original?.id) {
+        markCloseStarted();
+        await blockedClose;
+      }
+      await closeTerminal(sessionId);
+    };
+
+    const reconnecting = useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+    await replacementOpenStarted;
+    const closing = useTerminalStore.getState().closeSession(
+      server.id,
+      original?.id as string,
+    );
+    await closeStarted;
+    rejectReplacementOpen();
+    await reconnecting;
+
+    const duringClose = useTerminalStore.getState().runtimes[server.id];
+    expect(openAttempts).toBe(2);
+    expect(duringClose?.sessions.map((session) => session.id)).toEqual([
+      original?.id,
+    ]);
+    expect(duringClose?.connection).toBeNull();
+
+    releaseClose();
+    await closing;
+    const afterClose = useTerminalStore.getState().runtimes[server.id];
+    expect(afterClose?.sessions).toHaveLength(0);
+    expect(afterClose?.connection).toBeNull();
+  });
+
   it('closes a reconnected channel when its original tab was removed mid-flight', async () => {
     const core = createFakeCoreClient({ servers: [server] });
     unlisten = await attachTerminalEvents(core);
@@ -277,6 +576,95 @@ describe('terminal workspace store', () => {
       method: 'closeTerminal',
       args: [replacementId],
     });
+  });
+
+  it('does not resurrect a server disposed during reconnect fallback', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const original = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: original?.id as string,
+      reason: 'disconnected',
+    });
+    core.openTerminal = async () => {
+      throw new Error('stale transport');
+    };
+    let markDisconnectStarted!: () => void;
+    const disconnectStarted = new Promise<void>((resolve) => {
+      markDisconnectStarted = resolve;
+    });
+    let releaseDisconnect!: () => void;
+    const blockedDisconnect = new Promise<void>((resolve) => {
+      releaseDisconnect = resolve;
+    });
+    let disconnectCalls = 0;
+    core.disconnect = async () => {
+      disconnectCalls += 1;
+      if (disconnectCalls === 1) {
+        markDisconnectStarted();
+        await blockedDisconnect;
+      }
+    };
+
+    const reconnecting = useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+    await disconnectStarted;
+    await useTerminalStore.getState().disposeServer(server.id);
+    releaseDisconnect();
+    await reconnecting;
+
+    expect(useTerminalStore.getState().runtimes[server.id]).toBeUndefined();
+    expect(
+      core.calls.filter((call) => call.method === 'connect'),
+    ).toHaveLength(1);
+  });
+
+  it('does not reconnect after the original tab closes during fallback disconnect', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const original = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: original?.id as string,
+      reason: 'disconnected',
+    });
+    core.openTerminal = async () => {
+      throw new Error('stale transport');
+    };
+    let markDisconnectStarted!: () => void;
+    const disconnectStarted = new Promise<void>((resolve) => {
+      markDisconnectStarted = resolve;
+    });
+    let releaseDisconnect!: () => void;
+    const blockedDisconnect = new Promise<void>((resolve) => {
+      releaseDisconnect = resolve;
+    });
+    core.disconnect = async () => {
+      markDisconnectStarted();
+      await blockedDisconnect;
+    };
+
+    const reconnecting = useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+    await disconnectStarted;
+    await useTerminalStore.getState().closeSession(
+      server.id,
+      original?.id as string,
+    );
+    releaseDisconnect();
+    await reconnecting;
+
+    const runtime = useTerminalStore.getState().runtimes[server.id];
+    expect(runtime?.connection).toBeNull();
+    expect(runtime?.status).toBe('closed');
+    expect(
+      core.calls.filter((call) => call.method === 'connect'),
+    ).toHaveLength(1);
   });
 
   it('blocks on an unknown host key until explicit trust and then retries', async () => {
