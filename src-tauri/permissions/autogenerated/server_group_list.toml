@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-server-group-list"
+description = "Enables the server_group_list command without any pre-configured scope."
+commands.allow = ["server_group_list"]
+
+[[permission]]
+identifier = "deny-server-group-list"
+description = "Denies the server_group_list command without any pre-configured scope."
+commands.deny = ["server_group_list"]

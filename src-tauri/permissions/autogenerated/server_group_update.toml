@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-server-group-update"
+description = "Enables the server_group_update command without any pre-configured scope."
+commands.allow = ["server_group_update"]
+
+[[permission]]
+identifier = "deny-server-group-update"
+description = "Denies the server_group_update command without any pre-configured scope."
+commands.deny = ["server_group_update"]

@@ -2,7 +2,11 @@
 
 use std::fs;
 
-use commands::{CoreServices, core_health};
+use commands::{
+    CoreServices, core_health, server_create, server_credential_set, server_delete,
+    server_group_create, server_group_delete, server_group_list, server_group_update, server_list,
+    server_update,
+};
 use opspilot_persistence::Database;
 use opspilot_secrets::KeyringSecretStore;
 use tauri::Manager;
@@ -21,7 +25,18 @@ pub fn run() {
             app.manage(CoreServices::new(database, KeyringSecretStore::new()));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![core_health])
+        .invoke_handler(tauri::generate_handler![
+            core_health,
+            server_list,
+            server_create,
+            server_update,
+            server_delete,
+            server_credential_set,
+            server_group_list,
+            server_group_create,
+            server_group_update,
+            server_group_delete,
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run Harbor");
 }
