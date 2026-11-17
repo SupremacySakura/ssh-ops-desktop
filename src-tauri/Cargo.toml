@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 opspilot-domain = { path = "../crates/domain" }
 opspilot-persistence = { path = "../crates/persistence" }
 opspilot-secrets = { path = "../crates/secrets" }
+opspilot-ssh-core = { path = "../crates/ssh-core" }
 serde.workspace = true
 sqlx.workspace = true
 tauri = { version = "2", features = [] }
@@ -24,3 +25,4 @@ tokio.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true

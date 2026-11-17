@@ -6,12 +6,18 @@ import {
   ServerCredentialInputSchema,
   ServerInputSchema,
   ServerSchema,
+  SshConfigImportApplyInputSchema,
+  SshConfigImportPreviewSchema,
+  SshConfigImportResultSchema,
   type CoreHealth,
   type Group,
   type GroupInput,
   type Server,
   type ServerCredentialInput,
   type ServerInput,
+  type SshConfigImportApplyInput,
+  type SshConfigImportPreview,
+  type SshConfigImportResult,
 } from '@opspilot/contracts';
 
 export interface CoreClient {
@@ -29,6 +35,8 @@ export interface CoreClient {
   createGroup(input: GroupInput): Promise<Group>;
   updateGroup(id: string, input: GroupInput): Promise<Group>;
   deleteGroup(id: string): Promise<void>;
+  previewSshConfigImport(): Promise<SshConfigImportPreview>;
+  applySshConfigImport(input: SshConfigImportApplyInput): Promise<SshConfigImportResult>;
 }
 
 export function createTauriCoreClient(): CoreClient {
@@ -78,5 +86,13 @@ export function createTauriCoreClient(): CoreClient {
     deleteGroup: async (id) => {
       await invoke('server_group_delete', { id });
     },
+    previewSshConfigImport: async () => SshConfigImportPreviewSchema.parse(
+      await invoke('ssh_config_import_preview'),
+    ),
+    applySshConfigImport: async (input) => SshConfigImportResultSchema.parse(
+      await invoke('ssh_config_import_apply', {
+        input: SshConfigImportApplyInputSchema.parse(input),
+      }),
+    ),
   };
 }

@@ -1,4 +1,4 @@
-import { CornerDownLeft, Plus, Search } from 'lucide-react';
+import { CornerDownLeft, FileInput, Plus, Search } from 'lucide-react';
 import {
   useEffect,
   useRef,
@@ -13,6 +13,7 @@ export function CommandPalette() {
   const commandPaletteOpen = useHarborStore((state) => state.commandPaletteOpen);
   const openAddServer = useHarborStore((state) => state.openAddServer);
   const openCommandPalette = useHarborStore((state) => state.openCommandPalette);
+  const openSshConfigImport = useHarborStore((state) => state.openSshConfigImport);
   const selectServer = useHarborStore((state) => state.selectServer);
   const servers = useHarborStore((state) => state.servers);
   const [query, setQuery] = useState('');
@@ -29,6 +30,7 @@ export function CommandPalette() {
     },
   }));
   const addServerMatches = matches(query, '添加服务器');
+  const importMatches = matches(query, '导入 SSH Config');
   const items = [
     ...serverItems,
     ...(addServerMatches
@@ -37,6 +39,16 @@ export function CommandPalette() {
           label: '添加服务器',
           detail: '建立一条新的服务器记录',
           run: openAddServer,
+        }]
+      : []),
+    ...(importMatches
+      ? [{
+          key: 'action:ssh-config-import',
+          label: '从 SSH Config 导入',
+          detail: '读取 ~/.ssh/config，预览后批量导入',
+          run: () => {
+            void openSshConfigImport();
+          },
         }]
       : []),
   ];
@@ -172,6 +184,8 @@ export function CommandPalette() {
                   >
                     {item.key === 'action:add-server' ? (
                       <Plus className="size-3" strokeWidth={1.5} />
+                    ) : item.key === 'action:ssh-config-import' ? (
+                      <FileInput className="size-3" strokeWidth={1.5} />
                     ) : (
                       <span className={`size-1.5 ${selected ? 'bg-accent' : 'bg-ink'}`} />
                     )}

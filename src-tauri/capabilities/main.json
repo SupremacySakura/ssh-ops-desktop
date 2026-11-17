@@ -13,6 +13,8 @@
     "allow-server-group-list",
     "allow-server-group-create",
     "allow-server-group-update",
-    "allow-server-group-delete"
+    "allow-server-group-delete",
+    "allow-ssh-config-import-preview",
+    "allow-ssh-config-import-apply"
   ]
 }

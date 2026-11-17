@@ -1,6 +1,7 @@
 import {
   type Server,
   type ServerInput,
+  type SshConfigImportPreview,
 } from '@opspilot/contracts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -34,6 +35,45 @@ const baseServer: Server = {
   favorite: false,
   lastConnectedAt: 1_700_000_000,
   createdAt: 1_699_000_000,
+};
+const importPreview: SshConfigImportPreview = {
+  previewId: '019c62b2-2970-7000-8000-000000000010',
+  sourcePath: '~/.ssh/config',
+  items: [{
+    id: '019c62b2-2970-7000-8000-000000000011',
+    alias: 'imported-prod',
+    host: 'imported.example.com',
+    port: 2222,
+    username: 'deploy',
+    identityFile: '~/.ssh/id_ed25519',
+    status: 'ready',
+    unsupportedDirectives: [],
+    warnings: [],
+  }, {
+    id: '019c62b2-2970-7000-8000-000000000012',
+    alias: 'existing',
+    host: baseServer.host,
+    port: baseServer.port,
+    username: baseServer.user,
+    identityFile: null,
+    status: 'existing',
+    unsupportedDirectives: [],
+    warnings: [],
+  }, {
+    id: '019c62b2-2970-7000-8000-000000000013',
+    alias: 'proxied',
+    host: 'proxied.example.com',
+    port: 22,
+    username: 'deploy',
+    identityFile: null,
+    status: 'unsupported',
+    unsupportedDirectives: ['ProxyJump'],
+    warnings: ['第 8 行：ProxyJump 暂不支持；该 Host 已停用，避免按错误路径直连。'],
+  }],
+  warnings: [],
+  warningCount: 1,
+  existingCount: 1,
+  importableCount: 1,
 };
 
 beforeEach(() => {
@@ -266,5 +306,71 @@ describe('Harbor catalog store', () => {
     expect(formatLastConnectedAt(1_700_000_000, 1_700_000_030)).toBe('刚刚连接过');
     expect(formatLastConnectedAt(1_700_000_000, 1_700_000_300)).toBe('5 分钟前连接过');
     expect(formatLastConnectedAt(1_700_000_000, 1_700_007_200)).toBe('2 小时前连接过');
+  });
+
+  it('loads and applies only selected SSH Config preview rows', async () => {
+    const core = createFakeCoreClient({
+      servers: [baseServer],
+      groups: [group],
+      sshConfigImport: importPreview,
+    });
+    const store = useHarborStore.getState();
+    store.configureCore(core);
+    await store.loadCatalog();
+
+    await store.openSshConfigImport();
+
+    let state = useHarborStore.getState();
+    expect(state.sshConfigImportOpen).toBe(true);
+    expect(state.sshConfigImportStatus).toBe('ready');
+    expect(state.sshConfigImportPreview).toEqual(importPreview);
+    expect(state.sshConfigImportError).toBeNull();
+
+    const result = await store.applySshConfigImport([
+      importPreview.items[0].id,
+    ]);
+
+    state = useHarborStore.getState();
+    expect(result).toEqual({
+      importedCount: 1,
+      skippedCount: 0,
+      servers: [expect.objectContaining({
+        name: 'imported-prod',
+        secretRef: null,
+      })],
+    });
+    expect(state.sshConfigImportStatus).toBe('complete');
+    expect(state.sshConfigImportResult?.importedCount).toBe(1);
+    expect(state.servers).toHaveLength(2);
+    expect(state.servers.find((server) => server.name === 'imported-prod')?.secretRef)
+      .toBeNull();
+    expect(core.calls).toContainEqual({
+      method: 'applySshConfigImport',
+      args: [{
+        previewId: importPreview.previewId,
+        selectedRowIds: [importPreview.items[0].id],
+      }],
+    });
+  });
+
+  it('surfaces a missing SSH Config error without closing the import dialog', async () => {
+    const core = createFakeCoreClient({
+      overrides: {
+        previewSshConfigImport: vi.fn().mockRejectedValue({
+          code: 'NOT_FOUND',
+          message: '未找到 SSH Config 文件，请确认 ~/.ssh/config 存在',
+          retryable: false,
+        }),
+      },
+    });
+    const store = useHarborStore.getState();
+    store.configureCore(core);
+
+    await store.openSshConfigImport();
+
+    const state = useHarborStore.getState();
+    expect(state.sshConfigImportOpen).toBe(true);
+    expect(state.sshConfigImportStatus).toBe('error');
+    expect(state.sshConfigImportError).toContain('~/.ssh/config');
   });
 });

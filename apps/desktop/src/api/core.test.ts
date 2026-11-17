@@ -26,6 +26,25 @@ const group = {
   name: '生产',
   sortOrder: 1,
 } as const;
+const importPreview = {
+  previewId: '019c62b2-2970-7000-8000-000000000010',
+  sourcePath: '~/.ssh/config',
+  items: [{
+    id: '019c62b2-2970-7000-8000-000000000011',
+    alias: 'imported',
+    host: 'imported.example.com',
+    port: 22,
+    username: 'deploy',
+    identityFile: null,
+    status: 'ready',
+    unsupportedDirectives: [],
+    warnings: [],
+  }],
+  warnings: [],
+  warningCount: 0,
+  existingCount: 0,
+  importableCount: 1,
+} as const;
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -140,5 +159,35 @@ describe('Tauri CoreClient catalog contract', () => {
     });
 
     await expect(client.listServers()).rejects.toThrow();
+  });
+
+  it('uses server-side preview ids for SSH Config import and parses the result', async () => {
+    const client = createTauriCoreClient();
+    const imported = { ...server, secretRef: null };
+    invokeMock
+      .mockResolvedValueOnce(importPreview)
+      .mockResolvedValueOnce({
+        importedCount: 1,
+        skippedCount: 0,
+        servers: [imported],
+      });
+
+    await expect(client.previewSshConfigImport()).resolves.toEqual(importPreview);
+    await expect(client.applySshConfigImport({
+      previewId: importPreview.previewId,
+      selectedRowIds: [importPreview.items[0].id],
+    })).resolves.toEqual({
+      importedCount: 1,
+      skippedCount: 0,
+      servers: [imported],
+    });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'ssh_config_import_preview');
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'ssh_config_import_apply', {
+      input: {
+        previewId: importPreview.previewId,
+        selectedRowIds: [importPreview.items[0].id],
+      },
+    });
   });
 });

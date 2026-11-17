@@ -5,7 +5,7 @@ use std::fs;
 use commands::{
     CoreServices, core_health, server_create, server_credential_set, server_delete,
     server_group_create, server_group_delete, server_group_list, server_group_update, server_list,
-    server_update,
+    server_update, ssh_config_import_apply, ssh_config_import_preview,
 };
 use opspilot_persistence::Database;
 use opspilot_secrets::KeyringSecretStore;
@@ -36,6 +36,8 @@ pub fn run() {
             server_group_create,
             server_group_update,
             server_group_delete,
+            ssh_config_import_preview,
+            ssh_config_import_apply,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Harbor");
