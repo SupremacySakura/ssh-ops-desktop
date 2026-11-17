@@ -1,4 +1,5 @@
 export * from './connection.js';
+export * from './docker.js';
 export * from './errors.js';
 export * from './health.js';
 export * from './ids.js';

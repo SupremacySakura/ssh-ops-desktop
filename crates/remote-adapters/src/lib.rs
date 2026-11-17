@@ -9,8 +9,9 @@ mod systemd;
 
 pub use command::{RemoteCommand, RemoteCommandRunner, RemoteExecutor, ValidatedProgram};
 pub use docker::{
-    ContainerIdentifier, DockerCliAdapter, DockerContainer, DockerStats, DockerVersion,
-    parse_containers, parse_stats, parse_version,
+    ContainerIdentifier, DockerAction, DockerCliAdapter, DockerContainer, DockerContainerList,
+    DockerLogs, DockerShell, DockerStats, DockerVersion, parse_containers, parse_started_at,
+    parse_stats, parse_version,
 };
 pub use linux::{
     DiskMetric, LinuxMetrics, LinuxParsers, ListeningPort, LoadMetric, MemoryMetric, OsRelease,

@@ -16,6 +16,7 @@ use self::ssh_config_import::SshConfigPreviewRegistry;
 
 mod catalog;
 mod connection;
+mod docker;
 mod health;
 mod ssh_config_import;
 mod terminal;
@@ -25,6 +26,7 @@ pub(crate) use catalog::{
     server_group_list, server_group_update, server_list, server_update,
 };
 pub(crate) use connection::{connection_connect, connection_disconnect, connection_trust_host_key};
+pub(crate) use docker::{docker_action, docker_exec, docker_list, docker_logs};
 pub(crate) use health::core_health;
 pub(crate) use ssh_config_import::{ssh_config_import_apply, ssh_config_import_preview};
 pub(crate) use terminal::{terminal_close, terminal_open, terminal_resize, terminal_write};

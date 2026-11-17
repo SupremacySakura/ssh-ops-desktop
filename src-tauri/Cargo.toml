@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 async-trait.workspace = true
 opspilot-domain = { path = "../crates/domain" }
 opspilot-persistence = { path = "../crates/persistence" }
+opspilot-remote-adapters = { path = "../crates/remote-adapters" }
 opspilot-secrets = { path = "../crates/secrets" }
 opspilot-ssh-core = { path = "../crates/ssh-core" }
 serde.workspace = true

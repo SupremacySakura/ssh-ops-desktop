@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-docker-exec"
+description = "Enables the docker_exec command without any pre-configured scope."
+commands.allow = ["docker_exec"]
+
+[[permission]]
+identifier = "deny-docker-exec"
+description = "Denies the docker_exec command without any pre-configured scope."
+commands.deny = ["docker_exec"]
