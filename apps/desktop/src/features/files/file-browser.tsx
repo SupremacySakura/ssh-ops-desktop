@@ -90,6 +90,11 @@ interface OperationNotice {
   text: string;
   residual: string[];
   refreshDirectory?: string;
+  cleanup?: {
+    entry: RemoteFileEntry;
+    serverId: string;
+    warning: string;
+  };
 }
 
 export function FileBrowser({
@@ -134,6 +139,7 @@ export function FileBrowser({
   const [deleteWarning, setDeleteWarning] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteNoticeId, setDeleteNoticeId] = useState<number | null>(null);
   const [operationNotices, setOperationNotices] = useState<OperationNotice[]>([]);
   const [pendingNoticeRefresh, setPendingNoticeRefresh] = useState<{
     id: number;
@@ -147,8 +153,10 @@ export function FileBrowser({
   const treeRequests = useRef<Set<string>>(new Set());
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const connectionId = connection?.connectionId ?? null;
+  const serverId = connection?.serverId ?? null;
   const connectionIdRef = useRef(connectionId);
   connectionIdRef.current = connectionId;
+  const serverIdRef = useRef(serverId);
   const canWrite = connectionStatus === 'ready' && connection !== null;
 
   useEffect(() => {
@@ -165,6 +173,27 @@ export function FileBrowser({
     treeLoaded.current.clear();
     treeRequests.current.clear();
   }, [connection, connectionId]);
+
+  useEffect(() => {
+    const previous = serverIdRef.current;
+    serverIdRef.current = serverId;
+    if (serverId === null || previous === null || previous === serverId) return;
+    setUploadFiles(null);
+    setUploadDirectory(null);
+    setUploadError(null);
+    setUploadErrorRetryable(false);
+    setUploadOutcome(null);
+    setMkdirOpen(false);
+    setMkdirDirectory(null);
+    setMkdirError(null);
+    setRenameEntry(null);
+    setRenameError(null);
+    setRenameOutcome(null);
+    setDeleteEntry(null);
+    setDeleteWarning(null);
+    setDeleteError(null);
+    setDeleteNoticeId(null);
+  }, [serverId]);
 
   useEffect(() => {
     if (!active || connectionStatus !== 'ready' || !connection) return;
@@ -706,10 +735,13 @@ export function FileBrowser({
       }
     } catch (error) {
       const stale = connectionIdRef.current !== requestedConnectionId;
+      const retryable = isRetryableError(error);
       setMkdirError(
         remoteFileErrorMessage(error)
           + (stale
-            ? '；连接已变化，重连后可重试。'
+            ? retryable
+              ? '；连接已变化，重连后可重试。'
+              : '；连接已变化，请重连后刷新核对。'
             : ''),
       );
       if (stale) {
@@ -784,18 +816,26 @@ export function FileBrowser({
             residual: [result.sourcePath],
             refreshDirectory: parent,
           });
-        } else if (stale) {
+        } else {
           pushOperationNotice({
             kind: 'warning',
             text: [
-              `上一连接已将 ${result.sourcePath} 重命名为 ${result.targetPath}，但源文件可能仍然存在。`,
+              `${stale ? '上一连接' : ''}已将 ${result.sourcePath} 重命名为 ${result.targetPath}，但源文件可能仍然存在。`,
               result.warning,
-              '重连后可刷新目录并清理源文件。',
+              stale
+                ? '重连后可刷新目录并清理源文件。'
+                : '请刷新目录核对，并在重命名对话框中确认后清理源文件。',
             ].filter(Boolean).join(' '),
             residual: [result.sourcePath],
             refreshDirectory: parent,
+            cleanup: {
+              entry,
+              serverId: connection.serverId,
+              warning: result.warning ?? '目标文件已创建，但源文件删除失败。',
+            },
           });
-        } else {
+        }
+        if (result.targetCreated && !stale) {
           refreshAfterMutation(parent);
         }
         return;
@@ -824,10 +864,13 @@ export function FileBrowser({
       }
     } catch (error) {
       const stale = connectionIdRef.current !== requestedConnectionId;
+      const retryable = isRetryableError(error);
       setRenameError(
         remoteFileErrorMessage(error)
           + (stale
-            ? '；连接已变化，重连后可重试。'
+            ? retryable
+              ? '；连接已变化，重连后可重试。'
+              : '；连接已变化，请重连后刷新核对。'
             : ''),
       );
       if (stale) {
@@ -864,6 +907,7 @@ export function FileBrowser({
     setDeleteEntry(null);
     setDeleteWarning(null);
     setDeleteError(null);
+    setDeleteNoticeId(null);
   }
 
   async function submitDelete() {
@@ -879,6 +923,10 @@ export function FileBrowser({
       const result = await core.deleteFile(connection, entry.path);
       setDeleteEntry(null);
       setDeleteWarning(null);
+      if (deleteNoticeId !== null) {
+        dismissOperationNotice(deleteNoticeId);
+        setDeleteNoticeId(null);
+      }
       if (connectionIdRef.current !== requestedConnectionId) {
         pushOperationNotice({
           kind: 'info',
@@ -900,10 +948,13 @@ export function FileBrowser({
       }
     } catch (error) {
       const stale = connectionIdRef.current !== requestedConnectionId;
+      const retryable = isRetryableError(error);
       setDeleteError(
         remoteFileErrorMessage(error)
           + (stale
-            ? '；连接已变化，重连后可重试。'
+            ? retryable
+              ? '；连接已变化，重连后可重试。'
+              : '；连接已变化，请重连后刷新核对。'
             : ''),
       );
       if (stale) {
@@ -1000,6 +1051,12 @@ export function FileBrowser({
         canRefresh={canWrite}
         key={notice.id}
         notice={notice}
+        onCleanup={notice.cleanup && connection?.serverId === notice.cleanup.serverId ? () => {
+          setDeleteEntry(notice.cleanup!.entry);
+          setDeleteWarning(notice.cleanup!.warning);
+          setDeleteError(null);
+          setDeleteNoticeId(notice.id);
+        } : undefined}
         onDismiss={() => dismissOperationNotice(notice.id)}
         onRefresh={() => refreshOperationNotice(notice.id)}
       />
@@ -1666,11 +1723,13 @@ export function FileBrowser({
 function OperationNoticeBanner({
   canRefresh,
   notice,
+  onCleanup,
   onDismiss,
   onRefresh,
 }: {
   canRefresh: boolean;
   notice: OperationNotice;
+  onCleanup?(): void;
   onDismiss(): void;
   onRefresh(): void;
 }) {
@@ -1699,6 +1758,16 @@ function OperationNoticeBanner({
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {onCleanup ? (
+            <button
+              className="h-7 border border-current px-2 text-[10px] font-medium hover:bg-paper disabled:opacity-40"
+              disabled={!canRefresh}
+              onClick={onCleanup}
+              type="button"
+            >
+              {canRefresh ? '清理源文件…' : '重连后清理'}
+            </button>
+          ) : null}
           {notice.refreshDirectory ? (
             <button
               className="h-7 border border-current px-2 text-[10px] font-medium hover:bg-paper disabled:opacity-40"

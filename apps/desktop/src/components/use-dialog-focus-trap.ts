@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -24,8 +24,14 @@ export function useDialogFocusTrap(
     onEscape,
   }: DialogFocusTrapOptions,
 ) {
+  const returnFocusRef = useRef<HTMLElement | null>(
+    typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null,
+  );
+
   useEffect(() => {
-    const previousFocus = document.activeElement;
+    const previousFocus = returnFocusRef.current;
     return () => {
       if (
         previousFocus instanceof HTMLElement

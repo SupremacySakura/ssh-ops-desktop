@@ -1134,6 +1134,20 @@ describe('FileBrowser', () => {
     expect(deleteButton).toHaveFocus();
   });
 
+  it('returns focus to the trigger after an autofocused dialog closes', async () => {
+    const core = readyCore();
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    const mkdirButton = screen.getByRole('button', { name: '新建文件夹' });
+    mkdirButton.focus();
+    fireEvent.click(mkdirButton);
+    const dialog = await screen.findByRole('dialog', { name: '新建文件夹' });
+    expect(within(dialog).getByLabelText('文件夹名称')).toHaveFocus();
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(mkdirButton).toHaveFocus();
+  });
+
   it('creates folders and confirms deletion with cancel focused', async () => {
     const core = readyCore();
     renderBrowser({ core });
@@ -1235,6 +1249,42 @@ describe('FileBrowser', () => {
     expect(screen.queryByRole('dialog', { name: '重命名 app.conf' }))
       .not.toBeInTheDocument();
     expect(core.calls.some((call) => call.method === 'deleteFile')).toBe(false);
+  });
+
+  it('keeps a partial rename visible after its dialog closes', async () => {
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [config],
+        },
+      },
+      fileFaults: { failRenameUnlink: true },
+    });
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.click(screen.getByRole('button', { name: '重命名 app.conf' }));
+    const rename = await screen.findByRole('dialog', { name: '重命名 app.conf' });
+    fireEvent.change(within(rename).getByLabelText('新名称'), {
+      target: { value: 'next.conf' },
+    });
+    fireEvent.click(within(rename).getByRole('button', { name: '确认重命名' }));
+    expect(await within(rename).findByRole('alert')).toHaveTextContent('源文件删除失败');
+
+    fireEvent.click(within(rename).getByRole('button', { name: '关闭对话框' }));
+    expect(screen.queryByRole('dialog', { name: '重命名 app.conf' }))
+      .not.toBeInTheDocument();
+    expect(screen.getByText(/已将 \/app\.conf 重命名为 \/next\.conf，但源文件可能仍然存在/))
+      .toBeVisible();
+    expect(screen.getByText('/app.conf')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '清理源文件…' }));
+    const cleanup = await screen.findByRole('alertdialog', { name: '删除文件' });
+    expect(within(cleanup).getByText('/app.conf')).toBeVisible();
+    fireEvent.click(within(cleanup).getByRole('button', { name: '确认删除' }));
+    await waitFor(() => {
+      expect(screen.queryByText(/但源文件可能仍然存在/)).not.toBeInTheDocument();
+    });
   });
 
   it('rejects renaming a file to its current name before calling the core', async () => {
