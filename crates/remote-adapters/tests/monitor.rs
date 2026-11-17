@@ -259,6 +259,89 @@ async fn snapshots_keep_the_previous_cpu_sample_on_the_shared_monitor_state() {
     );
 }
 
+#[tokio::test]
+async fn failed_cpu_reads_clear_the_previous_sample_before_the_next_request() {
+    let runner = MonitorRunner {
+        stat_samples: Arc::new(Mutex::new(VecDeque::from([
+            "cpu  20 0 0 80 0 0 0 0\n",
+            "cpu invalid\n",
+            "cpu  100 0 0 100 0 0 0 0\n",
+        ]))),
+        commands: Arc::new(Mutex::new(Vec::new())),
+    };
+    let monitor = SystemMonitor::new(runner, CpuSampleStore::default());
+    let connection = ConnectionHandle::new(Id::new(), Id::new());
+
+    let first = monitor.snapshot(&connection).await.unwrap();
+    assert_eq!(first.cpu_percent, None);
+    assert!(
+        first
+            .unavailable
+            .contains(&MonitorUnavailable::CpuWarmingUp)
+    );
+
+    let failed = monitor.snapshot(&connection).await.unwrap();
+    assert_eq!(failed.cpu_percent, None);
+    assert!(failed.unavailable.contains(&MonitorUnavailable::Cpu));
+
+    let recovered = monitor.snapshot(&connection).await.unwrap();
+    assert_eq!(recovered.cpu_percent, None);
+    assert!(
+        recovered
+            .unavailable
+            .contains(&MonitorUnavailable::CpuWarmingUp)
+    );
+}
+
+#[tokio::test]
+async fn cpu_samples_are_isolated_by_connection_id() {
+    let runner = MonitorRunner {
+        stat_samples: Arc::new(Mutex::new(VecDeque::from([
+            "cpu  20 0 0 80 0 0 0 0\n",
+            "cpu  500 0 0 500 0 0 0 0\n",
+            "cpu  100 0 0 100 0 0 0 0\n",
+            "cpu  500 0 0 700 0 0 0 0\n",
+        ]))),
+        commands: Arc::new(Mutex::new(Vec::new())),
+    };
+    let monitor = SystemMonitor::new(runner, CpuSampleStore::default());
+    let first_connection = ConnectionHandle::new(Id::new(), Id::new());
+    let second_connection = ConnectionHandle::new(Id::new(), Id::new());
+
+    assert_eq!(
+        monitor
+            .snapshot(&first_connection)
+            .await
+            .unwrap()
+            .cpu_percent,
+        None
+    );
+    assert_eq!(
+        monitor
+            .snapshot(&second_connection)
+            .await
+            .unwrap()
+            .cpu_percent,
+        None
+    );
+    assert_eq!(
+        monitor
+            .snapshot(&first_connection)
+            .await
+            .unwrap()
+            .cpu_percent,
+        Some(80.0)
+    );
+    assert_eq!(
+        monitor
+            .snapshot(&second_connection)
+            .await
+            .unwrap()
+            .cpu_percent,
+        Some(0.0)
+    );
+}
+
 #[derive(Clone)]
 struct PartialFailureRunner;
 
