@@ -299,6 +299,12 @@ describe('Rust DTO ↔ Zod contract', () => {
       optionalFields: ['groupId'],
     });
     expectRustMatchesZod('ServerCredentialInput', 'ServerCredentialInputSchema');
+    expectRustMatchesZod('ServerSaveOutcome', 'ServerSaveOutcomeSchema', {
+      nullableFields: ['warning'],
+    });
+    expectRustMatchesZod('ServerDeleteOutcome', 'ServerDeleteOutcomeSchema', {
+      nullableFields: ['warning'],
+    });
     expectRustMatchesZod('GroupInput', 'GroupInputSchema');
     expectRustMatchesZod('CoreHealth', 'CoreHealthSchema');
     expectRustMatchesZod('CoreError', 'CoreErrorSchema');
@@ -357,6 +363,13 @@ describe('Rust DTO ↔ Zod contract', () => {
       nullableFields: ['startedAtWarning'],
     });
     expectRustMatchesZod('DockerLogs', 'DockerLogsSchema');
+    const dockerShell = requireItem('DockerShell');
+    expect(dockerShell.kind).toBe('struct');
+    expect(dockerShell.fields).toEqual([
+      expect.objectContaining({ name: 'value', type: 'String' }),
+    ]);
+    expect(serdeRenameStyle(dockerShell)).toBeNull();
+    expect(dockerShell.attributes.join('\n')).toContain('transparent');
   });
 
   it('keeps SSH Config import DTOs aligned with the frontend schemas', () => {
@@ -378,7 +391,6 @@ describe('Rust DTO ↔ Zod contract', () => {
       ['RenameStatus', 'RenameStatusSchema'],
       ['TerminalCloseReason', 'TerminalCloseReasonSchema'],
       ['DockerAction', 'DockerActionSchema'],
-      ['DockerShell', 'DockerShellSchema'],
       ['MonitorUnavailable', 'MonitorUnavailableSchema'],
       ['SshConfigImportStatus', 'SshConfigImportStatusSchema'],
     ];
@@ -808,7 +820,6 @@ describe('Rust DTO ↔ Zod contract', () => {
       ['MonitorUnavailable', 'snake_case'],
       ['CoreErrorCode', 'SCREAMING_SNAKE_CASE'],
       ['DockerAction', 'lowercase'],
-      ['DockerShell', 'lowercase'],
     ];
     for (const [name, style] of expected) {
       expect(serdeRenameStyle(requireItem(name)), name).toBe(style);

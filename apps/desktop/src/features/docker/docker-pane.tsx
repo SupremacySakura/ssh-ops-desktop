@@ -5,6 +5,7 @@ import type {
   DockerShell,
   Server,
 } from '@opspilot/contracts';
+import { DockerShellSchema } from '@opspilot/contracts';
 import {
   AlertTriangle,
   Boxes,
@@ -737,6 +738,8 @@ function DockerShellDialog({
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const [shell, setShell] = useState('/bin/sh');
+  const [shellError, setShellError] = useState<string | null>(null);
 
   useModalFocus(
     dialogRef,
@@ -746,6 +749,23 @@ function DockerShellDialog({
     },
     active,
   );
+
+  useEffect(() => {
+    setShell('/bin/sh');
+    setShellError(null);
+  }, [active, container.id]);
+
+  function submitShell() {
+    const parsed = DockerShellSchema.safeParse(shell);
+    if (!parsed.success) {
+      setShellError(
+        '请输入 sh、bash、ash、zsh、busybox 之一，或安全绝对路径（如 /bin/bash）；不能包含空格或 shell 元字符。',
+      );
+      return;
+    }
+    setShellError(null);
+    onChoose(parsed.data);
+  }
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-ink/45 p-6">
@@ -780,12 +800,36 @@ function DockerShellDialog({
         </header>
         <div className="px-5 py-4">
           <p className="text-[12px] leading-6 text-muted">
-            容器内没有 sh，可选择 bash 或 ash 重试。Harbor 只接受 sh、bash、ash
-            三种白名单 shell，不会把任意命令写入容器。
+            容器内没有 sh。请输入容器中可用的 shell 命令名或绝对路径，
+            也可以使用下方快捷按钮。Harbor 会校验输入，不会把任意命令写入容器。
           </p>
           <p className="mt-3 break-all border border-hairline bg-paper px-3 py-2 font-mono text-[10px] text-muted">
             {containerName(container)} · {container.id}
           </p>
+          <label className="mt-3 block">
+            <span className="font-mono text-[9px] tracking-[0.14em] text-muted">
+              SHELL 路径
+            </span>
+            <input
+              aria-label="shell 路径"
+              className="mt-1 h-8 w-full border border-hairline bg-paper px-2 font-mono text-[11px] text-ink outline-none focus:border-accent"
+              disabled={busy}
+              onChange={(event) => {
+                setShell(event.target.value);
+                setShellError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !busy) submitShell();
+              }}
+              placeholder="/bin/sh 或 bash"
+              value={shell}
+            />
+          </label>
+          {shellError ? (
+            <p className="mt-2 border-l-2 border-danger pl-2 text-[11px] leading-5 text-danger" role="alert">
+              {shellError}
+            </p>
+          ) : null}
           {error ? (
             <p className="mt-3 border-l-2 border-danger pl-2 text-[11px] leading-5 text-danger" role="alert">
               {error}
@@ -817,6 +861,14 @@ function DockerShellDialog({
             type="button"
           >
             使用 bash
+          </button>
+          <button
+            className="h-8 border border-ink bg-paper px-4 text-[11px] font-medium text-ink hover:bg-ink hover:text-paper disabled:opacity-40"
+            disabled={busy}
+            onClick={submitShell}
+            type="button"
+          >
+            使用此 shell
           </button>
         </footer>
       </section>

@@ -1,11 +1,14 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use opspilot_domain::{
     AuthType, CoreError, CoreErrorCode, Id, Server, ServerInput as DomainServerInput,
 };
 use opspilot_persistence::{GroupRepository, ServerRepository};
 use opspilot_secrets::{KeyringSecretStore, SecretKind, SecretRef, SecretStore, SecretValue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use super::CoreServices;
@@ -34,6 +37,19 @@ pub(crate) struct ServerCredentialInput {
 pub(crate) struct GroupInput {
     pub(crate) name: String,
     pub(crate) sort_order: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerSaveOutcome {
+    pub(crate) server: Server,
+    pub(crate) warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerDeleteOutcome {
+    pub(crate) warning: Option<String>,
 }
 
 pub(crate) async fn list_servers<S>(services: &CoreServices<S>) -> Result<Vec<Server>, CoreError> {
@@ -110,7 +126,7 @@ pub(crate) async fn update_server<S>(
     id: Id,
     input: ServerInput,
     credential: Option<ServerCredentialInput>,
-) -> Result<Server, CoreError>
+) -> Result<ServerSaveOutcome, CoreError>
 where
     S: SecretStore,
 {
@@ -153,15 +169,16 @@ where
     let updated = repository.update(id, &record).await;
     match updated {
         Ok(server) => {
-            if replacement_ref.is_some()
-                && let Some(previous_ref) = existing
-                    .secret_ref
-                    .clone()
-                    .and_then(|value| SecretRef::from_persisted(value).ok())
-            {
-                let _ = services.secret_store.delete(&previous_ref).await;
-            }
-            Ok(server)
+            let previous_ref = replacement_ref
+                .as_ref()
+                .and_then(|_| existing.secret_ref.clone());
+            let warning = cleanup_previous_secret(
+                &services.secret_store,
+                previous_ref,
+                "服务器已保存，但旧凭据未能从系统凭据库清理；请稍后在凭据设置中重试。",
+            )
+            .await;
+            Ok(ServerSaveOutcome { server, warning })
         }
         Err(error) => {
             if let Some(secret_ref) = &replacement_ref {
@@ -172,24 +189,30 @@ where
     }
 }
 
-pub(crate) async fn delete_server<S>(services: &CoreServices<S>, id: Id) -> Result<(), CoreError>
+pub(crate) async fn delete_server<S>(
+    services: &CoreServices<S>,
+    id: Id,
+) -> Result<ServerDeleteOutcome, CoreError>
 where
     S: SecretStore,
 {
     let repository = ServerRepository::new(services.database.clone());
     let server = repository.get(id).await?;
-    if let Some(secret_ref) = server.secret_ref.as_deref() {
-        let secret_ref = SecretRef::from_persisted(secret_ref.to_owned())?;
-        services.secret_store.delete(&secret_ref).await?;
-    }
-    repository.delete(id).await
+    repository.delete(id).await?;
+    let warning = cleanup_previous_secret(
+        &services.secret_store,
+        server.secret_ref,
+        "服务器已删除，但凭据未能从系统凭据库清理；请稍后手动检查系统凭据。",
+    )
+    .await;
+    Ok(ServerDeleteOutcome { warning })
 }
 
 pub(crate) async fn set_server_credential<S>(
     services: &CoreServices<S>,
     id: Id,
     credential: ServerCredentialInput,
-) -> Result<Server, CoreError>
+) -> Result<ServerSaveOutcome, CoreError>
 where
     S: SecretStore,
 {
@@ -222,14 +245,13 @@ where
     let updated = repository.update(id, &record).await;
     match updated {
         Ok(server) => {
-            if let Some(previous_ref) = existing
-                .secret_ref
-                .clone()
-                .and_then(|value| SecretRef::from_persisted(value).ok())
-            {
-                let _ = services.secret_store.delete(&previous_ref).await;
-            }
-            Ok(server)
+            let warning = cleanup_previous_secret(
+                &services.secret_store,
+                existing.secret_ref.clone(),
+                "凭据已保存，但旧凭据未能从系统凭据库清理；请稍后重试。",
+            )
+            .await;
+            Ok(ServerSaveOutcome { server, warning })
         }
         Err(error) => {
             let _ = services.secret_store.delete(&replacement_ref).await;
@@ -258,12 +280,15 @@ pub(crate) async fn server_update(
     id: Id,
     input: ServerInput,
     credential: Option<ServerCredentialInput>,
-) -> Result<Server, CoreError> {
+) -> Result<ServerSaveOutcome, CoreError> {
     update_server(&core_services(&app), id, input, credential).await
 }
 
 #[tauri::command]
-pub(crate) async fn server_delete(app: AppHandle, id: Id) -> Result<(), CoreError> {
+pub(crate) async fn server_delete(
+    app: AppHandle,
+    id: Id,
+) -> Result<ServerDeleteOutcome, CoreError> {
     delete_server(&core_services(&app), id).await
 }
 
@@ -272,7 +297,7 @@ pub(crate) async fn server_credential_set(
     app: AppHandle,
     id: Id,
     input: ServerCredentialInput,
-) -> Result<Server, CoreError> {
+) -> Result<ServerSaveOutcome, CoreError> {
     set_server_credential(&core_services(&app), id, input).await
 }
 
@@ -360,21 +385,40 @@ fn secret_kind(auth_type: AuthType) -> SecretKind {
     }
 }
 
+async fn cleanup_previous_secret<S>(
+    store: &Arc<S>,
+    persisted_ref: Option<String>,
+    warning: &str,
+) -> Option<String>
+where
+    S: SecretStore,
+{
+    let persisted_ref = persisted_ref?;
+    let Ok(secret_ref) = SecretRef::from_persisted(persisted_ref) else {
+        return Some(warning.to_owned());
+    };
+    store
+        .delete(&secret_ref)
+        .await
+        .err()
+        .map(|_| warning.to_owned())
+}
+
 fn unix_timestamp() -> Result<i64, CoreError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| {
+        .map_err(|_error| {
             CoreError::new(
                 CoreErrorCode::Internal,
-                format!("system clock is before the Unix epoch: {error}"),
+                "系统时间无效，无法保存服务器",
                 false,
             )
         })?
         .as_secs();
-    i64::try_from(seconds).map_err(|error| {
+    i64::try_from(seconds).map_err(|_error| {
         CoreError::new(
             CoreErrorCode::Internal,
-            format!("system time is outside the supported range: {error}"),
+            "系统时间超出支持范围，无法保存服务器",
             false,
         )
     })
@@ -564,11 +608,13 @@ mod tests {
         .await
         .expect("server metadata should be updated");
 
-        assert_eq!(updated.name, "prod-web-01-renamed");
-        assert!(!updated.favorite);
-        assert_eq!(updated.secret_ref, created.secret_ref);
+        assert_eq!(updated.warning, None);
+        assert_eq!(updated.server.name, "prod-web-01-renamed");
+        assert!(!updated.server.favorite);
+        assert_eq!(updated.server.secret_ref, created.secret_ref);
         let stored_ref = SecretRef::from_persisted(
             updated
+                .server
                 .secret_ref
                 .clone()
                 .expect("updated server should retain its credential reference"),
@@ -610,9 +656,11 @@ mod tests {
         .await
         .expect("credential should be rotated");
 
-        assert_ne!(updated.secret_ref, created.secret_ref);
+        assert_eq!(updated.warning, None);
+        assert_ne!(updated.server.secret_ref, created.secret_ref);
         let rotated_ref = SecretRef::from_persisted(
             updated
+                .server
                 .secret_ref
                 .clone()
                 .expect("rotated server should have a credential reference"),
@@ -655,9 +703,10 @@ mod tests {
         )
         .expect("persisted reference should be valid");
 
-        delete_server(&services, created.id)
+        let outcome = delete_server(&services, created.id)
             .await
             .expect("server should be deleted");
+        assert_eq!(outcome.warning, None);
 
         assert!(
             list_servers(&services)
@@ -677,7 +726,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_credential_cleanup_keeps_the_server_for_retry() {
+    async fn failed_credential_cleanup_reports_a_warning_after_the_database_delete() {
         let database = Database::open(":memory:")
             .await
             .expect("in-memory database should open");
@@ -693,19 +742,95 @@ mod tests {
         )
         .expect("persisted reference should be valid");
 
+        let outcome = delete_server(&services, created.id)
+            .await
+            .expect("the database is authoritative and the row must be deleted");
+
+        assert!(outcome.warning.is_some());
+        assert!(
+            list_servers(&services)
+                .await
+                .expect("servers should be listed")
+                .is_empty()
+        );
+        assert!(services.secret_store.get(&secret_ref).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn database_delete_failure_leaves_the_credential_untouched() {
+        let database = Database::open(":memory:")
+            .await
+            .expect("in-memory database should open");
+        let services = CoreServices::new(database, MemorySecretStore::default());
+        let created = create_server(&services, server_input("retired"), credential_input())
+            .await
+            .expect("server should be created");
+        let secret_ref = SecretRef::from_persisted(
+            created
+                .secret_ref
+                .clone()
+                .expect("created server should have a credential reference"),
+        )
+        .expect("persisted reference should be valid");
+        sqlx::query("CREATE TRIGGER reject_server_delete BEFORE DELETE ON servers BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+            .execute(services.database.pool())
+            .await
+            .expect("delete trigger should be installed");
+
         let error = delete_server(&services, created.id)
             .await
-            .expect_err("failed credential cleanup must not silently remove the server");
+            .expect_err("a database delete failure must fail the command");
 
-        assert_eq!(error.code(), CoreErrorCode::SecretUnavailable);
-        assert!(error.is_retryable());
+        assert_eq!(error.code(), CoreErrorCode::Internal);
         assert_eq!(
             list_servers(&services)
                 .await
-                .expect("server should remain after failed cleanup"),
+                .expect("server should remain after a failed database delete"),
             vec![created]
         );
         assert!(services.secret_store.get(&secret_ref).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn credential_rotation_warns_when_the_old_secret_cannot_be_deleted() {
+        let database = Database::open(":memory:")
+            .await
+            .expect("in-memory database should open");
+        let services = CoreServices::new(database, FailingDeleteStore::default());
+        let created = create_server(&services, server_input("prod-web-01"), credential_input())
+            .await
+            .expect("server should be created");
+
+        let updated = update_server(
+            &services,
+            created.id,
+            server_input("prod-web-01"),
+            Some(ServerCredentialInput {
+                credential: ROTATED_CREDENTIAL_FIXTURE.to_owned(),
+            }),
+        )
+        .await
+        .expect("the database update must still succeed");
+
+        assert!(updated.warning.is_some());
+        assert_ne!(updated.server.secret_ref, created.secret_ref);
+        assert_eq!(
+            list_servers(&services)
+                .await
+                .expect("servers should be listed"),
+            vec![updated.server]
+        );
+
+        let replaced = set_server_credential(
+            &services,
+            created.id,
+            ServerCredentialInput {
+                credential: CREDENTIAL_FIXTURE.to_owned(),
+            },
+        )
+        .await
+        .expect("setting a credential must still succeed");
+        assert!(replaced.warning.is_some());
     }
 
     #[tokio::test]
@@ -735,10 +860,11 @@ mod tests {
         .await
         .expect("credential should be replaced");
 
-        assert_eq!(updated.id, created.id);
-        assert_eq!(updated.name, created.name);
-        assert_eq!(updated.created_at, created.created_at);
-        assert_ne!(updated.secret_ref, created.secret_ref);
+        assert_eq!(updated.warning, None);
+        assert_eq!(updated.server.id, created.id);
+        assert_eq!(updated.server.name, created.name);
+        assert_eq!(updated.server.created_at, created.created_at);
+        assert_ne!(updated.server.secret_ref, created.secret_ref);
         assert_eq!(
             services
                 .secret_store
@@ -785,8 +911,8 @@ mod tests {
         )
         .await
         .expect("pending server metadata should be editable");
-        assert_eq!(edited.name, "imported-renamed");
-        assert_eq!(edited.secret_ref, None);
+        assert_eq!(edited.server.name, "imported-renamed");
+        assert_eq!(edited.server.secret_ref, None);
 
         let configured = set_server_credential(
             &services,
@@ -797,7 +923,7 @@ mod tests {
         )
         .await
         .expect("pending server should accept a credential");
-        assert!(configured.secret_ref.is_some());
+        assert!(configured.server.secret_ref.is_some());
 
         delete_server(&services, pending.id)
             .await

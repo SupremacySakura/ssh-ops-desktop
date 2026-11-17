@@ -184,6 +184,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     sessions.set(connection.serverId, session);
     set((state) => {
       const previous = state.states[connection.serverId] ?? emptyMonitorState();
+      const connectionChanged = previous.connectionId !== connection.connectionId;
       return {
         states: {
           ...state.states,
@@ -192,6 +193,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
             connectionId: connection.connectionId,
             phase: 'sampling',
             latest: null,
+            samples: connectionChanged ? [] : previous.samples,
             error: null,
             unavailable: [],
             inFlight: false,
@@ -224,6 +226,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
             connectionId: null,
             phase: reason,
             latest: null,
+            samples: [],
             error: reason === 'offline' ? '服务器离线，请重连后继续采样' : null,
             unavailable: [],
             inFlight: false,
@@ -410,7 +413,9 @@ function coreErrorCode(error: unknown): string | null {
 }
 
 function monitorErrorMessage(error: unknown): string {
-  switch (coreErrorCode(error)) {
+  const parsed = CoreErrorSchema.safeParse(error);
+  if (!parsed.success) return '监控采样失败，请重试';
+  switch (parsed.data.code) {
     case 'TIMEOUT':
       return '监控采样超时，请重试';
     case 'REMOTE_PERMISSION':
@@ -420,12 +425,20 @@ function monitorErrorMessage(error: unknown): string {
     case 'REMOTE_PARSE':
       return '服务器返回的监控数据无法解析';
     case 'CONFLICT':
-      return 'SSH 连接已切换，请重新采样';
+      return hasCjk(parsed.data.message)
+        ? parsed.data.message
+        : 'SSH 连接已切换，请重新采样';
+    case 'VALIDATION':
+      return hasCjk(parsed.data.message)
+        ? parsed.data.message
+        : '监控采样参数无效，请重新连接后重试';
     default:
-      return error instanceof Error && error.message.trim()
-        ? `监控采样失败：${error.message}`
-        : '监控采样失败，请重试';
+      return '监控采样失败，请重试';
   }
+}
+
+function hasCjk(message: string): boolean {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(message);
 }
 
 function clampPercent(value: number): number {

@@ -16,7 +16,7 @@
 - `apps/desktop/PRODUCT.md`：产品事实与使用场景。
 - `design/harbor-calibrated-panel.html`：1440×900 首屏参考稿。
 
-核心 token：`shell #E9E6DF` / `paper #FAF9F6` / `ink #1B1A17` / `muted #6F6B62` / `hairline #CFCAC0` / `accent #E85D04` / `screen #141311`；Inter Tight（UI）+ IBM Plex Mono（数据/终端）。约束：无圆角卡片、渐变、玻璃拟态。
+核心 token：`shell #E9E6DF` / `paper #FAF9F6` / `ink #1B1A17` / `muted #5F5B52` / `hairline #CFCAC0` / `accent #E85D04` / `screen #141311` / `warning #8F5A1E`；Inter Tight（UI）+ IBM Plex Mono（数据/终端）。约束：无圆角卡片、渐变、玻璃拟态。
 
 ## 计划决策（D1–D24）
 

@@ -50,6 +50,15 @@ export const ServerCredentialInputSchema = z.object({
   credential: z.string().min(1, '密码或私钥不能为空'),
 }).strict();
 
+export const ServerSaveOutcomeSchema = z.object({
+  server: ServerSchema,
+  warning: RequiredTextSchema.nullable(),
+}).strict();
+
+export const ServerDeleteOutcomeSchema = z.object({
+  warning: RequiredTextSchema.nullable(),
+}).strict();
+
 export const GroupInputSchema = z.object({
   name: RequiredTextSchema,
   sortOrder: z.int(),
@@ -60,4 +69,6 @@ export type Server = z.infer<typeof ServerSchema>;
 export type Group = z.infer<typeof GroupSchema>;
 export type ServerInput = z.infer<typeof ServerInputSchema>;
 export type ServerCredentialInput = z.infer<typeof ServerCredentialInputSchema>;
+export type ServerSaveOutcome = z.infer<typeof ServerSaveOutcomeSchema>;
+export type ServerDeleteOutcome = z.infer<typeof ServerDeleteOutcomeSchema>;
 export type GroupInput = z.infer<typeof GroupInputSchema>;

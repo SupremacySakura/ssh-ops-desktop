@@ -32,12 +32,12 @@ where
         ));
     }
     let container = ContainerIdentifier::try_new(container_id)?;
-    adapter.verify_exec(&connection, &container, shell).await?;
+    adapter.verify_exec(&connection, &container, &shell).await?;
     terminal_manager
         .open_command(
             connection,
             PtySize::try_new(columns, rows)?,
-            adapter.terminal_command(&container, shell),
+            adapter.terminal_command(&container, &shell),
         )
         .await
 }
@@ -88,12 +88,16 @@ pub(crate) async fn docker_exec(
 ) -> Result<TerminalSession, CoreError> {
     let services = core_services(&app);
     let adapter = docker_adapter(&services);
+    let shell = match shell {
+        Some(shell) => DockerShell::try_new(shell.as_str())?,
+        None => DockerShell::default(),
+    };
     open_docker_terminal(
         &services.terminal_manager,
         &adapter,
         connection,
         &container_id,
-        shell.unwrap_or_default(),
+        shell,
         columns,
         rows,
     )
@@ -182,7 +186,7 @@ mod tests {
             &adapter,
             connection.clone(),
             "abc123",
-            DockerShell::Bash,
+            DockerShell::try_new("bash").unwrap(),
             120,
             40,
         )
@@ -201,7 +205,7 @@ mod tests {
                 &adapter,
                 connection.clone(),
                 invalid,
-                DockerShell::Sh,
+                DockerShell::try_new("sh").unwrap(),
                 80,
                 24,
             )
@@ -223,7 +227,7 @@ mod tests {
             &adapter,
             connection.clone(),
             "abc123",
-            DockerShell::Sh,
+            DockerShell::try_new("sh").unwrap(),
             80,
             24,
         )
@@ -238,7 +242,7 @@ mod tests {
                 &adapter,
                 connection.clone(),
                 "abc123",
-                DockerShell::Sh,
+                DockerShell::try_new("sh").unwrap(),
                 80,
                 24,
             )
@@ -250,7 +254,7 @@ mod tests {
             &adapter,
             connection,
             "abc123",
-            DockerShell::Sh,
+            DockerShell::try_new("sh").unwrap(),
             80,
             24,
         )

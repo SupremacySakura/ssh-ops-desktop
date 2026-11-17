@@ -251,7 +251,7 @@ describe('Docker store', () => {
       connectionId: nextConnection.connectionId,
       action: null,
       actionError: {
-        code: 'INTERNAL',
+        code: 'CONFLICT',
         message: 'Docker 连接已变化，请刷新容器列表',
       },
     });
@@ -280,12 +280,59 @@ describe('Docker store', () => {
       code: 'DOCKER_SHELL_UNAVAILABLE',
       message: 'shell unavailable',
       retryable: false,
-    })).toContain('sh、bash 或 ash');
+    })).toContain('sh、bash、ash、zsh、busybox');
     expect(dockerErrorMessage({
       code: 'REMOTE_COMMAND',
       message: 'Error response from daemon: container is not running',
       retryable: false,
     })).toBe('容器未运行，无法执行该操作');
+  });
+
+  it('never echoes raw daemon, parser, or transport messages', () => {
+    const internal = dockerErrorMessage({
+      code: 'INTERNAL',
+      message: 'sqlx error: database is locked',
+      retryable: false,
+    });
+    expect(internal).toBe('Docker 操作失败，请重试');
+    expect(internal).not.toContain('sqlx');
+
+    const parse = dockerErrorMessage({
+      code: 'REMOTE_PARSE',
+      message: 'unexpected token at line 3',
+      retryable: false,
+    });
+    expect(parse).toBe('Docker 输出无法解析，可能是不兼容的 Docker 版本');
+    expect(parse).not.toContain('unexpected token');
+
+    const command = dockerErrorMessage({
+      code: 'REMOTE_COMMAND',
+      message: 'OCI runtime exec failed: exec failed: unable to start container process',
+      retryable: false,
+    });
+    expect(command).toBe('Docker 命令执行失败，请稍后重试');
+    expect(command).not.toContain('OCI runtime');
+
+    expect(dockerErrorMessage(new Error('socket hang up')))
+      .toBe('Docker 操作失败，请重试');
+  });
+
+  it('keeps Chinese conflict and validation detail but replaces English detail', () => {
+    expect(dockerErrorMessage({
+      code: 'CONFLICT',
+      message: '容器正在重启，请稍后重试',
+      retryable: true,
+    })).toBe('Docker 操作冲突：容器正在重启，请稍后重试');
+    expect(dockerErrorMessage({
+      code: 'CONFLICT',
+      message: 'container is restarting',
+      retryable: true,
+    })).toBe('Docker 操作与当前状态冲突，请刷新后重试');
+    expect(dockerErrorMessage({
+      code: 'VALIDATION',
+      message: 'shell must be sh, bash, or ash',
+      retryable: false,
+    })).toBe('Docker 操作参数无效，请检查后重试');
   });
 });
 

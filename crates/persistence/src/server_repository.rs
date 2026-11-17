@@ -204,12 +204,8 @@ fn server_from_row(row: &SqliteRow) -> Result<Server, CoreError> {
     let id: String = row
         .try_get("id")
         .map_err(|error| repository_error("decode server id", error))?;
-    let id = Id::from_str(&id).map_err(|error| {
-        CoreError::new(
-            CoreErrorCode::Internal,
-            format!("failed to decode persisted server id: {error}"),
-            false,
-        )
+    let id = Id::from_str(&id).map_err(|_error| {
+        CoreError::new(CoreErrorCode::Internal, "服务器记录损坏，无法读取", false)
     })?;
     let auth_type: String = row
         .try_get("auth_type")
@@ -219,10 +215,10 @@ fn server_from_row(row: &SqliteRow) -> Result<Server, CoreError> {
         .map_err(|error| repository_error("decode server group", error))?;
     let group_id = group_id
         .map(|value| {
-            Id::from_str(&value).map_err(|error| {
+            Id::from_str(&value).map_err(|_error| {
                 CoreError::new(
                     CoreErrorCode::Internal,
-                    format!("failed to decode persisted group id: {error}"),
+                    "服务器分组记录损坏，无法读取",
                     false,
                 )
             })
@@ -234,10 +230,10 @@ fn server_from_row(row: &SqliteRow) -> Result<Server, CoreError> {
     let port: i64 = row
         .try_get("port")
         .map_err(|error| repository_error("decode server port", error))?;
-    let port = u16::try_from(port).map_err(|error| {
+    let port = u16::try_from(port).map_err(|_error| {
         CoreError::new(
             CoreErrorCode::Internal,
-            format!("persisted server port is invalid: {error}"),
+            "服务器端口记录无效，无法读取",
             false,
         )
     })?;
@@ -274,9 +270,10 @@ fn not_found(message: impl Into<String>) -> CoreError {
 }
 
 fn repository_error(context: &str, error: impl std::fmt::Display) -> CoreError {
+    let _ = (context, error);
     CoreError::new(
         CoreErrorCode::Internal,
-        format!("failed to {context}: {error}"),
+        "本地数据库操作失败，请稍后重试",
         false,
     )
 }

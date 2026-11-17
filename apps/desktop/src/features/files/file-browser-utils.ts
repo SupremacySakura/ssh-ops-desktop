@@ -151,12 +151,10 @@ export function languageForPath(path: string): string {
 }
 
 export function remoteFileErrorMessage(error: unknown): string {
-  const code = (
-    typeof error === 'object'
-    && error !== null
-    && 'code' in error
-    && typeof error.code === 'string'
-  )
+  if (typeof error !== 'object' || error === null) {
+    return '远程文件操作失败，请重试';
+  }
+  const code = 'code' in error && typeof error.code === 'string'
     ? error.code
     : null;
   switch (code) {
@@ -172,19 +170,21 @@ export function remoteFileErrorMessage(error: unknown): string {
       return '远程文件操作超时，请重试';
     case 'VALIDATION':
     case 'CONFLICT':
-      return errorMessage(error) ?? '远程文件校验失败，请刷新后重试';
+      return chineseDetail(error)
+        ?? '远程文件校验失败，请刷新后重试';
     default:
-      return errorMessage(error) ?? '远程文件操作失败，请重试';
+      return '远程文件操作失败，请重试';
   }
 }
 
-function errorMessage(error: unknown): string | null {
+function chineseDetail(error: unknown): string | null {
   if (
     typeof error === 'object'
     && error !== null
     && 'message' in error
     && typeof error.message === 'string'
     && error.message.trim().length > 0
+    && /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(error.message)
   ) {
     return error.message;
   }

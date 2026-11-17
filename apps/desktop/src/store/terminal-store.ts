@@ -345,7 +345,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         || !sameConnection(session.connection, runtime.connection)
       ) {
         discardPendingTerminalEvents(session.id);
-        await core.closeTerminal(session.id).catch(() => undefined);
+        await core.closeTerminal(session.connection, session.id).catch(() => undefined);
         return null;
       }
       const view = addTerminalSession(set, get, serverId, session);
@@ -415,7 +415,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         || !sameConnection(opened.connection, runtime.connection)
       ) {
         discardPendingTerminalEvents(opened.id);
-        await core.closeTerminal(opened.id).catch(() => undefined);
+        await core.closeTerminal(opened.connection, opened.id).catch(() => undefined);
         return {
           kind: 'error',
           error: sessionError(
@@ -444,8 +444,13 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     markSessionClosing(sessionId);
     try {
       if (core) {
+        const connection = get().runtimes[serverId]?.sessions.find(
+          (session) => session.id === sessionId,
+        )?.connection;
         try {
-          await core.closeTerminal(sessionId);
+          if (connection) {
+            await core.closeTerminal(connection, sessionId);
+          }
         } catch (error) {
           if (coreErrorCode(error) !== 'NOT_FOUND') {
             updateRuntime(set, serverId, (current) => ({
@@ -487,13 +492,13 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         || !sameConnection(opened.connection, expectedConnection)
       ) {
         discardPendingTerminalEvents(opened.id);
-        await core.closeTerminal(opened.id).catch(() => undefined);
+        await core.closeTerminal(opened.connection, opened.id).catch(() => undefined);
         return false;
       }
       const replaced = replaceTerminalSession(set, serverId, sessionId, opened);
       if (!replaced) {
         discardPendingTerminalEvents(opened.id);
-        await core.closeTerminal(opened.id).catch(() => undefined);
+        await core.closeTerminal(opened.connection, opened.id).catch(() => undefined);
         return false;
       }
       drainPendingTerminalEvents(set, opened.id);
@@ -659,8 +664,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   resizeSession: async (sessionId, columns, rows) => {
     const core = get().core;
     if (!core) return;
+    const connection = locateSession(get().runtimes, sessionId)?.runtime.sessions.find(
+      (session) => session.id === sessionId,
+    )?.connection;
+    if (!connection) return;
     try {
-      await core.resizeTerminal(sessionId, columns, rows);
+      await core.resizeTerminal(connection, sessionId, columns, rows);
     } catch (error) {
       if (coreErrorCode(error) !== 'NOT_FOUND') {
         const located = locateSession(get().runtimes, sessionId);
@@ -676,10 +685,14 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   writeSession: async (sessionId, bytes) => {
     const core = get().core;
     if (!core) return;
+    const connection = locateSession(get().runtimes, sessionId)?.runtime.sessions.find(
+      (session) => session.id === sessionId,
+    )?.connection;
+    if (!connection) return;
     const previous = terminalWriteQueues.get(sessionId) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(() => core.writeTerminal(sessionId, bytes));
+      .then(() => core.writeTerminal(connection, sessionId, bytes));
     terminalWriteQueues.set(sessionId, current);
     try {
       await current;
@@ -863,9 +876,6 @@ export function connectionErrorMessage(error: unknown): string {
       case 'INTERNAL':
         return 'Core 内部错误，连接未建立';
     }
-  }
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
   }
   return 'SSH 连接失败，请重试';
 }
@@ -1331,13 +1341,7 @@ function coreErrorCode(error: unknown): string | null {
 function coreError(error: unknown): CoreError {
   const parsed = CoreErrorSchema.safeParse(error);
   if (parsed.success) return parsed.data;
-  return sessionError(
-    'INTERNAL',
-    error instanceof Error && error.message.trim().length > 0
-      ? error.message
-      : 'Docker exec 会话创建失败',
-    false,
-  );
+  return sessionError('INTERNAL', 'Docker exec 会话创建失败，请重试', false);
 }
 
 function sessionError(

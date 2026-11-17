@@ -266,10 +266,10 @@ where
             .map_err(|error| ssh_error("start SFTP subsystem", error, true))?;
         SftpSession::new(channel.into_stream())
             .await
-            .map_err(|error| {
+            .map_err(|_error| {
                 CoreError::new(
                     CoreErrorCode::CapabilityUnavailable,
-                    format!("failed to initialize SFTP subsystem: {error}"),
+                    "远程文件子系统初始化失败",
                     true,
                 )
             })
@@ -799,14 +799,19 @@ fn append_bounded(target: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn authentication_error(message: &str) -> CoreError {
-    CoreError::new(CoreErrorCode::SshAuthentication, message, false)
+fn authentication_error(_message: &str) -> CoreError {
+    CoreError::new(
+        CoreErrorCode::SshAuthentication,
+        "SSH 认证失败，请检查用户名与凭据",
+        false,
+    )
 }
 
 fn ssh_error(context: &str, error: impl std::fmt::Display, retryable: bool) -> CoreError {
+    let _ = (context, error);
     CoreError::new(
         CoreErrorCode::SshConnection,
-        format!("failed to {context}: {error}"),
+        "SSH 连接操作失败，请检查网络与服务器状态后重试",
         retryable,
     )
 }

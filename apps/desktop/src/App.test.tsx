@@ -500,7 +500,7 @@ describe('Harbor empty shell', () => {
     }));
 
     expect(await within(confirmation).findByRole('alert')).toHaveTextContent(
-      '无法关闭 SSH 连接',
+      'SSH 连接失败，请重试',
     );
     expect(confirmation).toBeVisible();
     expect(core.calls).not.toContainEqual(
@@ -1130,7 +1130,7 @@ describe('Harbor empty shell', () => {
     }));
   });
 
-  it('offers whitelisted shell choices when sh is unavailable', async () => {
+  it('offers validated shell choices when sh is unavailable', async () => {
     const server = terminalServer('prod-web-01');
     const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     let attempts = 0;
@@ -1170,6 +1170,57 @@ describe('Harbor empty shell', () => {
 
     const shellDialog = await screen.findByRole('dialog', { name: '选择容器 shell' });
     expect(within(shellDialog).getByText(/没有 sh/u)).toBeVisible();
+    const shellInput = within(shellDialog).getByRole('textbox', { name: 'shell 路径' });
+    fireEvent.change(shellInput, { target: { value: 'bash; id' } });
+    fireEvent.click(within(shellDialog).getByRole('button', { name: '使用此 shell' }));
+    expect(within(shellDialog).getByText(/不能包含空格/u)).toBeVisible();
+    expect(attempts).toBe(1);
+    fireEvent.change(shellInput, { target: { value: '/usr/bin/zsh' } });
+    fireEvent.click(within(shellDialog).getByRole('button', { name: '使用此 shell' }));
+
+    expect(await screen.findByRole('tab', { name: '切换到 终端 2' })).toBeVisible();
+    expect(attempts).toBe(2);
+  });
+
+  it('keeps the bash shortcut in the shell recovery dialog', async () => {
+    const server = terminalServer('prod-web-01');
+    const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    let attempts = 0;
+    const core = createFakeCoreClient({
+      servers: [server],
+      dockerContainers: [{
+        id: containerId,
+        names: ['web'],
+        image: 'nginx:alpine',
+        state: 'running',
+        status: 'Up 3 hours',
+        ports: [],
+        startedAt: '2026-11-17T12:00:00Z',
+      }],
+      overrides: {
+        execDockerContainer: async (connection) => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw {
+              code: 'DOCKER_SHELL_UNAVAILABLE',
+              message: 'sh unavailable',
+              retryable: false,
+            };
+          }
+          return { id: crypto.randomUUID(), connection };
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Exec web' }));
+
+    const shellDialog = await screen.findByRole('dialog', { name: '选择容器 shell' });
     fireEvent.click(within(shellDialog).getByRole('button', { name: '使用 bash' }));
 
     expect(await screen.findByRole('tab', { name: '切换到 终端 2' })).toBeVisible();

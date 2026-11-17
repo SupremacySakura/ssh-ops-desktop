@@ -128,76 +128,6 @@ impl FileOperations for RemoteFileService {
     }
 }
 
-pub(super) async fn list_remote_files(
-    files: &dyn FileOperations,
-    connection: &ConnectionHandle,
-    directory: &RemoteDirectoryPath,
-) -> Result<Vec<RemoteFileEntry>, CoreError> {
-    files.list(connection, directory).await
-}
-
-pub(super) async fn read_remote_file(
-    files: &dyn FileOperations,
-    connection: &ConnectionHandle,
-    path: &RemotePath,
-) -> Result<RemoteTextFile, CoreError> {
-    files.read(connection, path).await
-}
-
-pub(super) async fn write_remote_file(
-    files: &dyn FileOperations,
-    connection: &ConnectionHandle,
-    path: &RemotePath,
-    content: String,
-    expected_sha256: &str,
-) -> Result<RemoteFileWriteResult, CoreError> {
-    files
-        .write(connection, path, content, expected_sha256)
-        .await
-}
-
-pub(super) async fn download_remote_file(
-    files: &dyn FileOperations,
-    connection: &ConnectionHandle,
-    path: &RemotePath,
-) -> Result<RemoteFileDownload, CoreError> {
-    files.download(connection, path).await
-}
-
-pub(super) async fn upload_remote_files(
-    files: &dyn FileOperations,
-    connection: &ConnectionHandle,
-    directory: &RemoteDirectoryPath,
-    uploads: &[RemoteUploadFile],
-) -> Result<RemoteUploadOutcome, CoreError> {
-    files.upload_batch(connection, directory, uploads).await
-}
-
-pub(super) async fn create_remote_directory(
-    files: &dyn FileOperations,
-    connection: &ConnectionHandle,
-    path: &RemotePath,
-) -> Result<RemoteFileMutationResult, CoreError> {
-    files.create_directory(connection, path).await
-}
-
-pub(super) async fn rename_remote_file(
-    files: &dyn FileOperations,
-    connection: &ConnectionHandle,
-    source: &RemotePath,
-    target: &RemotePath,
-) -> Result<RemoteRenameResult, CoreError> {
-    files.rename_no_clobber(connection, source, target).await
-}
-
-pub(super) async fn delete_remote_file(
-    files: &dyn FileOperations,
-    connection: &ConnectionHandle,
-    path: &RemotePath,
-) -> Result<RemoteFileMutationResult, CoreError> {
-    files.delete(connection, path).await
-}
-
 #[tauri::command]
 pub(crate) async fn file_list(
     app: AppHandle,
@@ -205,7 +135,7 @@ pub(crate) async fn file_list(
     path: RemoteDirectoryPath,
 ) -> Result<Vec<RemoteFileEntry>, CoreError> {
     let services = core_services(&app);
-    list_remote_files(services.file_operations.as_ref(), &connection, &path).await
+    services.file_operations.list(&connection, &path).await
 }
 
 #[tauri::command]
@@ -215,7 +145,7 @@ pub(crate) async fn file_read(
     path: RemotePath,
 ) -> Result<RemoteTextFile, CoreError> {
     let services = core_services(&app);
-    read_remote_file(services.file_operations.as_ref(), &connection, &path).await
+    services.file_operations.read(&connection, &path).await
 }
 
 #[tauri::command]
@@ -227,14 +157,10 @@ pub(crate) async fn file_write(
     expected_sha256: String,
 ) -> Result<RemoteFileWriteResult, CoreError> {
     let services = core_services(&app);
-    write_remote_file(
-        services.file_operations.as_ref(),
-        &connection,
-        &path,
-        content,
-        &expected_sha256,
-    )
-    .await
+    services
+        .file_operations
+        .write(&connection, &path, content, &expected_sha256)
+        .await
 }
 
 #[tauri::command]
@@ -244,7 +170,7 @@ pub(crate) async fn file_download(
     path: RemotePath,
 ) -> Result<RemoteFileDownload, CoreError> {
     let services = core_services(&app);
-    download_remote_file(services.file_operations.as_ref(), &connection, &path).await
+    services.file_operations.download(&connection, &path).await
 }
 
 #[tauri::command]
@@ -255,13 +181,10 @@ pub(crate) async fn file_upload(
     files: Vec<RemoteUploadFile>,
 ) -> Result<RemoteUploadOutcome, CoreError> {
     let services = core_services(&app);
-    upload_remote_files(
-        services.file_operations.as_ref(),
-        &connection,
-        &directory,
-        &files,
-    )
-    .await
+    services
+        .file_operations
+        .upload_batch(&connection, &directory, &files)
+        .await
 }
 
 #[tauri::command]
@@ -271,7 +194,10 @@ pub(crate) async fn file_mkdir(
     path: RemotePath,
 ) -> Result<RemoteFileMutationResult, CoreError> {
     let services = core_services(&app);
-    create_remote_directory(services.file_operations.as_ref(), &connection, &path).await
+    services
+        .file_operations
+        .create_directory(&connection, &path)
+        .await
 }
 
 #[tauri::command]
@@ -282,13 +208,10 @@ pub(crate) async fn file_rename(
     target_path: RemotePath,
 ) -> Result<RemoteRenameResult, CoreError> {
     let services = core_services(&app);
-    rename_remote_file(
-        services.file_operations.as_ref(),
-        &connection,
-        &source_path,
-        &target_path,
-    )
-    .await
+    services
+        .file_operations
+        .rename_no_clobber(&connection, &source_path, &target_path)
+        .await
 }
 
 #[tauri::command]
@@ -298,7 +221,7 @@ pub(crate) async fn file_delete(
     path: RemotePath,
 ) -> Result<RemoteFileMutationResult, CoreError> {
     let services = core_services(&app);
-    delete_remote_file(services.file_operations.as_ref(), &connection, &path).await
+    services.file_operations.delete(&connection, &path).await
 }
 
 fn core_services(app: &AppHandle) -> CoreServices {
@@ -317,11 +240,7 @@ mod tests {
         RemoteTextFile, RemoteUploadFile, RemoteUploadOutcome, RenameStatus, UploadBatchStatus,
     };
 
-    use super::{
-        FileOperations, create_remote_directory, delete_remote_file, download_remote_file,
-        list_remote_files, read_remote_file, rename_remote_file, upload_remote_files,
-        write_remote_file,
-    };
+    use super::FileOperations;
 
     #[derive(Default)]
     struct FakeFiles {
@@ -498,32 +417,27 @@ mod tests {
         };
         let connection = connection();
 
-        let listed = list_remote_files(&files, &connection, &RemoteDirectoryPath::root())
+        let listed = files
+            .list(&connection, &RemoteDirectoryPath::root())
             .await
             .unwrap();
-        let read = read_remote_file(
-            &files,
-            &connection,
-            &RemotePath::try_new("/hello.txt").unwrap(),
-        )
-        .await
-        .unwrap();
-        let saved = write_remote_file(
-            &files,
-            &connection,
-            &RemotePath::try_new("/hello.txt").unwrap(),
-            "next\n".to_owned(),
-            HASH,
-        )
-        .await
-        .unwrap();
-        let downloaded = download_remote_file(
-            &files,
-            &connection,
-            &RemotePath::try_new("/hello.txt").unwrap(),
-        )
-        .await
-        .unwrap();
+        let read = files
+            .read(&connection, &RemotePath::try_new("/hello.txt").unwrap())
+            .await
+            .unwrap();
+        let saved = files
+            .write(
+                &connection,
+                &RemotePath::try_new("/hello.txt").unwrap(),
+                "next\n".to_owned(),
+                HASH,
+            )
+            .await
+            .unwrap();
+        let downloaded = files
+            .download(&connection, &RemotePath::try_new("/hello.txt").unwrap())
+            .await
+            .unwrap();
 
         assert_eq!(listed, vec![entry]);
         assert_eq!(read, text);
@@ -550,13 +464,10 @@ mod tests {
             ))),
             ..FakeFiles::default()
         };
-        let error = read_remote_file(
-            &files,
-            &connection(),
-            &RemotePath::try_new("/hello.txt").unwrap(),
-        )
-        .await
-        .unwrap_err();
+        let error = files
+            .read(&connection(), &RemotePath::try_new("/hello.txt").unwrap())
+            .await
+            .unwrap_err();
         assert_eq!(error.code(), CoreErrorCode::Conflict);
     }
 
@@ -581,14 +492,14 @@ mod tests {
             bytes: b"one".to_vec(),
         }];
 
-        let outcome = upload_remote_files(
-            &files,
-            &connection(),
-            &RemoteDirectoryPath::try_new("/docs").unwrap(),
-            &batch,
-        )
-        .await
-        .unwrap();
+        let outcome = files
+            .upload_batch(
+                &connection(),
+                &RemoteDirectoryPath::try_new("/docs").unwrap(),
+                &batch,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(outcome.status, UploadBatchStatus::FailedWithResidue);
         assert_eq!(outcome.residual, vec!["/docs/one.txt"]);
@@ -622,28 +533,22 @@ mod tests {
         };
         let connection = connection();
 
-        let created = create_remote_directory(
-            &files,
-            &connection,
-            &RemotePath::try_new("/docs/new").unwrap(),
-        )
-        .await
-        .unwrap();
-        let renamed = rename_remote_file(
-            &files,
-            &connection,
-            &RemotePath::try_new("/docs/old.txt").unwrap(),
-            &RemotePath::try_new("/docs/new.txt").unwrap(),
-        )
-        .await
-        .unwrap();
-        let deleted = delete_remote_file(
-            &files,
-            &connection,
-            &RemotePath::try_new("/docs/old.txt").unwrap(),
-        )
-        .await
-        .unwrap();
+        let created = files
+            .create_directory(&connection, &RemotePath::try_new("/docs/new").unwrap())
+            .await
+            .unwrap();
+        let renamed = files
+            .rename_no_clobber(
+                &connection,
+                &RemotePath::try_new("/docs/old.txt").unwrap(),
+                &RemotePath::try_new("/docs/new.txt").unwrap(),
+            )
+            .await
+            .unwrap();
+        let deleted = files
+            .delete(&connection, &RemotePath::try_new("/docs/old.txt").unwrap())
+            .await
+            .unwrap();
 
         assert_eq!(created.path, "/docs/new");
         assert_eq!(renamed.status, RenameStatus::Partial);

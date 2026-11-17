@@ -114,7 +114,63 @@ describe('Harbor catalog store', () => {
     await store.loadCatalog();
 
     expect(useHarborStore.getState().catalogStatus).toBe('error');
-    expect(useHarborStore.getState().catalogError).toBe('数据库暂时不可用');
+    expect(useHarborStore.getState().catalogError).toBe('服务器目录操作失败，请重试');
+  });
+
+  it('never exposes an internal Core message or a raw Error in the catalog', async () => {
+    const internal = createFakeCoreClient({
+      overrides: {
+        listServers: vi.fn().mockRejectedValue({
+          code: 'INTERNAL',
+          message: 'sqlx error: no such table: servers',
+          retryable: false,
+        }),
+      },
+    });
+    const store = useHarborStore.getState();
+    store.configureCore(internal);
+    await store.loadCatalog();
+    expect(useHarborStore.getState().catalogError).toBe('服务器目录操作失败，请重试');
+    expect(useHarborStore.getState().catalogError).not.toContain('sqlx');
+
+    const nonCore = createFakeCoreClient({
+      overrides: {
+        deleteServer: vi.fn().mockRejectedValue(new Error('TypeError: invalid response')),
+      },
+    });
+    store.configureCore(nonCore);
+    await store.deleteServer(baseServer.id);
+    expect(useHarborStore.getState().catalogError).toBe('操作失败，请重试');
+  });
+
+  it('keeps a Chinese validation detail and replaces an English one', async () => {
+    const chinese = createFakeCoreClient({
+      overrides: {
+        listServers: vi.fn().mockRejectedValue({
+          code: 'VALIDATION',
+          message: '端口必须在 1–65535 之间',
+          retryable: false,
+        }),
+      },
+    });
+    const store = useHarborStore.getState();
+    store.configureCore(chinese);
+    await store.loadCatalog();
+    expect(useHarborStore.getState().catalogError).toBe('端口必须在 1–65535 之间');
+
+    const english = createFakeCoreClient({
+      overrides: {
+        listServers: vi.fn().mockRejectedValue({
+          code: 'VALIDATION',
+          message: 'port must be within range',
+          retryable: false,
+        }),
+      },
+    });
+    store.configureCore(english);
+    await store.loadCatalog();
+    expect(useHarborStore.getState().catalogError)
+      .toBe('服务器信息校验失败，请检查名称、主机、端口与用户');
   });
 
   it('filters by name, host, or user and keeps favorites in one pinned section', () => {
@@ -299,6 +355,75 @@ describe('Harbor catalog store', () => {
 
     expect(useHarborStore.getState().servers).toEqual([]);
     expect(useHarborStore.getState().selectedServerId).toBeNull();
+  });
+
+  it('keeps a Chinese warning from delete and save', async () => {
+    const warning = '旧凭据清理失败，请在系统凭据库中手动删除';
+    const core = createFakeCoreClient({
+      servers: [baseServer],
+      groups: [group],
+      overrides: {
+        deleteServer: vi.fn().mockResolvedValue({ warning }),
+        updateServer: vi.fn().mockResolvedValue({
+          server: baseServer,
+          warning,
+        }),
+        setServerCredential: vi.fn().mockResolvedValue({
+          server: baseServer,
+          warning,
+        }),
+      },
+    });
+    const store = useHarborStore.getState();
+    store.configureCore(core);
+    await store.loadCatalog();
+
+    await store.toggleFavorite(baseServer.id);
+    expect(useHarborStore.getState().catalogWarning).toBe(warning);
+
+    await store.saveServer(baseServer.id, {
+      name: baseServer.name,
+      host: baseServer.host,
+      port: baseServer.port,
+      user: baseServer.user,
+      authType: baseServer.authType,
+      groupId: baseServer.groupId ?? null,
+      favorite: false,
+    });
+    expect(useHarborStore.getState().catalogWarning).toBe(warning);
+
+    await store.deleteServer(baseServer.id);
+    expect(useHarborStore.getState().catalogWarning).toBe(warning);
+  });
+
+  it('keeps the catalog warning across reloads until the next mutation', async () => {
+    const core = createFakeCoreClient({
+      servers: [baseServer],
+      groups: [group],
+      overrides: {
+        deleteServer: vi.fn().mockResolvedValue({ warning: '旧凭据未清理' }),
+      },
+    });
+    const store = useHarborStore.getState();
+    store.configureCore(core);
+    await store.loadCatalog();
+
+    await store.deleteServer(baseServer.id);
+    expect(useHarborStore.getState().catalogWarning).toBe('旧凭据未清理');
+
+    await store.loadCatalog();
+    expect(useHarborStore.getState().catalogWarning).toBe('旧凭据未清理');
+
+    await store.saveServer(baseServer.id, {
+      name: baseServer.name,
+      host: baseServer.host,
+      port: baseServer.port,
+      user: baseServer.user,
+      authType: baseServer.authType,
+      groupId: baseServer.groupId ?? null,
+      favorite: false,
+    });
+    expect(useHarborStore.getState().catalogWarning).toBeNull();
   });
 
   it('formats the last connection fact from an absolute timestamp', () => {

@@ -25,6 +25,8 @@ import type {
   RemoteUploadFile,
   Server,
   ServerCredentialInput,
+  ServerDeleteOutcome,
+  ServerSaveOutcome,
   SshConfigImportPreview,
   SshConfigImportResult,
   TerminalClosedEvent,
@@ -217,13 +219,17 @@ export function createFakeCoreClient({
       };
       servers = servers.map((server) => (server.id === id ? updated : server));
       persist();
-      return cloneServer(updated);
+      return {
+        server: cloneServer(updated),
+        warning: null,
+      } satisfies ServerSaveOutcome;
     },
     deleteServer: async (id) => {
       remember(calls, 'deleteServer', [id]);
       requireServer(servers, id);
       servers = servers.filter((server) => server.id !== id);
       persist();
+      return { warning: null } satisfies ServerDeleteOutcome;
     },
     setServerCredential: async (id, input) => {
       remember(calls, 'setServerCredential', [id, input]);
@@ -234,7 +240,10 @@ export function createFakeCoreClient({
       };
       servers = servers.map((server) => (server.id === id ? updated : server));
       persist();
-      return cloneServer(updated);
+      return {
+        server: cloneServer(updated),
+        warning: null,
+      } satisfies ServerSaveOutcome;
     },
     listGroups: async () => {
       remember(calls, 'listGroups', []);
@@ -326,8 +335,8 @@ export function createFakeCoreClient({
       });
       return session;
     },
-    writeTerminal: async (terminalSessionId, bytes) => {
-      remember(calls, 'writeTerminal', [terminalSessionId, Array.from(bytes)]);
+    writeTerminal: async (connection, terminalSessionId, bytes) => {
+      remember(calls, 'writeTerminal', [connection, terminalSessionId, Array.from(bytes)]);
       if (terminalEcho || terminalOsc7) {
         const sequence = (terminalEchoSequences.get(terminalSessionId) ?? 1) + 1;
         terminalEchoSequences.set(terminalSessionId, sequence);
@@ -350,11 +359,16 @@ export function createFakeCoreClient({
         });
       }
     },
-    resizeTerminal: async (terminalSessionId, columns, rows) => {
-      remember(calls, 'resizeTerminal', [terminalSessionId, columns, rows]);
+    resizeTerminal: async (connection, terminalSessionId, columns, rows) => {
+      remember(calls, 'resizeTerminal', [
+        connection,
+        terminalSessionId,
+        columns,
+        rows,
+      ]);
     },
-    closeTerminal: async (terminalSessionId) => {
-      remember(calls, 'closeTerminal', [terminalSessionId]);
+    closeTerminal: async (connection, terminalSessionId) => {
+      remember(calls, 'closeTerminal', [connection, terminalSessionId]);
       emitTerminalClosed({
         terminalSessionId,
         reason: 'closed',

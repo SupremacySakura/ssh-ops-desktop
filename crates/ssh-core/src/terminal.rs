@@ -322,7 +322,17 @@ where
         Ok(session)
     }
 
-    pub async fn write(&self, session_id: Id, bytes: &[u8]) -> Result<(), CoreError> {
+    pub async fn write_for(
+        &self,
+        connection: &ConnectionHandle,
+        session_id: Id,
+        bytes: &[u8],
+    ) -> Result<(), CoreError> {
+        self.require_session_owner(connection, session_id).await?;
+        self.write_unchecked(session_id, bytes).await
+    }
+
+    async fn write_unchecked(&self, session_id: Id, bytes: &[u8]) -> Result<(), CoreError> {
         if bytes.len() > MAX_TERMINAL_WRITE_BYTES {
             return Err(validation(
                 "terminal write exceeds the 1 MiB per-request limit",
@@ -332,12 +342,27 @@ where
         self.backend.write(session_id, bytes).await
     }
 
-    pub async fn resize(&self, session_id: Id, size: PtySize) -> Result<(), CoreError> {
+    pub async fn resize_for(
+        &self,
+        connection: &ConnectionHandle,
+        session_id: Id,
+        size: PtySize,
+    ) -> Result<(), CoreError> {
+        self.require_session_owner(connection, session_id).await?;
+        self.resize_unchecked(session_id, size).await
+    }
+
+    async fn resize_unchecked(&self, session_id: Id, size: PtySize) -> Result<(), CoreError> {
         self.require_session(session_id).await?;
         self.backend.resize(session_id, size).await
     }
 
-    pub async fn close(&self, session_id: Id) -> Result<(), CoreError> {
+    pub async fn close_for(
+        &self,
+        connection: &ConnectionHandle,
+        session_id: Id,
+    ) -> Result<(), CoreError> {
+        self.require_session_owner(connection, session_id).await?;
         self.close_with_reason(session_id, TerminalCloseReason::Closed)
             .await
     }
@@ -636,6 +661,17 @@ where
             Ok(())
         } else {
             Err(not_found("terminal session"))
+        }
+    }
+
+    async fn require_session_owner(
+        &self,
+        connection: &ConnectionHandle,
+        session_id: Id,
+    ) -> Result<(), CoreError> {
+        match self.connection_for_session(session_id).await {
+            Some(owner) if owner == *connection => Ok(()),
+            _ => Err(not_found("terminal session")),
         }
     }
 }

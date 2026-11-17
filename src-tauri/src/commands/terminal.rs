@@ -39,36 +39,43 @@ pub(crate) async fn terminal_open(
 #[tauri::command]
 pub(crate) async fn terminal_write(
     app: AppHandle,
+    connection: ConnectionHandle,
     terminal_session_id: Id,
     bytes: Vec<u8>,
 ) -> Result<(), CoreError> {
     core_services(&app)
         .terminal_manager
-        .write(terminal_session_id, &bytes)
+        .write_for(&connection, terminal_session_id, &bytes)
         .await
 }
 
 #[tauri::command]
 pub(crate) async fn terminal_resize(
     app: AppHandle,
+    connection: ConnectionHandle,
     terminal_session_id: Id,
     columns: u32,
     rows: u32,
 ) -> Result<(), CoreError> {
     core_services(&app)
         .terminal_manager
-        .resize(terminal_session_id, PtySize::try_new(columns, rows)?)
+        .resize_for(
+            &connection,
+            terminal_session_id,
+            PtySize::try_new(columns, rows)?,
+        )
         .await
 }
 
 #[tauri::command]
 pub(crate) async fn terminal_close(
     app: AppHandle,
+    connection: ConnectionHandle,
     terminal_session_id: Id,
 ) -> Result<(), CoreError> {
     core_services(&app)
         .terminal_manager
-        .close(terminal_session_id)
+        .close_for(&connection, terminal_session_id)
         .await
 }
 
@@ -98,10 +105,57 @@ mod tests {
             .expect_err("PTY bounds are validated before backend open");
         assert_eq!(invalid.code(), CoreErrorCode::Validation);
 
-        let session = open_terminal(&manager, connection, 80, 24).await.unwrap();
-        manager
-            .resize(session.id(), PtySize::try_new(120, 40).unwrap())
+        let session = open_terminal(&manager, connection.clone(), 80, 24)
             .await
             .unwrap();
+        manager
+            .resize_for(
+                &connection,
+                session.id(),
+                PtySize::try_new(120, 40).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_resize_and_close_helpers_scope_sessions_to_the_connection() {
+        let backend = InMemoryShellBackend::new();
+        let manager = TerminalManager::new(backend.clone());
+        let owner = ConnectionHandle::new(Id::new(), Id::new());
+        let other = ConnectionHandle::new(Id::new(), Id::new());
+        manager.register_connection(&owner).await.unwrap();
+        manager.register_connection(&other).await.unwrap();
+        let session = open_terminal(&manager, owner.clone(), 80, 24)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .write_for(&other, session.id(), b"blocked")
+                .await
+                .unwrap_err()
+                .code(),
+            CoreErrorCode::NotFound
+        );
+        assert_eq!(
+            manager
+                .resize_for(&other, session.id(), PtySize::try_new(120, 40).unwrap())
+                .await
+                .unwrap_err()
+                .code(),
+            CoreErrorCode::NotFound
+        );
+        assert_eq!(
+            manager
+                .close_for(&other, session.id())
+                .await
+                .unwrap_err()
+                .code(),
+            CoreErrorCode::NotFound
+        );
+        assert!(backend.writes(session.id()).await.is_empty());
+        assert!(backend.resizes(session.id()).await.is_empty());
+        assert!(manager.active_session_ids().await.contains(&session.id()));
     }
 }

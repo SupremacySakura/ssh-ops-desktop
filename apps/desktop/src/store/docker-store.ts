@@ -88,7 +88,11 @@ export const useDockerStore = create<DockerStore>((set, get) => ({
       logs: connectionChanged ? null : previous.logs,
     });
     if (!core) {
-      const error = internalError('Core 尚未连接，无法读取 Docker 容器');
+      const error = sessionError(
+        'SSH_CONNECTION',
+        '服务器离线，请重新连接 SSH',
+        true,
+      );
       updateState(set, serverId, {
         ...get().states[serverId],
         status: 'error',
@@ -134,7 +138,11 @@ export const useDockerStore = create<DockerStore>((set, get) => ({
       updateState(set, serverId, {
         ...previous,
         action: null,
-        actionError: internalError('Docker 连接已变化，请刷新容器列表'),
+        actionError: sessionError(
+          'CONFLICT',
+          'Docker 连接已变化，请刷新容器列表',
+          false,
+        ),
       });
       return;
     }
@@ -142,7 +150,11 @@ export const useDockerStore = create<DockerStore>((set, get) => ({
       updateState(set, serverId, {
         ...previous,
         action: null,
-        actionError: internalError('Core 尚未连接，无法执行 Docker 操作'),
+        actionError: sessionError(
+          'SSH_CONNECTION',
+          '服务器离线，请重新连接 SSH',
+          true,
+        ),
       });
       return;
     }
@@ -206,7 +218,11 @@ export const useDockerStore = create<DockerStore>((set, get) => ({
       updateLogs(set, get, serverId, sequence, connection.connectionId, {
         ...logs,
         status: 'error',
-        error: internalError('Core 尚未连接，无法读取容器日志'),
+        error: sessionError(
+          'SSH_CONNECTION',
+          '服务器离线，请重新连接 SSH',
+          true,
+        ),
       });
       return;
     }
@@ -257,7 +273,7 @@ export function dockerErrorMessage(error: unknown): string {
       case 'DOCKER_CONTAINER_NOT_FOUND':
         return '容器已不存在，请刷新列表';
       case 'DOCKER_SHELL_UNAVAILABLE':
-        return '容器内没有该 shell，请改用 sh、bash 或 ash';
+        return '容器内没有该 shell，请改用 sh、bash、ash、zsh、busybox 或可用的绝对路径';
       case 'SSH_CONNECTION':
         return '服务器离线，请重新连接 SSH';
       case 'REMOTE_PARSE':
@@ -266,16 +282,19 @@ export function dockerErrorMessage(error: unknown): string {
         return remoteCommandMessage(parsed.data.message);
       case 'TIMEOUT':
         return 'Docker 操作超时，请重试';
+      case 'VALIDATION':
+        return hasCjk(parsed.data.message)
+          ? parsed.data.message
+          : 'Docker 操作参数无效，请检查后重试';
       case 'CONFLICT':
-        return `Docker 操作冲突：${parsed.data.message}`;
+        return hasCjk(parsed.data.message)
+          ? `Docker 操作冲突：${parsed.data.message}`
+          : 'Docker 操作与当前状态冲突，请刷新后重试';
       case 'NOT_FOUND':
         return 'SSH 连接或容器已不存在，请刷新后重试';
       default:
-        return parsed.data.message;
+        return 'Docker 操作失败，请重试';
     }
-  }
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
   }
   return 'Docker 操作失败，请重试';
 }
@@ -293,7 +312,7 @@ function remoteCommandMessage(message: string): string {
   if (/port is already allocated/iu.test(message)) {
     return '容器端口已被占用，启动失败';
   }
-  return `Docker 命令执行失败：${message}`;
+  return 'Docker 命令执行失败，请稍后重试';
 }
 
 export function dockerActionLabel(action: DockerAction): string {
@@ -384,11 +403,7 @@ function isCurrentLoad(
 function dockerCoreError(error: unknown): CoreError {
   const parsed = CoreErrorSchema.safeParse(error);
   if (parsed.success) return parsed.data;
-  return internalError(
-    error instanceof Error && error.message.trim().length > 0
-      ? error.message
-      : 'Docker 操作失败，请重试',
-  );
+  return internalError('Docker 操作失败，请重试');
 }
 
 function internalError(message: string): CoreError {
@@ -397,4 +412,16 @@ function internalError(message: string): CoreError {
     message,
     retryable: false,
   };
+}
+
+function sessionError(
+  code: CoreError['code'],
+  message: string,
+  retryable: boolean,
+): CoreError {
+  return { code, message, retryable };
+}
+
+function hasCjk(message: string): boolean {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(message);
 }

@@ -283,7 +283,7 @@ describe('terminal workspace store', () => {
     expect(useTerminalStore.getState().runtimes[server.id]).toBeUndefined();
     expect(core.calls).toContainEqual({
       method: 'closeTerminal',
-      args: [staleSessionId],
+      args: [expect.anything(), staleSessionId],
     });
   });
 
@@ -500,12 +500,12 @@ describe('terminal workspace store', () => {
     const blockedClose = new Promise<void>((resolve) => {
       releaseClose = resolve;
     });
-    core.closeTerminal = async (sessionId) => {
+    core.closeTerminal = async (connection, sessionId) => {
       if (sessionId === original?.id) {
         markCloseStarted();
         await blockedClose;
       }
-      await closeTerminal(sessionId);
+      await closeTerminal(connection, sessionId);
     };
 
     const reconnecting = useTerminalStore.getState().reconnectSession(
@@ -570,12 +570,12 @@ describe('terminal workspace store', () => {
     const blockedClose = new Promise<void>((resolve) => {
       releaseClose = resolve;
     });
-    core.closeTerminal = async (sessionId) => {
+    core.closeTerminal = async (connection, sessionId) => {
       if (sessionId === original?.id) {
         markCloseStarted();
         await blockedClose;
       }
-      await closeTerminal(sessionId);
+      await closeTerminal(connection, sessionId);
     };
 
     const reconnecting = useTerminalStore.getState().reconnectSession(
@@ -599,7 +599,7 @@ describe('terminal workspace store', () => {
     expect(duringClose?.connection).toBeNull();
     expect(core.calls).toContainEqual({
       method: 'closeTerminal',
-      args: [replacementId],
+      args: [expect.anything(), replacementId],
     });
 
     releaseClose();
@@ -643,12 +643,12 @@ describe('terminal workspace store', () => {
     const blockedClose = new Promise<void>((resolve) => {
       releaseClose = resolve;
     });
-    core.closeTerminal = async (sessionId) => {
+    core.closeTerminal = async (connection, sessionId) => {
       if (sessionId === original?.id) {
         markCloseStarted();
         await blockedClose;
       }
-      await closeTerminal(sessionId);
+      await closeTerminal(connection, sessionId);
     };
 
     const reconnecting = useTerminalStore.getState().reconnectSession(
@@ -712,7 +712,7 @@ describe('terminal workspace store', () => {
     ).toHaveLength(0);
     expect(core.calls).toContainEqual({
       method: 'closeTerminal',
-      args: [replacementId],
+      args: [expect.anything(), replacementId],
     });
   });
 
@@ -1149,6 +1149,7 @@ describe('terminal workspace store', () => {
       retryable: false,
     })).toBe('该服务器的凭据尚未配置，请先补充密码或私钥');
   });
+
 });
 
 function deferred<T>() {

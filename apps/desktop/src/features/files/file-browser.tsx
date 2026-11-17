@@ -84,9 +84,11 @@ interface FileNotice {
   text: string;
 }
 
+type NoticeKind = 'info' | 'warning' | 'error' | 'success';
+
 interface OperationNotice {
   id: number;
-  kind: 'error' | 'info' | 'warning';
+  kind: NoticeKind;
   text: string;
   residual: string[];
   refreshDirectory?: string;
@@ -774,12 +776,6 @@ export function FileBrowser({
   async function submitRename() {
     const entry = renameEntry;
     if (!connection || !entry || renameBusy) return;
-    if (entry.kind === 'directory') {
-      setRenameError(
-        '当前 SFTP 服务器没有经过验证的原子 no-replace 目录重命名原语，已拒绝操作。',
-      );
-      return;
-    }
     const parent = entry.path.includes('/')
       ? entry.path.slice(0, entry.path.lastIndexOf('/')) || '/'
       : '/';
@@ -1281,11 +1277,7 @@ export function FileBrowser({
               </button>
               <button
                 className="h-8 bg-ink px-4 text-[11px] font-medium text-paper disabled:opacity-40"
-                disabled={
-                  renameBusy
-                  || renameEntry.kind === 'directory'
-                  || !canWrite
-                }
+                disabled={renameBusy || !canWrite}
                 onClick={() => void submitRename()}
                 type="button"
               >
@@ -1318,8 +1310,7 @@ export function FileBrowser({
           />
           {renameEntry.kind === 'directory' ? (
             <p className="mt-3 border-l-2 border-warning pl-2 text-[10px] leading-5 text-warning">
-              目录重命名当前 fail closed：没有经过验证的原子 no-replace 原语，不会退化为
-              check-then-act。
+              目录重命名依赖目标不存在的预检查，SFTP v3 无原子 no-replace 原语，存在极小的并发竞态窗口。
             </p>
           ) : null}
           {renameOutcome?.status === 'partial' ? (
@@ -1413,7 +1404,7 @@ export function FileBrowser({
           <FileStatePanel
             description="SSH 连接建立后，文件视图才会按需打开 SFTP 会话。"
             eyebrow="FILE VIEW / CONNECTING"
-            icon={<RefreshCw aria-hidden className="size-5 animate-pulse" strokeWidth={1.5} />}
+            icon={<RefreshCw aria-hidden className="size-5" strokeWidth={1.5} />}
             title="正在建立 SSH 连接"
           />
         </div>
@@ -1516,17 +1507,13 @@ export function FileBrowser({
             onClick={retry}
             type="button"
           >
-            <RefreshCw
-              aria-hidden
-              className={`size-3.5 ${listState === 'loading' ? 'animate-spin' : ''}`}
-              strokeWidth={1.5}
-            />
+            <RefreshCw aria-hidden className="size-3.5" strokeWidth={1.5} />
           </button>
         </div>
 
         {jumpNotice ? (
           <p
-            className="shrink-0 border-b border-warning/40 bg-[#F4EDE0] px-4 py-2 text-[10px] leading-4 text-warning"
+            className={`shrink-0 border-b px-4 py-2 text-[10px] leading-4 ${noticeTone('warning')}`}
             role="status"
           >
             {jumpNotice}
@@ -1535,24 +1522,27 @@ export function FileBrowser({
 
         {fileNotice ? (
           <p
-            className={`shrink-0 border-b px-4 py-2 text-[10px] leading-4 ${
-              fileNotice.kind === 'error'
-                ? 'border-danger/40 bg-[#F4E9E5] text-danger'
-                : 'border-success/30 bg-[#EDF2EC] text-success'
-            }`}
+            className={`shrink-0 border-b px-4 py-2 text-[10px] leading-4 ${noticeTone(fileNotice.kind)}`}
             role={fileNotice.kind === 'error' ? 'alert' : 'status'}
           >
             {fileNotice.text}
           </p>
         ) : null}
 
+        {listState === 'loading' ? (
+          <div
+            aria-label="正在刷新目录"
+            className="h-0.5 shrink-0 bg-hairline"
+            role="progressbar"
+          >
+            <span className="block h-full w-1/3 bg-accent" />
+          </div>
+        ) : null}
+
         <div className="min-h-0 flex-1 overflow-auto">
           {listState === 'loading' ? (
             <div className="px-4 py-3" role="status">
-              <div className="h-px w-full overflow-hidden bg-hairline">
-                <span className="block h-full w-1/3 animate-pulse bg-accent" />
-              </div>
-              <p className="mt-3 font-mono text-[10px] tracking-[0.06em] text-muted">
+              <p className="font-mono text-[10px] tracking-[0.06em] text-muted">
                 正在读取 {path}…
               </p>
             </div>
@@ -1733,14 +1723,9 @@ function OperationNoticeBanner({
   onDismiss(): void;
   onRefresh(): void;
 }) {
-  const tone = notice.kind === 'error'
-    ? 'border-danger/40 bg-[#F4E9E5] text-danger'
-    : notice.kind === 'warning'
-      ? 'border-warning/40 bg-[#F4EDE0] text-warning'
-      : 'border-success/30 bg-[#EDF2EC] text-success';
   return (
     <section
-      className={`shrink-0 border-b px-4 py-2 ${tone}`}
+      className={`shrink-0 border-b px-4 py-2 ${noticeTone(notice.kind)}`}
       role={notice.kind === 'info' ? 'status' : 'alert'}
     >
       <div className="flex items-start gap-3">
@@ -1789,6 +1774,18 @@ function OperationNoticeBanner({
       </div>
     </section>
   );
+}
+
+function noticeTone(kind: NoticeKind): string {
+  switch (kind) {
+    case 'error':
+      return 'border-danger/40 bg-[#F4E9E5] text-danger';
+    case 'warning':
+      return 'border-warning/40 bg-[#F4EDE0] text-warning';
+    case 'info':
+    case 'success':
+      return 'border-success/30 bg-[#EDF2EC] text-success';
+  }
 }
 
 function FileDialog({

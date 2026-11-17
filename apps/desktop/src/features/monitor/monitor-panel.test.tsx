@@ -3,7 +3,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import type { MonitorSnapshot } from '@opspilot/contracts';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -158,5 +158,47 @@ describe('Monitor topbar gauges', () => {
         retryServer: originalRetry,
       });
     }
+  });
+
+  it('charts only samples that belong to the current connectionId', () => {
+    useMonitorStore.setState({
+      states: {
+        [serverId]: {
+          connectionId,
+          phase: 'ready',
+          latest: snapshot,
+          samples: [
+            {
+              timestamp: Date.parse(snapshot.timestamp) - 2_000,
+              cpuPercent: 21,
+              memoryPercent: 55,
+            },
+          ],
+          error: null,
+          unavailable: [],
+          inFlight: false,
+          lastUpdatedAt: Date.now(),
+        },
+      },
+    });
+
+    const { rerender } = render(
+      <MonitorPanel
+        connectionId={connectionId}
+        connectionStatus="ready"
+        serverId={serverId}
+      />,
+    );
+    const cpu = screen.getByRole('region', { name: 'CPU 概览' });
+    expect(within(cpu).getByRole('img', { name: 'CPU 概览近 5 分钟趋势' })).toBeVisible();
+
+    rerender(
+      <MonitorPanel
+        connectionId="019c62b2-2970-7000-8000-000000000203"
+        connectionStatus="ready"
+        serverId={serverId}
+      />,
+    );
+    expect(within(cpu).getByText('暂无趋势')).toBeVisible();
   });
 });

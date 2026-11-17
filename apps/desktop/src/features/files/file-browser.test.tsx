@@ -1301,4 +1301,81 @@ describe('FileBrowser', () => {
     );
     expect(core.calls.some((call) => call.method === 'renameFile')).toBe(false);
   });
+
+  it('submits a directory rename with the race-window warning', async () => {
+    const renameFile = vi.fn(async (): Promise<RemoteRenameResult> => ({
+      status: 'renamed',
+      sourcePath: '/etc',
+      targetPath: '/etc2',
+      targetCreated: true,
+    }));
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [etc, config],
+          '/etc': [nginx],
+        },
+      },
+      overrides: { renameFile },
+    });
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.click(screen.getByRole('button', { name: '重命名 etc' }));
+    const dialog = await screen.findByRole('dialog', { name: '重命名 etc' });
+    expect(
+      within(dialog).getByText(
+        '目录重命名依赖目标不存在的预检查，SFTP v3 无原子 no-replace 原语，存在极小的并发竞态窗口。',
+      ),
+    ).toBeVisible();
+    fireEvent.change(within(dialog).getByLabelText('新名称'), {
+      target: { value: 'etc2' },
+    });
+
+    const submit = within(dialog).getByRole('button', { name: '确认重命名' });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(renameFile).toHaveBeenCalledWith(connection, '/etc', '/etc2');
+    });
+  });
+
+  it('shows a thin progress line instead of spinning the refresh icon', async () => {
+    let resolveList!: (value: RemoteFileEntry[]) => void;
+    let listCalls = 0;
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [etc],
+        },
+      },
+      overrides: {
+        listFiles: () => {
+          listCalls += 1;
+          return listCalls === 1
+            ? Promise.resolve([etc])
+            : new Promise<RemoteFileEntry[]>((resolve) => {
+                resolveList = resolve;
+              });
+        },
+      },
+    });
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新目录' }));
+
+    expect(await screen.findByRole('progressbar', { name: '正在刷新目录' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '刷新目录' }))
+      .toContainHTML('<svg');
+    expect(document.querySelector('.animate-spin')).toBeNull();
+    expect(document.querySelector('.animate-pulse')).toBeNull();
+
+    resolveList([etc]);
+    await waitFor(() => {
+      expect(screen.queryByRole('progressbar', { name: '正在刷新目录' }))
+        .not.toBeInTheDocument();
+    });
+  });
 });

@@ -249,6 +249,14 @@ const EXPECTED_RETURN_SCHEMAS: Record<string, ReturnContract> = {
   'Result<CoreHealth, CoreError>': { schema: 'CoreHealthSchema', shape: 'single' },
   'Result<Vec<Server>, CoreError>': { schema: 'ServerSchema', shape: 'array' },
   'Result<Server, CoreError>': { schema: 'ServerSchema', shape: 'single' },
+  'Result<ServerSaveOutcome, CoreError>': {
+    schema: 'ServerSaveOutcomeSchema',
+    shape: 'single',
+  },
+  'Result<ServerDeleteOutcome, CoreError>': {
+    schema: 'ServerDeleteOutcomeSchema',
+    shape: 'single',
+  },
   'Result<Vec<opspilot_domain::ServerGroup>, CoreError>': {
     schema: 'GroupSchema',
     shape: 'array',
@@ -330,13 +338,18 @@ const EXPECTED_PARAMETER_TYPES: Record<string, Record<string, string>> = {
   connection_trust_host_key: { server_id: 'Id', verification_id: 'Id' },
   connection_disconnect: { connection: 'ConnectionHandle' },
   terminal_open: { connection: 'ConnectionHandle', columns: 'u32', rows: 'u32' },
-  terminal_write: { terminal_session_id: 'Id', bytes: 'Vec<u8>' },
+  terminal_write: {
+    connection: 'ConnectionHandle',
+    terminal_session_id: 'Id',
+    bytes: 'Vec<u8>',
+  },
   terminal_resize: {
+    connection: 'ConnectionHandle',
     terminal_session_id: 'Id',
     columns: 'u32',
     rows: 'u32',
   },
-  terminal_close: { terminal_session_id: 'Id' },
+  terminal_close: { connection: 'ConnectionHandle', terminal_session_id: 'Id' },
   file_write: {
     connection: 'ConnectionHandle',
     path: 'RemotePath',

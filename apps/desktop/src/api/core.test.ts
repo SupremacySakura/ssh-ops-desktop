@@ -154,9 +154,9 @@ describe('Tauri CoreClient catalog contract', () => {
   it('uses the server command names and nullable credential semantics', async () => {
     const client = createTauriCoreClient();
     invokeMock
-      .mockResolvedValueOnce(server)
-      .mockResolvedValueOnce(server)
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ server, warning: null })
+      .mockResolvedValueOnce({ server, warning: null })
+      .mockResolvedValueOnce({ warning: null })
       .mockResolvedValueOnce(group)
       .mockResolvedValueOnce(undefined);
     const input = {

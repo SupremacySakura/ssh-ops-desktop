@@ -71,11 +71,12 @@ struct FakeState {
     hardlink_fail_at: Option<usize>,
     hardlink_ambiguous_at: Option<usize>,
     hardlink_attempts: usize,
-    fail_remove_paths: HashSet<String>,
+    remove_failures: HashMap<String, CoreErrorCode>,
     remove_not_found_paths: HashSet<String>,
     fail_remove_contains: Option<String>,
     fail_rename: bool,
     fail_rename_after_move: bool,
+    rename_leaves_source: bool,
     chmod_after_read: Option<(String, Option<u32>)>,
     create_attempts: usize,
     create_fail_at: Option<usize>,
@@ -120,8 +121,16 @@ impl FakeConnector {
         self.state
             .lock()
             .await
-            .fail_remove_paths
-            .insert(path.to_owned());
+            .remove_failures
+            .insert(path.to_owned(), CoreErrorCode::Internal);
+    }
+
+    async fn fail_remove_with(&self, path: &str, code: CoreErrorCode) {
+        self.state
+            .lock()
+            .await
+            .remove_failures
+            .insert(path.to_owned(), code);
     }
 
     async fn remove_before_returning_not_found(&self, path: &str) {
@@ -142,6 +151,10 @@ impl FakeConnector {
 
     async fn fail_rename_after_move(&self) {
         self.state.lock().await.fail_rename_after_move = true;
+    }
+
+    async fn leave_source_after_rename(&self) {
+        self.state.lock().await.rename_leaves_source = true;
     }
 
     async fn fail_create_at(&self, attempt: usize, cleanup_failed: bool) {
@@ -349,7 +362,26 @@ impl ScopedSftp for FakeSession {
                 true,
             ));
         }
+        if state.rename_leaves_source {
+            let node = state.nodes.get(source).cloned().ok_or_else(not_found)?;
+            state.nodes.insert(destination.to_owned(), node);
+            return Ok(());
+        }
         let node = state.nodes.remove(source).ok_or_else(not_found)?;
+        if node.kind == RemoteFileKind::Directory {
+            let prefix = format!("{source}/");
+            let descendants = state
+                .nodes
+                .keys()
+                .filter(|candidate| candidate.starts_with(&prefix))
+                .cloned()
+                .collect::<Vec<_>>();
+            for descendant in descendants {
+                let moved = state.nodes.remove(&descendant).expect("listed descendant");
+                let suffix = &descendant[prefix.len()..];
+                state.nodes.insert(format!("{destination}/{suffix}"), moved);
+            }
+        }
         state.nodes.insert(destination.to_owned(), node);
         if state.fail_rename_after_move {
             return Err(CoreError::new(
@@ -429,11 +461,18 @@ impl ScopedSftp for FakeSession {
             state.nodes.remove(path);
             return Err(not_found());
         }
-        if state.fail_remove_paths.contains(path) {
+        if let Some(code) = state.remove_failures.get(path).copied() {
+            let retryable = matches!(
+                code,
+                CoreErrorCode::Timeout
+                    | CoreErrorCode::SshConnection
+                    | CoreErrorCode::Internal
+                    | CoreErrorCode::Cancelled
+            );
             return Err(CoreError::new(
-                CoreErrorCode::Internal,
-                "injected remove failure",
-                true,
+                code,
+                format!("injected remove failure ({code})"),
+                retryable,
             ));
         }
         if state
@@ -1346,14 +1385,48 @@ async fn file_rename_creates_the_target_without_overwriting_then_removes_the_sou
 }
 
 #[tokio::test]
-async fn file_rename_reports_partial_when_source_unlink_fails() {
+async fn file_rename_rolls_back_target_on_a_deterministic_source_unlink_failure() {
     let connector = FakeConnector::with_nodes([
         ("/", FakeNode::directory()),
         ("/docs", FakeNode::directory()),
         ("/docs/source.txt", FakeNode::file("content")),
     ])
     .await;
-    connector.fail_remove("/docs/source.txt").await;
+    connector
+        .fail_remove_with("/docs/source.txt", CoreErrorCode::RemotePermission)
+        .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let error = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/source.txt").unwrap(),
+            &RemotePath::try_new("/docs/target.txt").unwrap(),
+        )
+        .await
+        .expect_err("a rolled-back rename must report the original failure");
+
+    assert_eq!(error.code(), CoreErrorCode::RemotePermission);
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/source.txt"]
+    );
+}
+
+#[tokio::test]
+async fn file_rename_reports_partial_with_residual_target_when_rollback_fails() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/source.txt", FakeNode::file("content")),
+    ])
+    .await;
+    connector
+        .fail_remove_with("/docs/source.txt", CoreErrorCode::RemotePermission)
+        .await;
+    connector
+        .fail_remove_with("/docs/target.txt", CoreErrorCode::RemotePermission)
+        .await;
     let service = RemoteFileService::new(Arc::new(connector.clone()));
 
     let outcome = service
@@ -1371,9 +1444,49 @@ async fn file_rename_reports_partial_when_source_unlink_fails() {
         outcome
             .warning
             .as_deref()
-            .is_some_and(|warning| { warning.contains("源文件删除失败") })
+            .is_some_and(|warning| warning.contains("/docs/target.txt"))
     );
-    assert_eq!(outcome.error.unwrap().code(), CoreErrorCode::Internal);
+    assert_eq!(
+        outcome.error.unwrap().code(),
+        CoreErrorCode::RemotePermission
+    );
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/source.txt", "/docs/target.txt"]
+    );
+}
+
+#[tokio::test]
+async fn file_rename_keeps_the_target_when_source_unlink_outcome_is_unknown() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/source.txt", FakeNode::file("content")),
+    ])
+    .await;
+    connector
+        .fail_remove_with("/docs/source.txt", CoreErrorCode::Timeout)
+        .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/source.txt").unwrap(),
+            &RemotePath::try_new("/docs/target.txt").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, opspilot_ssh_core::RenameStatus::Partial);
+    assert!(outcome.target_created);
+    assert!(
+        outcome
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("结果未知"))
+    );
+    assert_eq!(outcome.error.unwrap().code(), CoreErrorCode::Timeout);
     assert_eq!(
         connector.paths().await,
         vec!["/", "/docs", "/docs/source.txt", "/docs/target.txt"]
@@ -1447,7 +1560,7 @@ async fn file_rename_treats_an_already_missing_source_after_link_as_success() {
 }
 
 #[tokio::test]
-async fn rename_fails_closed_for_directories_symlinks_and_existing_targets() {
+async fn rename_fails_closed_for_symlinks_and_existing_targets() {
     let connector = FakeConnector::with_nodes([
         ("/", FakeNode::directory()),
         ("/docs", FakeNode::directory()),
@@ -1458,16 +1571,6 @@ async fn rename_fails_closed_for_directories_symlinks_and_existing_targets() {
     ])
     .await;
     let service = RemoteFileService::new(Arc::new(connector.clone()));
-
-    let directory_error = service
-        .rename_no_clobber(
-            &connection(),
-            &RemotePath::try_new("/docs/sub").unwrap(),
-            &RemotePath::try_new("/docs/renamed").unwrap(),
-        )
-        .await
-        .expect_err("directory rename must fail closed");
-    assert_eq!(directory_error.code(), CoreErrorCode::CapabilityUnavailable);
 
     let symlink_error = service
         .rename_no_clobber(
@@ -1491,6 +1594,157 @@ async fn rename_fails_closed_for_directories_symlinks_and_existing_targets() {
     assert_eq!(
         connector.node("/docs/existing.txt").await.unwrap().bytes,
         b"existing"
+    );
+}
+
+#[tokio::test]
+async fn directory_rename_moves_the_directory_and_always_reports_the_race_warning() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/sub", FakeNode::directory()),
+        ("/docs/sub/child.txt", FakeNode::file("child")),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/sub").unwrap(),
+            &RemotePath::try_new("/docs/renamed").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, RenameStatus::Renamed);
+    assert!(outcome.target_created);
+    assert!(outcome.error.is_none());
+    assert!(
+        outcome
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("极小的并发竞态窗口"))
+    );
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/renamed", "/docs/renamed/child.txt"]
+    );
+    assert_eq!(connector.closes().await, 1);
+}
+
+#[tokio::test]
+async fn directory_rename_is_rejected_when_the_target_already_exists() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/sub", FakeNode::directory()),
+        ("/docs/existing", FakeNode::directory()),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let error = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/sub").unwrap(),
+            &RemotePath::try_new("/docs/existing").unwrap(),
+        )
+        .await
+        .expect_err("an existing directory target must be rejected");
+
+    assert_eq!(error.code(), CoreErrorCode::Conflict);
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/existing", "/docs/sub"]
+    );
+}
+
+#[tokio::test]
+async fn directory_rename_rejects_a_symbolic_link_source() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/link", FakeNode::symlink()),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let error = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/link").unwrap(),
+            &RemotePath::try_new("/docs/renamed-link").unwrap(),
+        )
+        .await
+        .expect_err("a symlink source must be rejected");
+
+    assert_eq!(error.code(), CoreErrorCode::Validation);
+    assert_eq!(connector.paths().await, vec!["/", "/docs", "/docs/link"]);
+}
+
+#[tokio::test]
+async fn directory_rename_reports_partial_with_an_error_when_the_source_remains() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/sub", FakeNode::directory()),
+    ])
+    .await;
+    connector.leave_source_after_rename().await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/sub").unwrap(),
+            &RemotePath::try_new("/docs/renamed").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, RenameStatus::Partial);
+    assert!(outcome.target_created);
+    assert_eq!(
+        outcome.error.as_ref().map(CoreError::code),
+        Some(CoreErrorCode::Internal)
+    );
+    assert!(
+        outcome
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("极小的并发竞态窗口"))
+    );
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/renamed", "/docs/sub"]
+    );
+}
+
+#[tokio::test]
+async fn directory_rename_rejects_an_existing_symbolic_link_target() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/sub", FakeNode::directory()),
+        ("/docs/link", FakeNode::symlink()),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let error = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/sub").unwrap(),
+            &RemotePath::try_new("/docs/link").unwrap(),
+        )
+        .await
+        .expect_err("an existing symlink target must conflict");
+
+    assert_eq!(error.code(), CoreErrorCode::Conflict);
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/link", "/docs/sub"]
     );
 }
 

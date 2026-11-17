@@ -28,7 +28,9 @@ import {
   RemoteTextFileSchema,
   RemoteUploadOutcomeSchema,
   ServerCredentialInputSchema,
+  ServerDeleteOutcomeSchema,
   ServerInputSchema,
+  ServerSaveOutcomeSchema,
   ServerSchema,
   SshConfigImportApplyInputSchema,
   SshConfigImportPreviewSchema,
@@ -61,7 +63,9 @@ import {
   type RemoteUploadOutcome,
   type Server,
   type ServerCredentialInput,
+  type ServerDeleteOutcome,
   type ServerInput,
+  type ServerSaveOutcome,
   type SshConfigImportApplyInput,
   type SshConfigImportPreview,
   type SshConfigImportResult,
@@ -79,9 +83,9 @@ export interface CoreClient {
     id: string,
     input: ServerInput,
     credential?: ServerCredentialInput,
-  ): Promise<Server>;
-  deleteServer(id: string): Promise<void>;
-  setServerCredential(id: string, input: ServerCredentialInput): Promise<Server>;
+  ): Promise<ServerSaveOutcome>;
+  deleteServer(id: string): Promise<ServerDeleteOutcome>;
+  setServerCredential(id: string, input: ServerCredentialInput): Promise<ServerSaveOutcome>;
   listGroups(): Promise<Group[]>;
   createGroup(input: GroupInput): Promise<Group>;
   updateGroup(id: string, input: GroupInput): Promise<Group>;
@@ -94,9 +98,18 @@ export interface CoreClient {
     columns: number,
     rows: number,
   ): Promise<TerminalSession>;
-  writeTerminal(terminalSessionId: string, bytes: Uint8Array): Promise<void>;
-  resizeTerminal(terminalSessionId: string, columns: number, rows: number): Promise<void>;
-  closeTerminal(terminalSessionId: string): Promise<void>;
+  writeTerminal(
+    connection: ConnectionHandle,
+    terminalSessionId: string,
+    bytes: Uint8Array,
+  ): Promise<void>;
+  resizeTerminal(
+    connection: ConnectionHandle,
+    terminalSessionId: string,
+    columns: number,
+    rows: number,
+  ): Promise<void>;
+  closeTerminal(connection: ConnectionHandle, terminalSessionId: string): Promise<void>;
   listFiles(
     connection: ConnectionHandle,
     path: RemoteDirectoryPath | string,
@@ -172,7 +185,7 @@ export function createTauriCoreClient(): CoreClient {
         credential: ServerCredentialInputSchema.parse(credential),
       }),
     ),
-    updateServer: async (id, input, credential) => ServerSchema.parse(
+    updateServer: async (id, input, credential) => ServerSaveOutcomeSchema.parse(
       await invoke('server_update', {
         id,
         input: ServerInputSchema.parse(input),
@@ -182,9 +195,9 @@ export function createTauriCoreClient(): CoreClient {
       }),
     ),
     deleteServer: async (id) => {
-      await invoke('server_delete', { id });
+      return ServerDeleteOutcomeSchema.parse(await invoke('server_delete', { id }));
     },
-    setServerCredential: async (id, input) => ServerSchema.parse(
+    setServerCredential: async (id, input) => ServerSaveOutcomeSchema.parse(
       await invoke('server_credential_set', {
         id,
         input: ServerCredentialInputSchema.parse(input),
@@ -219,17 +232,26 @@ export function createTauriCoreClient(): CoreClient {
     openTerminal: async (connection, columns, rows) => TerminalSessionSchema.parse(
       await invoke('terminal_open', { connection, columns, rows }),
     ),
-    writeTerminal: async (terminalSessionId, bytes) => {
+    writeTerminal: async (connection, terminalSessionId, bytes) => {
       await invoke('terminal_write', {
+        connection: ConnectionHandleSchema.parse(connection),
         terminalSessionId,
         bytes: Array.from(bytes),
       });
     },
-    resizeTerminal: async (terminalSessionId, columns, rows) => {
-      await invoke('terminal_resize', { terminalSessionId, columns, rows });
+    resizeTerminal: async (connection, terminalSessionId, columns, rows) => {
+      await invoke('terminal_resize', {
+        connection: ConnectionHandleSchema.parse(connection),
+        terminalSessionId,
+        columns,
+        rows,
+      });
     },
-    closeTerminal: async (terminalSessionId) => {
-      await invoke('terminal_close', { terminalSessionId });
+    closeTerminal: async (connection, terminalSessionId) => {
+      await invoke('terminal_close', {
+        connection: ConnectionHandleSchema.parse(connection),
+        terminalSessionId,
+      });
     },
     listFiles: async (connection, path) => RemoteFileListSchema.parse(
       await invoke('file_list', {

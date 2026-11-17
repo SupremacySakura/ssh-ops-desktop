@@ -44,6 +44,7 @@ export interface HarborState {
   coreHealth: CoreHealthState;
   catalogStatus: CatalogStatus;
   catalogError: string | null;
+  catalogWarning: string | null;
   catalogBusy: boolean;
   groups: Group[];
   query: string;
@@ -102,6 +103,7 @@ export const useHarborStore = create<HarborState>((set, get) => ({
       set({
         catalogStatus: 'error',
         catalogError: 'Core 尚未连接，无法读取服务器目录',
+        catalogWarning: null,
       });
       return;
     }
@@ -130,6 +132,7 @@ export const useHarborStore = create<HarborState>((set, get) => ({
       set({
         catalogStatus: 'error',
         catalogError: catalogErrorMessage(error),
+        catalogWarning: null,
       });
     }
   },
@@ -168,18 +171,25 @@ export const useHarborStore = create<HarborState>((set, get) => ({
     set({
       catalogBusy: true,
       catalogError: null,
+      catalogWarning: null,
       servers: replaceServer(state.servers, { ...server, favorite }),
     });
     try {
-      const updated = await core.updateServer(serverId, serverInput(server, favorite));
+      const { server: updated, warning } = await core.updateServer(
+        serverId,
+        serverInput(server, favorite),
+      );
       set((current) => ({
         catalogBusy: false,
+        catalogError: null,
+        catalogWarning: warning,
         servers: sortServers(replaceServer(current.servers, updated)),
       }));
     } catch (error) {
       set((current) => ({
         catalogBusy: false,
         catalogError: catalogErrorMessage(error),
+        catalogWarning: null,
         servers: replaceServer(current.servers, server),
       }));
     }
@@ -187,22 +197,29 @@ export const useHarborStore = create<HarborState>((set, get) => ({
   saveServer: async (id, input, credential) => {
     const core = get().core;
     if (!core) {
-      set({ catalogError: 'Core 尚未连接，无法保存服务器' });
+      set({ catalogError: 'Core 尚未连接，无法保存服务器', catalogWarning: null });
       return null;
     }
     if (!id && !credential) {
-      set({ catalogError: '密码或私钥不能为空' });
+      set({ catalogError: '密码或私钥不能为空', catalogWarning: null });
       return null;
     }
 
-    set({ catalogBusy: true, catalogError: null });
+    set({ catalogBusy: true, catalogError: null, catalogWarning: null });
     try {
-      const saved = id
-        ? await core.updateServer(id, input, credential)
-        : await core.createServer(input, credential as ServerCredentialInput);
+      let saved: Server;
+      let warning: string | null = null;
+      if (id) {
+        const outcome = await core.updateServer(id, input, credential);
+        saved = outcome.server;
+        warning = outcome.warning;
+      } else {
+        saved = await core.createServer(input, credential as ServerCredentialInput);
+      }
       set((current) => ({
         catalogBusy: false,
         catalogError: null,
+        catalogWarning: warning,
         selectedServerId: saved.id,
         serverForm: null,
         servers: sortServers(
@@ -216,6 +233,7 @@ export const useHarborStore = create<HarborState>((set, get) => ({
       set({
         catalogBusy: false,
         catalogError: catalogErrorMessage(error),
+        catalogWarning: null,
       });
       return null;
     }
@@ -223,15 +241,17 @@ export const useHarborStore = create<HarborState>((set, get) => ({
   deleteServer: async (serverId) => {
     const core = get().core;
     if (!core) {
-      set({ catalogError: 'Core 尚未连接，无法删除服务器' });
+      set({ catalogError: 'Core 尚未连接，无法删除服务器', catalogWarning: null });
       return false;
     }
 
-    set({ catalogBusy: true, catalogError: null });
+    set({ catalogBusy: true, catalogError: null, catalogWarning: null });
     try {
-      await core.deleteServer(serverId);
+      const outcome = await core.deleteServer(serverId);
       set((current) => ({
         catalogBusy: false,
+        catalogError: null,
+        catalogWarning: outcome.warning,
         selectedServerId: current.selectedServerId === serverId
           ? null
           : current.selectedServerId,
@@ -246,6 +266,7 @@ export const useHarborStore = create<HarborState>((set, get) => ({
       set({
         catalogBusy: false,
         catalogError: catalogErrorMessage(error),
+        catalogWarning: null,
       });
       return false;
     }
@@ -253,11 +274,11 @@ export const useHarborStore = create<HarborState>((set, get) => ({
   saveGroup: async (id, input) => {
     const core = get().core;
     if (!core) {
-      set({ catalogError: 'Core 尚未连接，无法保存分组' });
+      set({ catalogError: 'Core 尚未连接，无法保存分组', catalogWarning: null });
       return null;
     }
 
-    set({ catalogBusy: true, catalogError: null });
+    set({ catalogBusy: true, catalogError: null, catalogWarning: null });
     try {
       const saved = id
         ? await core.updateGroup(id, input)
@@ -265,6 +286,7 @@ export const useHarborStore = create<HarborState>((set, get) => ({
       set((current) => ({
         catalogBusy: false,
         catalogError: null,
+        catalogWarning: null,
         groups: sortGroups(
           current.groups.some((group) => group.id === saved.id)
             ? current.groups.map((group) => group.id === saved.id ? saved : group)
@@ -283,15 +305,16 @@ export const useHarborStore = create<HarborState>((set, get) => ({
   deleteGroup: async (groupId) => {
     const core = get().core;
     if (!core) {
-      set({ catalogError: 'Core 尚未连接，无法删除分组' });
+      set({ catalogError: 'Core 尚未连接，无法删除分组', catalogWarning: null });
       return false;
     }
 
-    set({ catalogBusy: true, catalogError: null });
+    set({ catalogBusy: true, catalogError: null, catalogWarning: null });
     try {
       await core.deleteGroup(groupId);
       set((current) => ({
         catalogBusy: false,
+        catalogWarning: null,
         groups: current.groups.filter((group) => group.id !== groupId),
         servers: current.servers.map((server) => (
           server.groupId === groupId ? { ...server, groupId: null } : server
@@ -514,11 +537,35 @@ export function formatLastConnectedAt(
 
 export function catalogErrorMessage(error: unknown): string {
   const coreError = CoreErrorSchema.safeParse(error);
-  if (coreError.success) return coreError.data.message;
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
+  if (coreError.success) {
+    const { code, message } = coreError.data;
+    const detail = hasChineseText(message) ? message : null;
+    switch (code) {
+      case 'VALIDATION':
+        return detail ?? '服务器信息校验失败，请检查名称、主机、端口与用户';
+      case 'CONFLICT':
+        return detail ?? '服务器状态已变化，请刷新后重试';
+      case 'NOT_FOUND':
+        return detail ?? '服务器或分组不存在，可能已被删除';
+      case 'SECRET_UNAVAILABLE':
+        return detail ?? '系统凭据库不可用，请检查凭据设置后重试';
+      case 'SSH_CONNECTION':
+        return 'SSH 连接已断开，请重新连接';
+      case 'TIMEOUT':
+        return detail ?? '操作超时，请重试';
+      case 'CAPABILITY_UNAVAILABLE':
+        return detail ?? '当前环境不支持该操作';
+      case 'CANCELLED':
+        return detail ?? '操作已取消';
+      default:
+        return '服务器目录操作失败，请重试';
+    }
   }
   return '操作失败，请重试';
+}
+
+function hasChineseText(value: string): boolean {
+  return /[\u3400-\u4dbf\u4e00-\u9fff]/u.test(value);
 }
 
 function serverInput(server: Server, favorite: boolean): ServerInput {
@@ -571,6 +618,7 @@ function initialState() {
     coreHealth: { status: 'loading' } satisfies CoreHealthState,
     catalogStatus: 'idle' as CatalogStatus,
     catalogError: null as string | null,
+    catalogWarning: null as string | null,
     catalogBusy: false,
     groups: [] as Group[],
     query: '',

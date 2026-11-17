@@ -185,8 +185,13 @@ async fn inspect_failure_keeps_the_container_list_and_reports_a_warning() {
     assert_eq!(list.containers.len(), 1);
     assert_eq!(list.containers[0].id, "abc123");
     assert_eq!(list.containers[0].started_at, None);
+    assert_eq!(
+        list.started_at_warning.as_deref(),
+        Some("Docker daemon 不可用，无法读取容器启动时间")
+    );
     assert!(
-        list.started_at_warning
+        !list
+            .started_at_warning
             .as_deref()
             .is_some_and(|warning| warning.contains("Docker daemon is unavailable"))
     );
@@ -304,7 +309,11 @@ async fn exec_verification_and_terminal_command_use_only_validated_ids_and_white
     let container = ContainerIdentifier::try_new("abc123").unwrap();
 
     let error = adapter
-        .verify_exec(&connection(), &container, DockerShell::Bash)
+        .verify_exec(
+            &connection(),
+            &container,
+            &DockerShell::try_new("bash").unwrap(),
+        )
         .await
         .expect_err("the missing shell must be surfaced before opening a terminal");
     assert_eq!(error.code(), CoreErrorCode::DockerShellUnavailable);
@@ -315,21 +324,107 @@ async fn exec_verification_and_terminal_command_use_only_validated_ids_and_white
     assert!(commands[1].contains("'exec' '--' 'abc123' 'bash' '-c' 'command -v bash'"));
     assert_eq!(
         adapter
-            .terminal_command(&container, DockerShell::Bash)
+            .terminal_command(&container, &DockerShell::try_new("bash").unwrap())
             .as_str(),
         "docker exec -it -- abc123 bash"
     );
     assert_eq!(
         adapter
-            .terminal_command(&container, DockerShell::Sh)
+            .terminal_command(&container, &DockerShell::try_new("sh").unwrap())
             .as_str(),
         "docker exec -it -- abc123 sh"
     );
     assert_eq!(
         adapter
-            .terminal_command(&container, DockerShell::Ash)
+            .terminal_command(&container, &DockerShell::try_new("ash").unwrap())
             .as_str(),
         "docker exec -it -- abc123 ash"
+    );
+}
+
+#[test]
+fn docker_shells_accept_commands_and_absolute_paths_but_reject_shell_syntax() {
+    for value in [
+        "sh",
+        "bash",
+        "ash",
+        "zsh",
+        "busybox",
+        "/bin/bash",
+        "/usr/bin/zsh",
+    ] {
+        assert_eq!(
+            DockerShell::try_new(value).unwrap().as_str(),
+            value,
+            "{value} should be a valid Docker shell"
+        );
+    }
+    assert_eq!(DockerShell::default().as_str(), "sh");
+    assert_eq!(
+        serde_json::to_string(&DockerShell::try_new("/bin/bash").unwrap()).unwrap(),
+        "\"/bin/bash\""
+    );
+    assert_eq!(
+        serde_json::from_str::<DockerShell>("\"/bin/bash\"")
+            .unwrap()
+            .as_str(),
+        "/bin/bash"
+    );
+    assert!(serde_json::from_str::<DockerShell>("\"bash; id\"").is_err());
+    for invalid in [
+        "",
+        "   ",
+        "/bin/bash -c id",
+        "sh; id",
+        "sh|id",
+        "$(id)",
+        "`id`",
+        "sh\nid",
+        "/bin/../sh",
+        "/..",
+        "/.",
+        "/",
+        "//bin/sh",
+        "/bin//sh",
+        "/bin/sh/",
+        "bin/sh",
+        "-sh",
+        "sh*",
+    ] {
+        assert_eq!(
+            DockerShell::try_new(invalid)
+                .expect_err("unsafe Docker shells must be rejected")
+                .code(),
+            CoreErrorCode::Validation,
+            "{invalid:?} should be invalid"
+        );
+    }
+    assert!(
+        DockerShell::try_new(&format!("/{}", "a".repeat(256))).is_err(),
+        "shell paths must stay within the 256-byte limit"
+    );
+}
+
+#[tokio::test]
+async fn docker_shell_paths_are_used_verbatim_in_exec_and_terminal_commands() {
+    let runner = ScriptedRunner::new(vec![Ok(success("true\n", "")), Ok(success("true\n", ""))]);
+    let adapter = DockerCliAdapter::new(runner.clone());
+    let container = ContainerIdentifier::try_new("abc123").unwrap();
+    let shell = DockerShell::try_new("/usr/bin/zsh").unwrap();
+
+    adapter
+        .verify_exec(&connection(), &container, &shell)
+        .await
+        .unwrap();
+
+    let commands = runner.commands();
+    assert_eq!(commands.len(), 2);
+    assert!(commands[0].contains("'container' 'inspect' '--format' '{{.State.Running}}'"));
+    assert!(commands[1].contains("'exec' '--' 'abc123' '/usr/bin/zsh'"));
+    assert!(commands[1].contains("'command -v /usr/bin/zsh'"));
+    assert_eq!(
+        adapter.terminal_command(&container, &shell).as_str(),
+        "docker exec -it -- abc123 /usr/bin/zsh"
     );
 }
 
@@ -348,7 +443,11 @@ async fn exec_verification_maps_a_missing_shell_probe_to_shell_unavailable() {
     let container = ContainerIdentifier::try_new("abc123").unwrap();
 
     let error = adapter
-        .verify_exec(&connection(), &container, DockerShell::Bash)
+        .verify_exec(
+            &connection(),
+            &container,
+            &DockerShell::try_new("bash").unwrap(),
+        )
         .await
         .expect_err("missing shell must be reported");
 
@@ -378,7 +477,10 @@ fn docker_contract_serializes_camel_case_and_stable_enum_values() {
         serde_json::to_string(&DockerAction::Restart).unwrap(),
         "\"restart\""
     );
-    assert_eq!(serde_json::to_string(&DockerShell::Ash).unwrap(), "\"ash\"");
+    assert_eq!(
+        serde_json::to_string(&DockerShell::try_new("ash").unwrap()).unwrap(),
+        "\"ash\""
+    );
     assert_eq!(
         serde_json::to_value(CoreError::new(
             CoreErrorCode::DockerDaemonUnavailable,

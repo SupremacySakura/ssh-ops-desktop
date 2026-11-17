@@ -13,7 +13,9 @@ import {
   GroupSchema,
   GroupInputSchema,
   ServerCredentialInputSchema,
+  ServerDeleteOutcomeSchema,
   ServerInputSchema,
+  ServerSaveOutcomeSchema,
   ServerSchema,
   TerminalClosedSchema,
   TerminalDataSchema,
@@ -107,6 +109,24 @@ describe('Harbor catalog contracts', () => {
     expect(ServerSchema.safeParse({ ...server, username: 'deploy' }).success).toBe(false);
     expect(ServerSchema.safeParse({ ...server, authType: 'ssh_agent' }).success).toBe(false);
     expect(ServerSchema.safeParse({ ...server, port: 0 }).success).toBe(false);
+  });
+
+  it('returns credential cleanup warnings without turning them into failures', () => {
+    expect(ServerSaveOutcomeSchema.parse({
+      server,
+      warning: '服务器已保存，但旧凭据未能清理',
+    })).toEqual({
+      server,
+      warning: '服务器已保存，但旧凭据未能清理',
+    });
+    expect(ServerSaveOutcomeSchema.parse({ server, warning: null })).toEqual({
+      server,
+      warning: null,
+    });
+    expect(ServerDeleteOutcomeSchema.parse({ warning: null })).toEqual({
+      warning: null,
+    });
+    expect(ServerDeleteOutcomeSchema.safeParse({}).success).toBe(false);
   });
 });
 
@@ -308,11 +328,20 @@ describe('Docker contracts', () => {
     for (const action of ['start', 'stop', 'restart'] as const) {
       expect(DockerActionSchema.parse(action)).toBe(action);
     }
-    for (const shell of ['sh', 'bash', 'ash'] as const) {
+    for (const shell of ['sh', 'bash', 'ash', 'zsh', 'busybox', '/bin/bash', '/usr/bin/zsh']) {
       expect(DockerShellSchema.parse(shell)).toBe(shell);
     }
     expect(DockerActionSchema.safeParse('rm').success).toBe(false);
     expect(DockerShellSchema.safeParse('zsh; id').success).toBe(false);
+    expect(DockerShellSchema.safeParse('bash -c id').success).toBe(false);
+    expect(DockerShellSchema.safeParse('/bin/../sh').success).toBe(false);
+    expect(DockerShellSchema.safeParse('/..').success).toBe(false);
+    expect(DockerShellSchema.safeParse('/.').success).toBe(false);
+    expect(DockerShellSchema.safeParse('/').success).toBe(false);
+    expect(DockerShellSchema.safeParse('//bin/sh').success).toBe(false);
+    expect(DockerShellSchema.safeParse('/bin//sh').success).toBe(false);
+    expect(DockerShellSchema.safeParse('').success).toBe(false);
+    expect(DockerShellSchema.safeParse(`/${'a'.repeat(256)}`).success).toBe(false);
   });
 
   it('keeps bounded log output split by stdout and stderr', () => {

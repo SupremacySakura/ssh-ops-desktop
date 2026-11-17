@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use opspilot_domain::{CoreError, CoreErrorCode};
 use opspilot_ssh_core::{ConnectionHandle, TerminalCommand};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{RemoteCommand, RemoteCommandRunner};
@@ -94,23 +94,69 @@ pub enum DockerAction {
     Restart,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DockerShell {
-    #[default]
-    Sh,
-    Bash,
-    Ash,
+const MAX_DOCKER_SHELL_BYTES: usize = 256;
+const DOCKER_SHELL_METACHARACTERS: &[char] = &[
+    ' ', '\t', '\n', '\r', '"', '\'', '`', '$', ';', '|', '&', '<', '>', '(', ')', '{', '}', '*',
+    '?', '\\', '!', '#', '~', '[', ']',
+];
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct DockerShell {
+    value: String,
+}
+
+impl Default for DockerShell {
+    fn default() -> Self {
+        Self {
+            value: "sh".to_owned(),
+        }
+    }
 }
 
 impl DockerShell {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Sh => "sh",
-            Self::Bash => "bash",
-            Self::Ash => "ash",
+    pub fn try_new(value: &str) -> Result<Self, CoreError> {
+        let valid_path = value.starts_with('/')
+            && value.len() > 1
+            && value[1..].chars().all(is_shell_character)
+            && !value[1..]
+                .split('/')
+                .any(|segment| segment.is_empty() || matches!(segment, "." | ".."));
+        let valid_command = matches!(value, "sh" | "bash" | "ash" | "zsh" | "busybox");
+        if value.is_empty()
+            || value.len() > MAX_DOCKER_SHELL_BYTES
+            || value.chars().any(|c| c.is_control())
+            || value
+                .chars()
+                .any(|c| DOCKER_SHELL_METACHARACTERS.contains(&c))
+            || (!valid_path && !valid_command)
+        {
+            return Err(validation(
+                "Docker shell must be a simple command name or an absolute path",
+            ));
         }
+        Ok(Self {
+            value: value.to_owned(),
+        })
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+}
+
+impl<'de> Deserialize<'de> for DockerShell {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::try_new(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+fn is_shell_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | '/')
 }
 
 impl DockerAction {
@@ -165,7 +211,7 @@ where
         let (started_at, started_at_warning) =
             match self.inspect_started_at(connection, &containers).await {
                 Ok(started_at) => (started_at, None),
-                Err(error) => (HashMap::new(), Some(error.message().to_owned())),
+                Err(error) => (HashMap::new(), Some(started_at_warning(&error).to_owned())),
             };
         for container in &mut containers {
             container.started_at = started_at.get(&container.id).cloned().flatten();
@@ -272,7 +318,7 @@ where
         &self,
         connection: &ConnectionHandle,
         container: &ContainerIdentifier,
-        shell: DockerShell,
+        shell: &DockerShell,
     ) -> Result<(), CoreError> {
         let state = self
             .success(
@@ -332,7 +378,7 @@ where
     pub fn terminal_command(
         &self,
         container: &ContainerIdentifier,
-        shell: DockerShell,
+        shell: &DockerShell,
     ) -> TerminalCommand {
         TerminalCommand::try_new(format!(
             "docker exec -it -- {} {}",
@@ -395,6 +441,18 @@ fn classify_failure(output: &opspilot_ssh_core::ExecOutput) -> CoreError {
         ),
         retryable,
     )
+}
+
+fn started_at_warning(error: &CoreError) -> &'static str {
+    match error.code() {
+        CoreErrorCode::DockerNotInstalled => "服务器未安装 Docker CLI，无法读取容器启动时间",
+        CoreErrorCode::DockerPermissionDenied => "当前用户无权读取容器详情，无法获取启动时间",
+        CoreErrorCode::DockerDaemonUnavailable => "Docker daemon 不可用，无法读取容器启动时间",
+        CoreErrorCode::DockerContainerNotFound => "部分容器已不存在，无法读取启动时间",
+        CoreErrorCode::Timeout => "读取容器启动时间超时",
+        CoreErrorCode::SshConnection => "SSH 连接已断开，无法读取容器启动时间",
+        _ => "Docker 返回内容无法解析，无法读取容器启动时间",
+    }
 }
 
 pub fn parse_version(source: &[u8]) -> Result<DockerVersion, CoreError> {

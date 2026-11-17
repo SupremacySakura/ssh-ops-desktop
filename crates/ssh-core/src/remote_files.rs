@@ -555,7 +555,7 @@ async fn rename_with_session(
     target: &RemotePath,
 ) -> Result<RemoteRenameResult, CoreError> {
     require_no_symlink_ancestors(session, source.as_str(), true).await?;
-    require_no_symlink_ancestors(session, target.as_str(), true).await?;
+    require_no_symlink_ancestors(session, target.as_str(), false).await?;
     let parent = source.parent_directory();
     let parent_metadata = session
         .directory_metadata(&parent)
@@ -570,13 +570,7 @@ async fn rename_with_session(
         .ok_or_else(|| not_found("重命名源文件不存在"))?;
     match source_metadata.kind {
         RemoteFileKind::File => {}
-        RemoteFileKind::Directory => {
-            return Err(CoreError::new(
-                CoreErrorCode::CapabilityUnavailable,
-                "当前 SFTP 服务器没有经过验证的原子 no-replace 目录重命名原语，已拒绝操作",
-                false,
-            ));
-        }
+        RemoteFileKind::Directory => return rename_directory(session, source, target).await,
         RemoteFileKind::Symlink => {
             return Err(validation("重命名源是符号链接，出于安全考虑已拒绝"));
         }
@@ -646,18 +640,91 @@ async fn rename_with_session(
             warning: None,
             error: None,
         }),
+        Err(error) if source_unlink_is_deterministic(&error) => {
+            match session.remove_file(target).await {
+                Ok(()) => Err(error),
+                Err(rollback_error) if rollback_error.code() == CoreErrorCode::NotFound => {
+                    Err(error)
+                }
+                Err(_) => Ok(RemoteRenameResult {
+                    status: RenameStatus::Partial,
+                    source_path: source.as_str().to_owned(),
+                    target_path: target.as_str().to_owned(),
+                    target_created: true,
+                    warning: Some(format!(
+                        "源文件删除失败，目标文件 {} 回滚失败并已保留；源文件仍在，请手动清理残留目标。",
+                        target.as_str()
+                    )),
+                    error: Some(error),
+                }),
+            }
+        }
         Err(error) => Ok(RemoteRenameResult {
             status: RenameStatus::Partial,
             source_path: source.as_str().to_owned(),
             target_path: target.as_str().to_owned(),
             target_created: true,
-            warning: Some(
-                "目标文件已创建，但源文件删除失败或结果未知；请刷新目录核对后重试清理源文件。"
-                    .to_owned(),
-            ),
+            warning: Some(format!(
+                "源文件删除结果未知，目标文件 {} 已保留，请刷新核对。",
+                target.as_str()
+            )),
             error: Some(error),
         }),
     }
+}
+
+async fn rename_directory(
+    session: &dyn ScopedSftp,
+    source: &RemotePath,
+    target: &RemotePath,
+) -> Result<RemoteRenameResult, CoreError> {
+    const RACE_WARNING: &str =
+        "目录重命名依赖目标不存在的预检查，SFTP v3 无原子 no-replace 原语，存在极小的并发竞态窗口";
+
+    if session.symlink_metadata(target).await?.is_some() {
+        return Err(CoreError::new(
+            CoreErrorCode::Conflict,
+            format!("目标目录 {} 已存在，未覆盖", target.as_str()),
+            false,
+        ));
+    }
+    session.rename(source, target).await?;
+    let outcome = if session.symlink_metadata(source).await?.is_none() {
+        RemoteRenameResult {
+            status: RenameStatus::Renamed,
+            source_path: source.as_str().to_owned(),
+            target_path: target.as_str().to_owned(),
+            target_created: true,
+            warning: Some(format!("{RACE_WARNING}。")),
+            error: None,
+        }
+    } else {
+        RemoteRenameResult {
+            status: RenameStatus::Partial,
+            source_path: source.as_str().to_owned(),
+            target_path: target.as_str().to_owned(),
+            target_created: true,
+            warning: Some(format!(
+                "{RACE_WARNING}；源目录在重命名后仍存在，目标目录已创建，请刷新核对。"
+            )),
+            error: Some(CoreError::new(
+                CoreErrorCode::Internal,
+                "目录重命名后源目录仍然存在，无法确认操作已完成",
+                false,
+            )),
+        }
+    };
+    Ok(outcome)
+}
+
+fn source_unlink_is_deterministic(error: &CoreError) -> bool {
+    !matches!(
+        error.code(),
+        CoreErrorCode::Timeout
+            | CoreErrorCode::SshConnection
+            | CoreErrorCode::Internal
+            | CoreErrorCode::Cancelled
+    )
 }
 
 fn append_rename_warning(outcome: &mut RemoteRenameResult, warning: String) {

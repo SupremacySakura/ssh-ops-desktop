@@ -31,10 +31,7 @@ pub use russh_backend::{
     ConnectOutcome, ConnectionRequest, ExecOutput, HostKeyChangedPrompt, HostKeyProbe,
     HostKeyPrompt, RusshConnectionManager, RusshShellBackend,
 };
-pub use sftp::{
-    ConflictPolicy, LocalSftpAdapter, RemoteDirectoryPath, RemotePath, TransferCheckpoint,
-    TransferFailure, UploadOptions, UploadResult,
-};
+pub use sftp::{RemoteDirectoryPath, RemotePath};
 pub use terminal::{
     ConnectionHandle, InMemoryShellBackend, MAX_TERMINAL_SESSIONS_PER_SERVER,
     MAX_TERMINAL_WRITE_BYTES, PtySize, SHELL_EVENT_CHANNEL_CAPACITY, ShellBackend, ShellEvent,

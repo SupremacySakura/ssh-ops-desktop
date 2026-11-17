@@ -144,7 +144,7 @@ pub(crate) async fn connection_connect(
                 None,
                 ConnectionState::Error {
                     code: error.code(),
-                    message: error.message().to_owned(),
+                    message: connection_state_message(error.code()).to_owned(),
                     retryable: error.is_retryable(),
                 },
             )
@@ -239,21 +239,42 @@ fn core_services(app: &AppHandle) -> CoreServices {
 fn unix_timestamp() -> Result<i64, CoreError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| {
-            CoreError::new(
-                CoreErrorCode::Internal,
-                format!("system clock is before the Unix epoch: {error}"),
-                false,
-            )
+        .map_err(|_error| {
+            CoreError::new(CoreErrorCode::Internal, "系统时间无效，无法建立连接", false)
         })?
         .as_secs();
-    i64::try_from(seconds).map_err(|error| {
+    i64::try_from(seconds).map_err(|_error| {
         CoreError::new(
             CoreErrorCode::Internal,
-            format!("system time is outside the supported range: {error}"),
+            "系统时间超出支持范围，无法建立连接",
             false,
         )
     })
+}
+
+fn connection_state_message(code: CoreErrorCode) -> &'static str {
+    match code {
+        CoreErrorCode::Validation => "连接参数无效，请检查服务器配置",
+        CoreErrorCode::NotFound => "服务器不存在或已被删除",
+        CoreErrorCode::Conflict => "服务器状态已变化，请刷新后重试",
+        CoreErrorCode::Cancelled => "连接已取消",
+        CoreErrorCode::Timeout => "连接超时，请检查网络后重试",
+        CoreErrorCode::CapabilityUnavailable => "当前环境不支持该连接能力",
+        CoreErrorCode::SecretUnavailable => "该服务器的凭据不可用，请重新配置",
+        CoreErrorCode::SshConnection => "无法建立 SSH 连接，请检查网络与服务器状态",
+        CoreErrorCode::SshAuthentication => "SSH 认证失败，请检查用户名与凭据",
+        CoreErrorCode::SshHostKeyUnknown => "服务器主机指纹未知，需要先确认信任",
+        CoreErrorCode::SshHostKeyChanged => "服务器主机指纹已变化，连接已阻断",
+        CoreErrorCode::RemotePermission => "远程操作权限不足",
+        CoreErrorCode::RemoteCommand => "远程命令执行失败",
+        CoreErrorCode::RemoteParse => "远程返回内容无法解析",
+        CoreErrorCode::DockerNotInstalled => "远程服务器未安装 Docker",
+        CoreErrorCode::DockerPermissionDenied => "当前用户无权访问 Docker",
+        CoreErrorCode::DockerDaemonUnavailable => "Docker 服务不可用",
+        CoreErrorCode::DockerContainerNotFound => "容器不存在或已被删除",
+        CoreErrorCode::DockerShellUnavailable => "容器内没有可用的 shell",
+        CoreErrorCode::Internal => "本地服务发生错误，请稍后重试",
+    }
 }
 
 #[cfg(test)]
@@ -510,6 +531,7 @@ mod tests {
     fn connection_state_events_serialize_with_the_shared_camel_case_contract() {
         let server_id = Id::new();
         let connection_id = Id::new();
+        let message = super::connection_state_message(CoreErrorCode::SshHostKeyChanged);
         assert_eq!(
             serde_json::to_value(super::ConnectionStateEvent {
                 server_id,
@@ -517,7 +539,7 @@ mod tests {
                 sequence: 4,
                 state: super::ConnectionState::Error {
                     code: CoreErrorCode::SshHostKeyChanged,
-                    message: "blocked".to_owned(),
+                    message: message.to_owned(),
                     retryable: false,
                 },
             })
@@ -529,10 +551,14 @@ mod tests {
                 "state": {
                     "kind": "error",
                     "code": "SSH_HOST_KEY_CHANGED",
-                    "message": "blocked",
+                    "message": "服务器主机指纹已变化，连接已阻断",
                     "retryable": false,
                 },
             })
+        );
+        assert_eq!(
+            super::connection_state_message(CoreErrorCode::SshAuthentication),
+            "SSH 认证失败，请检查用户名与凭据"
         );
         assert_eq!(
             serde_json::to_value(super::ConnectionStateEvent {

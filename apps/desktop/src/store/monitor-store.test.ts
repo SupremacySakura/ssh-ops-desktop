@@ -246,10 +246,62 @@ describe('Monitoring sampler', () => {
     );
     expect(useMonitorStore.getState().states[otherServer.serverId]?.latest).toBeNull();
     expect(useMonitorStore.getState().states[otherServer.serverId]?.samples)
-      .toHaveLength(1);
+      .toHaveLength(0);
     const callCount = calls.length;
     await vi.advanceTimersByTimeAsync(MONITOR_SAMPLE_INTERVAL_MS * 2);
     expect(calls).toHaveLength(callCount);
+  });
+
+  it('clears samples when the same server reconnects with a new connectionId', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-17T12:00:00.000Z'));
+    const nextConnection = {
+      ...connection,
+      connectionId: '019c62b2-2970-7000-8000-000000000106',
+    };
+    let resolveOld!: (value: MonitorSnapshot) => void;
+    let calls = 0;
+    const core = createFakeCoreClient({
+      overrides: {
+        monitorSnapshot: vi.fn((activeConnection) => {
+          calls += 1;
+          if (activeConnection.connectionId === connection.connectionId) {
+            return calls === 1
+              ? Promise.resolve(snapshot(Date.now(), 11))
+              : new Promise<MonitorSnapshot>((resolve) => {
+                  resolveOld = resolve;
+                });
+          }
+          return Promise.resolve(snapshot(Date.now(), 22));
+        }),
+      },
+    });
+
+    useMonitorStore.getState().startSampling(core, connection);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useMonitorStore.getState().states[connection.serverId]?.samples)
+      .toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(MONITOR_SAMPLE_INTERVAL_MS);
+    expect(calls).toBe(2);
+
+    useMonitorStore.getState().startSampling(core, nextConnection);
+    expect(useMonitorStore.getState().states[connection.serverId]?.samples)
+      .toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useMonitorStore.getState().states[connection.serverId]).toMatchObject({
+      connectionId: nextConnection.connectionId,
+      phase: 'ready',
+    });
+    expect(useMonitorStore.getState().states[connection.serverId]?.samples)
+      .toHaveLength(1);
+
+    resolveOld(snapshot(Date.now() + 5_000, 99));
+    await vi.advanceTimersByTimeAsync(0);
+    const samples = useMonitorStore.getState().states[connection.serverId]?.samples;
+    expect(samples).toHaveLength(1);
+    expect(samples?.[0]?.cpuPercent).toBe(22);
   });
 
   it('shows a Chinese failure, retries immediately, and does not duplicate timers', async () => {
@@ -290,6 +342,27 @@ describe('Monitoring sampler', () => {
 
     await vi.advanceTimersByTimeAsync(MONITOR_SAMPLE_INTERVAL_MS);
     expect(calls).toBe(3);
+  });
+
+  it('never echoes a raw monitor failure message', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-17T12:00:00.000Z'));
+    const core = createFakeCoreClient({
+      overrides: {
+        monitorSnapshot: vi.fn(() => Promise.reject({
+          code: 'INTERNAL',
+          message: 'sqlx error: database is locked',
+          retryable: false,
+        })),
+      },
+    });
+
+    useMonitorStore.getState().startSampling(core, connection);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const error = useMonitorStore.getState().states[connection.serverId]?.error;
+    expect(error).toBe('监控采样失败，请重试');
+    expect(error).not.toContain('sqlx');
   });
 
   it('stops polling on a lost transport and clears the live value without losing history', async () => {

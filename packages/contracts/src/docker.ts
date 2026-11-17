@@ -21,7 +21,31 @@ export const DockerContainerListSchema = z.object({
 }).strict();
 
 export const DockerActionSchema = z.enum(['start', 'stop', 'restart']);
-export const DockerShellSchema = z.enum(['sh', 'bash', 'ash']);
+
+const DOCKER_SHELL_COMMANDS = new Set(['sh', 'bash', 'ash', 'zsh', 'busybox']);
+const DOCKER_SHELL_SEGMENT = /^[A-Za-z0-9_.-]+$/u;
+
+function isDockerShell(value: string): boolean {
+  if (value.length === 0 || value.length > 256) return false;
+  if (/[\u0000-\u001f\u007f]/u.test(value)) return false;
+  if (DOCKER_SHELL_COMMANDS.has(value)) return true;
+  if (!value.startsWith('/') || value.length === 1) return false;
+  return value.slice(1).split('/').every((segment) => (
+    segment.length > 0
+    && segment !== '.'
+    && segment !== '..'
+    && DOCKER_SHELL_SEGMENT.test(segment)
+  ));
+}
+
+export const DockerShellSchema = z
+  .string()
+  .min(1, 'shell 不能为空')
+  .max(256, 'shell 路径不能超过 256 个字符')
+  .refine(
+    isDockerShell,
+    'shell 必须是简单命令名或绝对路径，不能包含空白或 shell 元字符',
+  );
 
 export const DockerLogsSchema = z.object({
   containerId: DockerContainerIdSchema,

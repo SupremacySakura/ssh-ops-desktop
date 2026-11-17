@@ -129,13 +129,16 @@ async fn routes_bytes_and_resize_to_the_bound_channel_only() {
         .await
         .unwrap();
     let second = manager
-        .open(connection, PtySize::try_new(120, 40).unwrap())
+        .open(connection.clone(), PtySize::try_new(120, 40).unwrap())
         .await
         .unwrap();
 
-    manager.write(first.id(), b"uptime\n").await.unwrap();
     manager
-        .resize(second.id(), PtySize::try_new(140, 50).unwrap())
+        .write_for(&connection, first.id(), b"uptime\n")
+        .await
+        .unwrap();
+    manager
+        .resize_for(&connection, second.id(), PtySize::try_new(140, 50).unwrap())
         .await
         .unwrap();
 
@@ -265,16 +268,77 @@ async fn rejects_writes_above_one_mebibyte_without_reaching_the_shell() {
     let connection = ConnectionHandle::new(Id::new(), Id::new());
     register(&manager, &connection).await;
     let session = manager
-        .open(connection, PtySize::try_new(80, 24).unwrap())
+        .open(connection.clone(), PtySize::try_new(80, 24).unwrap())
         .await
         .unwrap();
 
     let error = manager
-        .write(session.id(), &vec![b'x'; 1024 * 1024 + 1])
+        .write_for(&connection, session.id(), &vec![b'x'; 1024 * 1024 + 1])
         .await
         .expect_err("oversize terminal writes must be rejected");
     assert_eq!(error.code(), CoreErrorCode::Validation);
     assert!(backend.writes(session.id()).await.is_empty());
+}
+
+#[tokio::test]
+async fn write_resize_and_close_require_the_session_connection_owner() {
+    let backend = InMemoryShellBackend::new();
+    let manager = TerminalManager::new(backend.clone());
+    let owner = ConnectionHandle::new(Id::new(), Id::new());
+    let other = ConnectionHandle::new(Id::new(), Id::new());
+    register(&manager, &owner).await;
+    register(&manager, &other).await;
+    let session = manager
+        .open(owner.clone(), PtySize::try_new(80, 24).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        manager
+            .write_for(&other, session.id(), b"must-not-write")
+            .await
+            .expect_err("another connection must not write to this session")
+            .code(),
+        CoreErrorCode::NotFound
+    );
+    assert_eq!(
+        manager
+            .resize_for(&other, session.id(), PtySize::try_new(140, 50).unwrap())
+            .await
+            .expect_err("another connection must not resize this session")
+            .code(),
+        CoreErrorCode::NotFound
+    );
+    assert_eq!(
+        manager
+            .close_for(&other, session.id())
+            .await
+            .expect_err("another connection must not close this session")
+            .code(),
+        CoreErrorCode::NotFound
+    );
+    assert!(backend.writes(session.id()).await.is_empty());
+    assert!(backend.resizes(session.id()).await.is_empty());
+    assert!(manager.active_session_ids().await.contains(&session.id()));
+
+    manager
+        .write_for(&owner, session.id(), b"uptime\n")
+        .await
+        .unwrap();
+    manager
+        .resize_for(&owner, session.id(), PtySize::try_new(100, 30).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.writes(session.id()).await,
+        vec![b"uptime\n".to_vec()]
+    );
+    assert_eq!(
+        backend.resizes(session.id()).await,
+        vec![PtySize::try_new(100, 30).unwrap()]
+    );
+    manager.close_for(&owner, session.id()).await.unwrap();
+    assert!(!manager.active_session_ids().await.contains(&session.id()));
 }
 
 #[tokio::test]
@@ -284,7 +348,7 @@ async fn backend_close_removes_the_session_and_emits_a_reason() {
     let connection = ConnectionHandle::new(Id::new(), Id::new());
     register(&manager, &connection).await;
     let session = manager
-        .open(connection, PtySize::try_new(80, 24).unwrap())
+        .open(connection.clone(), PtySize::try_new(80, 24).unwrap())
         .await
         .unwrap();
     let mut events = manager.subscribe();
@@ -299,7 +363,7 @@ async fn backend_close_removes_the_session_and_emits_a_reason() {
     ));
 
     let error = manager
-        .write(session.id(), b"after-close")
+        .write_for(&connection, session.id(), b"after-close")
         .await
         .expect_err("closed sessions must reject input");
     assert_eq!(error.code(), CoreErrorCode::NotFound);
@@ -333,7 +397,7 @@ async fn closing_a_connection_cleans_up_all_of_its_sessions() {
     ));
     for session in [first, second] {
         let error = manager
-            .write(session.id(), b"after-disconnect")
+            .write_for(&connection, session.id(), b"after-disconnect")
             .await
             .expect_err("closed connection sessions must be gone");
         assert_eq!(error.code(), CoreErrorCode::NotFound);
@@ -369,7 +433,11 @@ async fn connection_close_attempts_every_session_and_keeps_unclosed_state_retrya
 
     let mut open_sessions = 0;
     for session in [first, second] {
-        if manager.write(session.id(), b"retry\n").await.is_ok() {
+        if manager
+            .write_for(&connection, session.id(), b"retry\n")
+            .await
+            .is_ok()
+        {
             open_sessions += 1;
         }
     }
@@ -404,7 +472,11 @@ async fn close_all_keeps_failed_sessions_and_connection_registration() {
 
     let mut open_sessions = 0;
     for session in [first, second] {
-        if manager.write(session.id(), b"retry\n").await.is_ok() {
+        if manager
+            .write_for(&connection, session.id(), b"retry\n")
+            .await
+            .is_ok()
+        {
             open_sessions += 1;
         }
     }
@@ -442,7 +514,7 @@ async fn discard_all_forces_shutdown_cleanup_after_close_failures() {
     for session in [first, second] {
         assert_eq!(
             manager
-                .write(session.id(), b"after-shutdown")
+                .write_for(&connection, session.id(), b"after-shutdown")
                 .await
                 .unwrap_err()
                 .code(),
@@ -477,7 +549,7 @@ async fn transport_disconnect_can_force_cleanup_after_a_channel_close_failure() 
 
     for session in [first, second] {
         let error = manager
-            .write(session.id(), b"after-transport-close")
+            .write_for(&connection, session.id(), b"after-transport-close")
             .await
             .expect_err("transport teardown must remove every terminal session");
         assert_eq!(error.code(), CoreErrorCode::NotFound);
@@ -544,13 +616,13 @@ async fn retains_an_early_close_when_a_later_burst_exceeds_the_old_bus_capacity(
         received
     });
 
-    manager.close(first.id()).await.unwrap();
+    manager.close_for(&connection, first.id()).await.unwrap();
     for _ in 0..flood {
         let session = manager
             .open(connection.clone(), PtySize::try_new(80, 24).unwrap())
             .await
             .unwrap();
-        manager.close(session.id()).await.unwrap();
+        manager.close_for(&connection, session.id()).await.unwrap();
     }
 
     let events = tokio::time::timeout(std::time::Duration::from_secs(2), consumer)
@@ -663,7 +735,7 @@ async fn disconnecting_a_connection_waits_for_an_in_flight_terminal_open() {
     );
     assert!(
         manager
-            .write(opened.id(), b"must-not-reach-closed-channel")
+            .write_for(&connection, opened.id(), b"must-not-reach-closed-channel")
             .await
             .is_err()
     );

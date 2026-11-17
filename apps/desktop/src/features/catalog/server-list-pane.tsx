@@ -18,6 +18,7 @@ import {
 export function ServerListPane() {
   const catalogBusy = useHarborStore((state) => state.catalogBusy);
   const catalogError = useHarborStore((state) => state.catalogError);
+  const catalogWarning = useHarborStore((state) => state.catalogWarning);
   const catalogStatus = useHarborStore((state) => state.catalogStatus);
   const groups = useHarborStore((state) => state.groups);
   const loadCatalog = useHarborStore((state) => state.loadCatalog);
@@ -79,6 +80,18 @@ export function ServerListPane() {
               重试
             </button>
           ) : null}
+        </div>
+      ) : null}
+
+      {catalogWarning ? (
+        <div
+          className="mt-3 border-l-2 border-warning bg-[#F4EDE0] px-2.5 py-2"
+          role="status"
+        >
+          <p className="font-mono text-[9px] tracking-[0.12em] text-warning">
+            WARNING / 操作已完成
+          </p>
+          <p className="mt-1 text-[10px] leading-4 text-warning">{catalogWarning}</p>
         </div>
       ) : null}
 

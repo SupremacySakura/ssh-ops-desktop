@@ -10,6 +10,7 @@ import {
   formatPermissions,
   joinRemoteResource,
   languageForPath,
+  remoteFileErrorMessage,
   uploadBatchBlocked,
   uploadBatchNeedsConfirmation,
 } from './file-browser-utils';
@@ -67,5 +68,36 @@ describe('file browser path and formatting helpers', () => {
     expect(uploadBatchBlocked([16 * 1024 * 1024 + 1])).toBe(true);
     expect(uploadBatchBlocked([32 * 1024 * 1024, 33 * 1024 * 1024])).toBe(true);
     expect(uploadBatchBlocked(Array.from({ length: 33 }, () => 1))).toBe(true);
+  });
+
+  it('maps file errors by code and never echoes raw remote messages', () => {
+    const internal = remoteFileErrorMessage({
+      code: 'INTERNAL',
+      message: 'sqlx error: database is locked',
+      retryable: false,
+    });
+    expect(internal).toBe('远程文件操作失败，请重试');
+    expect(internal).not.toContain('sqlx');
+
+    const parse = remoteFileErrorMessage({
+      code: 'REMOTE_PARSE',
+      message: 'unexpected SFTP packet type 200',
+      retryable: false,
+    });
+    expect(parse).toBe('远程文件操作失败，请重试');
+    expect(parse).not.toContain('SFTP packet');
+
+    expect(remoteFileErrorMessage({
+      code: 'VALIDATION',
+      message: '目标路径不是安全 basename',
+      retryable: false,
+    })).toBe('目标路径不是安全 basename');
+    expect(remoteFileErrorMessage({
+      code: 'VALIDATION',
+      message: 'target path escapes the remote root',
+      retryable: false,
+    })).toBe('远程文件校验失败，请刷新后重试');
+    expect(remoteFileErrorMessage(new Error('socket closed')))
+      .toBe('远程文件操作失败，请重试');
   });
 });

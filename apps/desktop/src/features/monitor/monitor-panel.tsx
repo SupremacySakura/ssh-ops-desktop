@@ -37,8 +37,8 @@ export function MonitorPanel({
   const titleId = useId();
   const current = state?.connectionId === connectionId ? state : null;
   const latest = current?.latest ?? null;
-  const samples = state?.samples ?? [];
-  const unavailable = state?.unavailable ?? [];
+  const samples = current?.samples ?? [];
+  const unavailable = current?.unavailable ?? [];
   const processes = sortMonitorProcesses(latest?.topProcesses ?? [], sort);
   const cpuValue = latest?.cpuPercent ?? null;
   const memValue = latest ? memoryPercent(latest) : null;
