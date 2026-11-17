@@ -14,7 +14,16 @@
     "allow-server-group-create",
     "allow-server-group-update",
     "allow-server-group-delete",
+    "allow-connection-connect",
+    "allow-connection-trust-host-key",
+    "allow-connection-disconnect",
+    "allow-terminal-open",
+    "allow-terminal-write",
+    "allow-terminal-resize",
+    "allow-terminal-close",
     "allow-ssh-config-import-preview",
-    "allow-ssh-config-import-apply"
+    "allow-ssh-config-import-apply",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
   ]
 }

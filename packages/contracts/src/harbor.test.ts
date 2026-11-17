@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ConnectOutcomeSchema,
+  ConnectionHandleSchema,
+  ConnectionStateEventSchema,
   CoreHealthSchema,
   GroupSchema,
   GroupInputSchema,
   ServerCredentialInputSchema,
   ServerInputSchema,
   ServerSchema,
+  TerminalClosedSchema,
+  TerminalDataSchema,
+  TerminalGapSchema,
+  TerminalSessionSchema,
 } from './index.js';
 
 const server = {
@@ -109,5 +116,149 @@ describe('Core health contract', () => {
       databaseReady: true,
       secretStoreReady: false,
     });
+  });
+});
+
+describe('SSH connection and terminal contracts', () => {
+  const serverId = '019c62b2-2970-7000-8000-000000000003';
+  const connectionId = '019c62b2-2970-7000-8000-000000000010';
+  const terminalSessionId = '019c62b2-2970-7000-8000-000000000011';
+  const verificationId = '019c62b2-2970-7000-8000-000000000012';
+  const connection = { serverId, connectionId };
+
+  it('parses the three connection outcomes and keeps fingerprints intact', () => {
+    expect(ConnectionHandleSchema.parse(connection)).toEqual(connection);
+    expect(ConnectOutcomeSchema.parse({
+      kind: 'ready',
+      connection,
+    })).toEqual({
+      kind: 'ready',
+      connection,
+    });
+    expect(ConnectOutcomeSchema.parse({
+      kind: 'hostKeyRequired',
+      prompt: {
+        verificationId,
+        algorithm: 'ssh-ed25519',
+        sha256: 'SHA256:fixture',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      },
+    })).toEqual({
+      kind: 'hostKeyRequired',
+      prompt: {
+        verificationId,
+        algorithm: 'ssh-ed25519',
+        sha256: 'SHA256:fixture',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    expect(ConnectOutcomeSchema.parse({
+      kind: 'hostKeyChanged',
+      prompt: {
+        verificationId,
+        expectedSha256: 'SHA256:expected',
+        actualSha256: 'SHA256:actual',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      },
+    })).toEqual({
+      kind: 'hostKeyChanged',
+      prompt: {
+        verificationId,
+        expectedSha256: 'SHA256:expected',
+        actualSha256: 'SHA256:actual',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+  });
+
+  it('parses terminal session, data, gap, and close payloads', () => {
+    expect(TerminalSessionSchema.parse({
+      id: terminalSessionId,
+      connection,
+    })).toEqual({
+      id: terminalSessionId,
+      connection,
+    });
+    expect(TerminalDataSchema.parse({
+      terminalSessionId,
+      sequence: 1,
+      bytes: [27, 91, 50, 74],
+    })).toEqual({
+      terminalSessionId,
+      sequence: 1,
+      bytes: [27, 91, 50, 74],
+    });
+    expect(TerminalGapSchema.parse({
+      terminalSessionId,
+      missed: 3,
+    })).toEqual({
+      terminalSessionId,
+      missed: 3,
+    });
+    expect(TerminalClosedSchema.parse({
+      terminalSessionId,
+      reason: 'disconnected',
+    })).toEqual({
+      terminalSessionId,
+      reason: 'disconnected',
+    });
+    expect(TerminalClosedSchema.parse({
+      terminalSessionId,
+      reason: 'remoteExit',
+      exitStatus: 0,
+    })).toEqual({
+      terminalSessionId,
+      reason: 'remoteExit',
+      exitStatus: 0,
+    });
+  });
+
+  it('parses sequenced connection state events without accepting stale shapes', () => {
+    expect(ConnectionStateEventSchema.parse({
+      serverId,
+      connectionId,
+      sequence: 2,
+      state: { kind: 'ready' },
+    })).toEqual({
+      serverId,
+      connectionId,
+      sequence: 2,
+      state: { kind: 'ready' },
+    });
+    expect(ConnectionStateEventSchema.parse({
+      serverId,
+      connectionId: null,
+      sequence: 1,
+      state: { kind: 'connecting' },
+    })).toEqual({
+      serverId,
+      connectionId: null,
+      sequence: 1,
+      state: { kind: 'connecting' },
+    });
+    expect(ConnectionStateEventSchema.safeParse({
+      serverId,
+      connectionId,
+      sequence: 0,
+      state: { kind: 'closed' },
+    }).success).toBe(false);
+    expect(ConnectionStateEventSchema.safeParse({
+      serverId,
+      connectionId,
+      sequence: 3,
+      state: { kind: 'ready', connection_id: connectionId },
+    }).success).toBe(false);
+    expect(ConnectionStateEventSchema.safeParse({
+      serverId,
+      connectionId: null,
+      sequence: 3,
+      state: { kind: 'ready' },
+    }).success).toBe(false);
+    expect(ConnectionStateEventSchema.safeParse({
+      serverId,
+      connectionId: null,
+      sequence: 3,
+      state: { kind: 'closed' },
+    }).success).toBe(false);
   });
 });

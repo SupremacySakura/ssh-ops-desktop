@@ -1,10 +1,15 @@
 import type {
+  ConnectOutcome,
+  ConnectionStateEvent,
   CoreHealth,
   Group,
   Server,
   ServerCredentialInput,
   SshConfigImportPreview,
   SshConfigImportResult,
+  TerminalClosedEvent,
+  TerminalDataEvent,
+  TerminalGapEvent,
 } from '@opspilot/contracts';
 
 import type { CoreClient } from '../api/core';
@@ -16,12 +21,17 @@ export interface CoreCall {
 
 export interface FakeCoreClient extends CoreClient {
   readonly calls: CoreCall[];
+  emitConnectionState(event: ConnectionStateEvent): void;
+  emitTerminalData(event: TerminalDataEvent): void;
+  emitTerminalGap(event: TerminalGapEvent): void;
+  emitTerminalClosed(event: TerminalClosedEvent): void;
 }
 
 export interface FakeCoreOptions {
   servers?: Server[];
   groups?: Group[];
   health?: CoreHealth;
+  connectOutcome?: ConnectOutcome | ((serverId: string) => ConnectOutcome);
   sshConfigImport?: SshConfigImportPreview;
   overrides?: Partial<CoreClient>;
 }
@@ -36,12 +46,31 @@ export function createFakeCoreClient({
   servers: initialServers = [],
   groups: initialGroups = [],
   health = readyHealth,
+  connectOutcome,
   sshConfigImport,
   overrides = {},
 }: FakeCoreOptions = {}): FakeCoreClient {
   const calls: CoreCall[] = [];
   let servers = initialServers.map(cloneServer);
   let groups = initialGroups.map((group) => ({ ...group }));
+  const connectionStateHandlers = new Set<(event: ConnectionStateEvent) => void>();
+  const terminalDataHandlers = new Set<(event: TerminalDataEvent) => void>();
+  const terminalGapHandlers = new Set<(event: TerminalGapEvent) => void>();
+  const terminalClosedHandlers = new Set<(event: TerminalClosedEvent) => void>();
+  let connectionSequence = 0;
+
+  const emitConnectionState = (event: ConnectionStateEvent) => {
+    for (const handler of connectionStateHandlers) handler(event);
+  };
+  const emitTerminalData = (event: TerminalDataEvent) => {
+    for (const handler of terminalDataHandlers) handler(event);
+  };
+  const emitTerminalGap = (event: TerminalGapEvent) => {
+    for (const handler of terminalGapHandlers) handler(event);
+  };
+  const emitTerminalClosed = (event: TerminalClosedEvent) => {
+    for (const handler of terminalClosedHandlers) handler(event);
+  };
   const importPreview = sshConfigImport
     ? cloneSshConfigImportPreview(sshConfigImport)
     : null;
@@ -71,6 +100,9 @@ export function createFakeCoreClient({
     updateServer: async (id, input, credential) => {
       remember(calls, 'updateServer', [id, input, credential]);
       const existing = requireServer(servers, id);
+      if (credential === undefined && input.authType !== existing.authType) {
+        throw fakeError('VALIDATION', '更改认证方式时必须提供新凭据');
+      }
       const updated: Server = {
         ...existing,
         ...input,
@@ -125,6 +157,92 @@ export function createFakeCoreClient({
       servers = servers.map((server) => (
         server.groupId === id ? { ...server, groupId: null } : server
       ));
+    },
+    connect: async (serverId) => {
+      remember(calls, 'connect', [serverId]);
+      const server = requireServer(servers, serverId);
+      if (server.secretRef === null) {
+        throw fakeError('SECRET_UNAVAILABLE', '该服务器的凭据尚未配置');
+      }
+      const outcome = typeof connectOutcome === 'function'
+        ? connectOutcome(serverId)
+        : connectOutcome ?? {
+            kind: 'ready' as const,
+            connection: {
+              serverId,
+              connectionId: crypto.randomUUID(),
+            },
+          };
+      if (outcome.kind === 'ready') {
+        servers = servers.map((candidate) => (
+          candidate.id === serverId
+            ? { ...candidate, lastConnectedAt: currentTimestamp() }
+            : candidate
+        ));
+        connectionSequence += 1;
+        emitConnectionState({
+          serverId,
+          connectionId: outcome.connection.connectionId,
+          sequence: connectionSequence,
+          state: { kind: 'ready' },
+        });
+      }
+      return outcome;
+    },
+    trustHostKey: async (serverId, verificationId) => {
+      remember(calls, 'trustHostKey', [serverId, verificationId]);
+    },
+    disconnect: async (connection) => {
+      remember(calls, 'disconnect', [connection]);
+      connectionSequence += 1;
+      emitConnectionState({
+        serverId: connection.serverId,
+        connectionId: connection.connectionId,
+        sequence: connectionSequence,
+        state: { kind: 'closed' },
+      });
+    },
+    openTerminal: async (connection, columns, rows) => {
+      remember(calls, 'openTerminal', [connection, columns, rows]);
+      const session = {
+        id: crypto.randomUUID(),
+        connection,
+      };
+      emitTerminalData({
+        terminalSessionId: session.id,
+        sequence: 1,
+        bytes: Array.from(new TextEncoder().encode('harbor renderer fixture\r\n')),
+      });
+      return session;
+    },
+    writeTerminal: async (terminalSessionId, bytes) => {
+      remember(calls, 'writeTerminal', [terminalSessionId, Array.from(bytes)]);
+    },
+    resizeTerminal: async (terminalSessionId, columns, rows) => {
+      remember(calls, 'resizeTerminal', [terminalSessionId, columns, rows]);
+    },
+    closeTerminal: async (terminalSessionId) => {
+      remember(calls, 'closeTerminal', [terminalSessionId]);
+      emitTerminalClosed({
+        terminalSessionId,
+        reason: 'closed',
+      });
+    },
+    subscribeConnectionState: async (handler) => {
+      connectionStateHandlers.add(handler);
+      return () => connectionStateHandlers.delete(handler);
+    },
+    subscribeTerminalData: async (handler) => {
+      terminalDataHandlers.add(handler);
+      return () => terminalDataHandlers.delete(handler);
+    },
+    subscribeTerminalGap: async (handler) => {
+      terminalGapHandlers.add(handler);
+      return () => terminalGapHandlers.delete(handler);
+    },
+    subscribeTerminalClosed: async (handler) => {
+      terminalClosedHandlers.add(handler);
+      return () => terminalClosedHandlers.delete(handler);
     },
     previewSshConfigImport: async () => {
       remember(calls, 'previewSshConfigImport', []);
@@ -186,7 +304,13 @@ export function createFakeCoreClient({
     },
   };
 
-  return Object.assign(base, { calls }, overrides);
+  return Object.assign(base, {
+    calls,
+    emitConnectionState,
+    emitTerminalData,
+    emitTerminalGap,
+    emitTerminalClosed,
+  }, overrides);
 }
 
 function requireServer(servers: Server[], id: string): Server {

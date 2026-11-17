@@ -3,12 +3,26 @@
 import '@testing-library/jest-dom/vitest';
 
 import type { SshConfigImportPreview } from '@opspilot/contracts';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from './App';
 import { useHarborStore } from './store/harbor-store';
+import { useTerminalStore } from './store/terminal-store';
 import { createFakeCoreClient } from './test/fake-core';
+
+vi.mock('./features/terminal/xterm-viewport', () => ({
+  XtermViewport: ({ session }: { session: { id: string } }) => (
+    <div data-testid={`terminal-viewport-${session.id}`} />
+  ),
+}));
 
 const readyCore = createFakeCoreClient({
   health: {
@@ -20,9 +34,13 @@ const readyCore = createFakeCoreClient({
 
 beforeEach(() => {
   useHarborStore.getState().reset();
+  useTerminalStore.getState().reset();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useTerminalStore.getState().reset();
+});
 
 describe('Harbor empty shell', () => {
   it('shows the brand, search, empty catalog, empty workspace, and ready Core', async () => {
@@ -242,6 +260,59 @@ describe('Harbor empty shell', () => {
     expect(core.calls).toContainEqual(expect.objectContaining({ method: 'updateServer' }));
   });
 
+  it('disconnects the old SSH identity before reconnecting an edited endpoint', async () => {
+    const core = createFakeCoreClient({
+      servers: [{
+        id: '019c62b2-2970-7000-8000-000000000007',
+        name: 'prod-web-01',
+        host: 'prod.example.com',
+        port: 22,
+        user: 'deploy',
+        authType: 'key',
+        secretRef: 'secret-ref-fixture-1',
+        groupId: null,
+        favorite: false,
+        lastConnectedAt: null,
+        createdAt: 1_699_000_000,
+      }],
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    const oldConnection = useTerminalStore.getState()
+      .runtimes['019c62b2-2970-7000-8000-000000000007']?.connection;
+    const oldSessionId = useTerminalStore.getState()
+      .runtimes['019c62b2-2970-7000-8000-000000000007']?.sessions[0]?.id;
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑服务器' }));
+    const dialog = screen.getByRole('dialog', { name: '编辑服务器' });
+    fireEvent.change(within(dialog).getByLabelText('主机'), {
+      target: { value: 'replacement.example.com' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('用户名'), {
+      target: { value: 'replacement' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存服务器' }));
+
+    await waitFor(() => {
+      expect(
+        core.calls.filter((call) => call.method === 'connect'),
+      ).toHaveLength(2);
+    });
+    expect(core.calls).toContainEqual({
+      method: 'disconnect',
+      args: [oldConnection],
+    });
+    const current = useTerminalStore.getState()
+      .runtimes['019c62b2-2970-7000-8000-000000000007'];
+    expect(current?.connection?.connectionId).not.toBe(oldConnection?.connectionId);
+    expect(current?.sessions[0]?.id).not.toBe(oldSessionId);
+    expect(current?.connectionIdentity).toContain('replacement.example.com');
+  });
+
   it('keeps imported servers visibly pending while their metadata is edited', async () => {
     const core = createFakeCoreClient({
       servers: [{
@@ -266,6 +337,7 @@ describe('Harbor empty shell', () => {
     expect(screen.getByText('凭据待配置')).toBeVisible();
     fireEvent.click(server);
     expect(screen.getByText(/认证方式待配置/u)).toBeVisible();
+    expect(core.calls.filter((call) => call.method === 'connect')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: '编辑服务器' }));
 
     const dialog = screen.getByRole('dialog', { name: '编辑服务器' });
@@ -284,6 +356,45 @@ describe('Harbor empty shell', () => {
     })).toBeVisible();
     expect(screen.getByText(/认证方式待配置/u)).toBeVisible();
     expect(core.calls).toContainEqual(expect.objectContaining({ method: 'updateServer' }));
+    expect(core.calls.filter((call) => call.method === 'connect')).toHaveLength(0);
+  });
+
+  it('auto-connects as soon as a pending server receives its credential', async () => {
+    const core = createFakeCoreClient({
+      servers: [{
+        id: '019c62b2-2970-7000-8000-000000000016',
+        name: 'pending-credential',
+        host: 'pending.example.com',
+        port: 22,
+        user: 'deploy',
+        authType: 'key',
+        secretRef: null,
+        groupId: null,
+        favorite: false,
+        lastConnectedAt: null,
+        createdAt: 1_699_000_000,
+      }],
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 pending-credential/u,
+    }));
+    await screen.findByText(/认证方式待配置/u);
+    expect(core.calls.filter((call) => call.method === 'connect')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑并补充凭据' }));
+    const dialog = screen.getByRole('dialog', { name: '编辑服务器' });
+    fireEvent.change(within(dialog).getByLabelText('私钥'), {
+      target: { value: 'private-key-fixture' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存服务器' }));
+
+    expect(await screen.findByRole('tab', { name: '切换到 终端 1' })).toBeVisible();
+    expect(core.calls.filter((call) => call.method === 'connect')).toHaveLength(1);
+    expect(
+      core.calls.filter((call) => call.method === 'openTerminal'),
+    ).toHaveLength(1);
   });
 
   it('requires confirmation before deleting the selected server', async () => {
@@ -307,6 +418,7 @@ describe('Harbor empty shell', () => {
     fireEvent.click(await screen.findByRole('button', {
       name: /^打开服务器 prod-web-01/u,
     }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
     fireEvent.click(screen.getByRole('button', { name: '删除服务器' }));
 
     const confirmation = screen.getByRole('alertdialog', { name: '删除服务器？' });
@@ -322,6 +434,53 @@ describe('Harbor empty shell', () => {
 
     expect(await screen.findByRole('heading', { name: '未选择服务器' })).toBeVisible();
     expect(core.calls).toContainEqual(expect.objectContaining({ method: 'deleteServer' }));
+    const disconnectIndex = core.calls.findIndex((call) => call.method === 'disconnect');
+    const deleteIndex = core.calls.findIndex((call) => call.method === 'deleteServer');
+    expect(disconnectIndex).toBeGreaterThanOrEqual(0);
+    expect(deleteIndex).toBeGreaterThan(disconnectIndex);
+  });
+
+  it('does not delete a server when its SSH connection cannot be closed', async () => {
+    const core = createFakeCoreClient({
+      servers: [{
+        id: '019c62b2-2970-7000-8000-000000000006',
+        name: 'prod-web-01',
+        host: 'prod.example.com',
+        port: 22,
+        user: 'deploy',
+        authType: 'key',
+        secretRef: 'secret-ref-fixture-1',
+        groupId: null,
+        favorite: false,
+        lastConnectedAt: null,
+        createdAt: 1_699_000_000,
+      }],
+      overrides: {
+        disconnect: async () => {
+          throw new Error('无法关闭 SSH 连接');
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: '删除服务器' }));
+
+    const confirmation = screen.getByRole('alertdialog', { name: '删除服务器？' });
+    fireEvent.click(within(confirmation).getByRole('button', {
+      name: '确认删除',
+    }));
+
+    expect(await within(confirmation).findByRole('alert')).toHaveTextContent(
+      '无法关闭 SSH 连接',
+    );
+    expect(confirmation).toBeVisible();
+    expect(core.calls).not.toContainEqual(
+      expect.objectContaining({ method: 'deleteServer' }),
+    );
   });
 
   it('creates, renames, and deletes groups from the group manager', async () => {
@@ -450,6 +609,164 @@ describe('Harbor empty shell', () => {
     });
     fireEvent.keyDown(within(reopened).getByRole('searchbox'), { key: 'Enter' });
     expect(screen.getByRole('dialog', { name: '添加服务器' })).toBeVisible();
+  });
+
+  it('auto-connects a selected server and opens its first terminal session', async () => {
+    const core = createFakeCoreClient({
+      servers: [terminalServer('prod-web-01')],
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+
+    expect(await screen.findByRole('tab', { name: '切换到 终端 1' })).toBeVisible();
+    expect(screen.getByLabelText('终端会话数量')).toHaveTextContent('1/8');
+    expect(screen.getByRole('button', { name: '新增终端会话' })).toBeEnabled();
+    expect(core.calls.filter((call) => call.method === 'connect')).toHaveLength(1);
+    expect(
+      core.calls.filter((call) => call.method === 'openTerminal'),
+    ).toHaveLength(1);
+  });
+
+  it('blocks an unknown host key until explicit trust, then retries the connection', async () => {
+    let attempt = 0;
+    const core = createFakeCoreClient({
+      servers: [terminalServer('prod-web-01')],
+      connectOutcome: () => {
+        attempt += 1;
+        if (attempt === 1) {
+          return {
+            kind: 'hostKeyRequired',
+            prompt: {
+              verificationId: '019c62b2-2970-7000-8000-000000000020',
+              algorithm: 'ssh-ed25519',
+              sha256: 'SHA256:fixture',
+              expiresAt: '2026-01-01T00:00:00.000Z',
+            },
+          };
+        }
+        return {
+          kind: 'ready',
+          connection: {
+            serverId: '019c62b2-2970-7000-8000-000000000006',
+            connectionId: '019c62b2-2970-7000-8000-000000000021',
+          },
+        };
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+
+    const dialog = await screen.findByRole('dialog', {
+      name: '首次连接，核对主机指纹',
+    });
+    const trust = within(dialog).getByRole('button', {
+      name: '信任并以 SSH 连接',
+    });
+    expect(trust).toBeDisabled();
+    fireEvent.click(within(dialog).getByLabelText(
+      '我已通过独立渠道核对上述 SHA-256 主机指纹。',
+    ));
+    expect(trust).toBeEnabled();
+    fireEvent.click(trust);
+
+    expect(await screen.findByRole('tab', { name: '切换到 终端 1' })).toBeVisible();
+    expect(screen.queryByRole('dialog', {
+      name: '首次连接，核对主机指纹',
+    })).not.toBeInTheDocument();
+    expect(core.calls).toContainEqual({
+      method: 'trustHostKey',
+      args: [
+        '019c62b2-2970-7000-8000-000000000006',
+        '019c62b2-2970-7000-8000-000000000020',
+      ],
+    });
+    expect(core.calls.filter((call) => call.method === 'connect')).toHaveLength(2);
+  });
+
+  it('shows an actionable connection failure and retries from the terminal view', async () => {
+    let attempt = 0;
+    const server = terminalServer('prod-web-01');
+    const core = createFakeCoreClient({
+      servers: [server],
+      overrides: {
+        connect: async () => {
+          attempt += 1;
+          if (attempt === 1) {
+            throw {
+              code: 'SSH_AUTHENTICATION',
+              message: 'fixture authentication failure',
+              retryable: false,
+            };
+          }
+          return {
+            kind: 'ready',
+            connection: {
+              serverId: server.id,
+              connectionId: '019c62b2-2970-7000-8000-000000000022',
+            },
+          };
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('SSH 认证失败');
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(await screen.findByRole('tab', { name: '切换到 终端 1' })).toBeVisible();
+  });
+
+  it('limits a server to eight terminals and preserves sessions when switching servers', async () => {
+    const first = terminalServer('prod-web-01', '019c62b2-2970-7000-8000-000000000006');
+    const second = terminalServer('dev-box', '019c62b2-2970-7000-8000-000000000007');
+    const core = createFakeCoreClient({ servers: [first, second] });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    const firstSessionId = useTerminalStore.getState()
+      .runtimes[first.id]?.sessions[0]?.id;
+    expect(firstSessionId).toBeTruthy();
+    const firstViewport = screen.getByTestId(`terminal-viewport-${firstSessionId}`);
+
+    for (let count = 1; count < 8; count += 1) {
+      fireEvent.click(screen.getByRole('button', { name: '新增终端会话' }));
+      await waitFor(() => {
+        expect(screen.getByLabelText('终端会话数量')).toHaveTextContent(
+          `${count + 1}/8`,
+        );
+      });
+    }
+    expect(screen.getByRole('button', { name: '新增终端会话' })).toBeDisabled();
+    expect(screen.getByLabelText('终端会话数量')).toHaveTextContent('8/8');
+
+    fireEvent.click(screen.getByRole('button', { name: /^打开服务器 dev-box/u }));
+    await screen.findByRole('heading', { name: 'dev-box' });
+    expect(
+      core.calls.filter((call) => call.method === 'connect'),
+    ).toHaveLength(2);
+    expect(
+      useTerminalStore.getState().runtimes[first.id]?.sessions,
+    ).toHaveLength(8);
+
+    fireEvent.click(screen.getByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    expect(screen.getByTestId(`terminal-viewport-${firstSessionId}`)).toBe(firstViewport);
+    expect(
+      core.calls.filter((call) => call.method === 'connect'),
+    ).toHaveLength(2);
   });
 
   it('previews SSH Config rows, imports only ready selections, and marks pending credentials', async () => {
@@ -591,3 +908,19 @@ describe('Harbor empty shell', () => {
     expect(within(dialog).getByRole('button', { name: '重新读取' })).toBeVisible();
   });
 });
+
+function terminalServer(name: string, id = '019c62b2-2970-7000-8000-000000000006') {
+  return {
+    id,
+    name,
+    host: `${name}.example.com`,
+    port: 22,
+    user: 'deploy',
+    authType: 'key' as const,
+    secretRef: 'secret-ref-fixture',
+    groupId: null,
+    favorite: false,
+    lastConnectedAt: null,
+    createdAt: 1_699_000_000,
+  };
+}

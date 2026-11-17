@@ -63,6 +63,7 @@ export interface HarborState {
   setCoreHealth: (health: CoreHealthState) => void;
   setQuery: (query: string) => void;
   selectServer: (serverId: string | null) => void;
+  markServerConnected: (serverId: string, connectedAt?: number) => void;
   toggleFavorite: (serverId: string) => Promise<void>;
   saveServer: (
     id: string | null | undefined,
@@ -147,6 +148,15 @@ export const useHarborStore = create<HarborState>((set, get) => ({
       return;
     }
     set({ selectedServerId: serverId });
+  },
+  markServerConnected: (serverId, connectedAt = Math.floor(Date.now() / 1_000)) => {
+    set((state) => ({
+      servers: sortServers(state.servers.map((server) => (
+        server.id === serverId
+          ? { ...server, lastConnectedAt: connectedAt }
+          : server
+      ))),
+    }));
   },
   toggleFavorite: async (serverId) => {
     const state = get();

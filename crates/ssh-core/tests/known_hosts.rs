@@ -50,17 +50,32 @@ async fn unknown_key_is_one_time_trusted_and_a_changed_key_is_blocked() {
     );
 
     let changed = verifier.verify_at(&endpoint, &key_b, now).await.unwrap();
-    assert!(matches!(
-        changed,
+    let changed_id = match changed {
         HostKeyDecision::Changed {
-            expected_sha256: _,
-            actual_sha256: _
+            verification_id,
+            expected_sha256,
+            actual_sha256,
+            expires_at,
+        } => {
+            assert_eq!(expected_sha256, key_a.sha256());
+            assert_eq!(actual_sha256, key_b.sha256());
+            assert_eq!(expires_at, now + Duration::from_secs(600));
+            verification_id
         }
-    ));
+        other => panic!("expected changed key, got {other:?}"),
+    };
     assert_eq!(
         verifier.verify_at(&endpoint, &key_a, now).await.unwrap(),
         HostKeyDecision::Trusted,
-        "changed-key verification must not mutate persisted trust"
+        "observing a changed key must not mutate persisted trust"
+    );
+    verifier
+        .trust_at(changed_id, &endpoint, &key_b, now)
+        .await
+        .expect("explicit trust should permit an intentional host-key replacement");
+    assert_eq!(
+        verifier.verify_at(&endpoint, &key_b, now).await.unwrap(),
+        HostKeyDecision::Trusted
     );
 
     let replay = verifier
@@ -113,6 +128,111 @@ async fn expired_or_mismatched_verification_never_writes_trust() {
         verifier.verify_at(&endpoint, &key, now).await.unwrap(),
         HostKeyDecision::Unknown { .. }
     ));
+}
+
+#[tokio::test]
+async fn concurrent_pending_keys_cannot_replace_an_already_trusted_fingerprint() {
+    let database = Database::open(":memory:")
+        .await
+        .expect("in-memory database should open");
+    let server_id = Id::new();
+    insert_server(&database, server_id, "concurrent.example.com").await;
+    let verifier = HostKeyVerifier::new(database.clone(), Duration::from_secs(600));
+    let endpoint = HostEndpoint::try_new(server_id, "concurrent.example.com", 22).unwrap();
+    let key_a = HostPublicKey::try_new("ssh-ed25519", b"concurrent-key-a").unwrap();
+    let key_b = HostPublicKey::try_new("ssh-ed25519", b"concurrent-key-b").unwrap();
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(3_000_000);
+
+    let first_pending = pending_id(verifier.verify_at(&endpoint, &key_a, now).await.unwrap());
+    let second_pending = pending_id(verifier.verify_at(&endpoint, &key_b, now).await.unwrap());
+
+    verifier
+        .trust_at(first_pending, &endpoint, &key_a, now)
+        .await
+        .expect("the first explicit trust should persist");
+    let takeover = verifier
+        .trust_at(second_pending, &endpoint, &key_b, now)
+        .await
+        .expect_err("a second pending key must not replace trusted identity");
+    assert!(matches!(
+        takeover.code(),
+        CoreErrorCode::Conflict | CoreErrorCode::SshHostKeyChanged
+    ));
+
+    assert_eq!(
+        verifier.verify_at(&endpoint, &key_a, now).await.unwrap(),
+        HostKeyDecision::Trusted
+    );
+    assert!(matches!(
+        verifier.verify_at(&endpoint, &key_b, now).await.unwrap(),
+        HostKeyDecision::Changed { .. }
+    ));
+    let persisted: (String,) = sqlx::query_as(
+        "SELECT sha256 FROM known_host_keys
+         WHERE server_id = ? AND host = ? AND port = ?",
+    )
+    .bind(server_id.to_string())
+    .bind("concurrent.example.com")
+    .bind(22_i64)
+    .fetch_one(database.pool())
+    .await
+    .unwrap();
+    assert_eq!(persisted.0, key_a.sha256());
+}
+
+#[tokio::test]
+async fn concurrent_explicit_replacements_only_commit_the_expected_fingerprint() {
+    let database = Database::open(":memory:")
+        .await
+        .expect("in-memory database should open");
+    let server_id = Id::new();
+    insert_server(&database, server_id, "replace.example.com").await;
+    let verifier = HostKeyVerifier::new(database.clone(), Duration::from_secs(600));
+    let endpoint = HostEndpoint::try_new(server_id, "replace.example.com", 22).unwrap();
+    let key_a = HostPublicKey::try_new("ssh-ed25519", b"replace-key-a").unwrap();
+    let key_b = HostPublicKey::try_new("ssh-ed25519", b"replace-key-b").unwrap();
+    let key_c = HostPublicKey::try_new("ssh-ed25519", b"replace-key-c").unwrap();
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(4_000_000);
+
+    let initial = pending_id(verifier.verify_at(&endpoint, &key_a, now).await.unwrap());
+    verifier
+        .trust_at(initial, &endpoint, &key_a, now)
+        .await
+        .unwrap();
+    let replace_b = changed_id(verifier.verify_at(&endpoint, &key_b, now).await.unwrap());
+    let replace_c = changed_id(verifier.verify_at(&endpoint, &key_c, now).await.unwrap());
+
+    verifier
+        .trust_at(replace_b, &endpoint, &key_b, now)
+        .await
+        .expect("the first explicit replacement should commit");
+    let stale = verifier
+        .trust_at(replace_c, &endpoint, &key_c, now)
+        .await
+        .expect_err("a pending replacement based on an older fingerprint must fail closed");
+    assert_eq!(stale.code(), CoreErrorCode::SshHostKeyChanged);
+    assert_eq!(
+        verifier.verify_at(&endpoint, &key_b, now).await.unwrap(),
+        HostKeyDecision::Trusted
+    );
+}
+
+fn pending_id(decision: HostKeyDecision) -> Id {
+    match decision {
+        HostKeyDecision::Unknown {
+            verification_id, ..
+        } => verification_id,
+        other => panic!("expected unknown key, got {other:?}"),
+    }
+}
+
+fn changed_id(decision: HostKeyDecision) -> Id {
+    match decision {
+        HostKeyDecision::Changed {
+            verification_id, ..
+        } => verification_id,
+        other => panic!("expected changed key, got {other:?}"),
+    }
 }
 
 async fn insert_server(database: &Database, id: Id, host: &str) {

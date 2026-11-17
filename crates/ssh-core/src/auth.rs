@@ -12,6 +12,9 @@ pub enum AuthRequest {
         path: PathBuf,
         passphrase_ref: Option<SecretRef>,
     },
+    PrivateKeyContent {
+        secret_ref: SecretRef,
+    },
     SshAgent,
     Certificate {
         certificate_path: PathBuf,
@@ -27,6 +30,9 @@ pub enum ResolvedAuth {
         path: PathBuf,
         passphrase: Option<SecretValue>,
     },
+    PrivateKeyContent {
+        key: SecretValue,
+    },
     SshAgent,
     Certificate {
         certificate_path: PathBuf,
@@ -41,6 +47,7 @@ impl fmt::Debug for ResolvedAuth {
         let kind = match self {
             Self::Password(_) => "Password([REDACTED])",
             Self::PrivateKey { .. } => "PrivateKey([REDACTED])",
+            Self::PrivateKeyContent { .. } => "PrivateKeyContent([REDACTED])",
             Self::SshAgent => "SshAgent",
             Self::Certificate { .. } => "Certificate([REDACTED])",
         };
@@ -73,6 +80,9 @@ where
                 let passphrase = self.resolve_optional(passphrase_ref.as_ref()).await?;
                 Ok(ResolvedAuth::PrivateKey { path, passphrase })
             }
+            AuthRequest::PrivateKeyContent { secret_ref } => Ok(ResolvedAuth::PrivateKeyContent {
+                key: self.store.get(&secret_ref).await?,
+            }),
             AuthRequest::SshAgent => Ok(ResolvedAuth::SshAgent),
             AuthRequest::Certificate {
                 certificate_path,

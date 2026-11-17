@@ -1,6 +1,6 @@
 # Harbor 安全边界
 
-本文记录当前 Harbor 已实现的权限边界，以及后续功能不得绕过的约束。当前已实现服务器目录与 SSH Config 导入；不把尚未实现的 SSH 会话、SFTP 或终端能力写成已有能力。
+本文记录当前 Harbor 已实现的权限边界，以及后续功能不得绕过的约束。当前已实现服务器目录、SSH Config 导入、SSH 连接与终端；不把尚未实现的 SFTP、文件、监控或 Docker 能力写成已有能力。
 
 ## 信任区域
 
@@ -13,7 +13,7 @@
 
 ## WebView 与 IPC
 
-- 主窗口 capability 只授予显式生成的 `core_health`、服务器目录和 SSH Config 导入权限，不包含 `shell:*`、`fs:*`、HTTP 通配权限或远程 URL 访问能力。
+- 主窗口 capability 只授予显式生成的 `core_health`、服务器目录、SSH Config 导入、连接与终端命令权限，以及 terminal/connection 事件桥所需的 `core:event:allow-listen`、`core:event:allow-unlisten`；不包含 `core:event:default`、`shell:*`、`fs:*`、HTTP 通配权限或远程 URL 访问能力。
 - 应用 command 同时在 `src-tauri/build.rs` 的 manifest、`src-tauri/src/lib.rs` 的 invoke handler、权限文件与主窗口 capability 中显式注册。
 - `core_health` 只返回版本、数据库 readiness 和凭据库 readiness；不返回数据库路径、环境变量、系统凭据名称或后端错误详情。
 - React 只依赖 `CoreClient` 接口；Tauri `invoke` 被限制在适配器内。IPC 拒绝时 UI 显示通用错误，不向用户暴露原始后端错误。
@@ -42,10 +42,19 @@
 
 ## SSH 主机身份
 
-- 未知主机指纹必须返回 `SSH_HOST_KEY_UNKNOWN` 并阻断连接，等待用户显式信任。
-- 已信任指纹只比较 SHA-256；发现变化时返回 `SSH_HOST_KEY_CHANGED`，不得静默覆盖。
-- 待确认的验证记录有过期时间，并与 server、host、port 和公钥绑定；不匹配或过期一律失败关闭。
+- 未知主机指纹以 `HostKeyRequired` 结果阻断连接，等待用户显式信任；不会返回“已连接”。
+- 已信任指纹只比较 SHA-256；发现变化时以 `HostKeyChanged` 结果继续阻断，不得静默覆盖。
+- 未知与变化确认都使用过期的一次性 `verificationId`，并与 server、host、port 和公钥绑定；不匹配、过期或重放一律失败关闭。
+- 变化确认记录旧指纹；只有用户显式确认后，才会以“旧 SHA-256 仍匹配”为条件原子替换，避免并发确认覆盖新的信任状态。
 - known_hosts 数据存储在内部 `known_host_keys` 表，不包含私钥或凭据本体。
+
+## SSH 连接与终端
+
+- 密码与私钥材料只在 Rust Core 连接期间从系统凭据库读取，不写入 SQLite、日志、事件或 WebView；数据库只保存可空的 `secret_ref`，`NULL` 必须在连接前以 `SECRET_UNAVAILABLE` 失败关闭。
+- 每个连接与 terminal session 都校验 server/connection 归属；事件先于 open 响应到达时按 session 缓冲，`data` 可淘汰，`gap`/`closed` 必须保留且顺序稳定。
+- 每台服务器最多 8 个 open 会话；关闭或断连事件只能关闭匹配连接，处理后会清理 Session 与输出缓冲，避免占用限额。
+- `last_connected_at` 只在连接成功、连接注册与时间戳写入都成功后更新。
+- 前端只通过 `CoreClient` 调用连接、终端与事件桥命令；`connection:state` 的 ready/error 事件不覆盖本地 connect 返回值，closed 只接受当前连接 ID 与更高序号。
 
 ## 远程路径与文件操作
 

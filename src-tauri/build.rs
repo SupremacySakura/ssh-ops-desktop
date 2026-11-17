@@ -11,6 +11,13 @@ fn main() {
             "server_group_create",
             "server_group_update",
             "server_group_delete",
+            "connection_connect",
+            "connection_trust_host_key",
+            "connection_disconnect",
+            "terminal_open",
+            "terminal_write",
+            "terminal_resize",
+            "terminal_close",
             "ssh_config_import_preview",
             "ssh_config_import_apply",
         ]));

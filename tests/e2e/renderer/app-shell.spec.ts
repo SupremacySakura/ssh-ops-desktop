@@ -27,6 +27,21 @@ test('legacy OpsPilot entry points are absent', async ({ page }) => {
   }
 });
 
+test('xterm boots in a renderer with a frozen Object prototype', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => Object.freeze(Object.prototype));
+
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  await expect(page.locator('.xterm')).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
 test('Command-K opens the command palette and runs an action', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core 已就绪');
@@ -44,6 +59,220 @@ test('Command-K opens the command palette and runs an action', async ({ page }) 
 
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: '添加服务器' })).toHaveCount(0);
+});
+
+test('selecting a server opens a live xterm with sessions, history, and keepalive', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+
+  const firstTerminal = page.getByRole('log', { name: '终端 1' });
+  await expect(firstTerminal).toBeVisible();
+  await expect(firstTerminal).toContainText('harbor renderer fixture');
+  await expect(page.locator('.xterm')).toHaveCSS(
+    'font-family',
+    /IBM Plex Mono/u,
+  );
+  await expect(firstTerminal).toHaveCSS('background-color', 'rgb(20, 19, 17)');
+
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.type('echo harbor-history');
+  await page.keyboard.press('Enter');
+  await expect(firstTerminal).toContainText('echo harbor-history');
+  await page.context().grantPermissions(
+    ['clipboard-read', 'clipboard-write'],
+    { origin: 'http://127.0.0.1:1421' },
+  );
+  await page.evaluate(() => navigator.clipboard.writeText('echo pasted'));
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  await expect(firstTerminal).toContainText('echo pasted');
+
+  await page.evaluate(() => navigator.clipboard.writeText(
+    'echo multiline-one\necho multiline-two',
+  ));
+  const [declinedDialog] = await Promise.all([
+    page.waitForEvent('dialog'),
+    page.getByRole('button', { name: '粘贴到终端' }).click(),
+  ]);
+  expect(declinedDialog.message()).toContain('2 行');
+  await declinedDialog.dismiss();
+  await expect(firstTerminal).not.toContainText('echo multiline-one');
+  const [acceptedDialog] = await Promise.all([
+    page.waitForEvent('dialog'),
+    page.getByRole('button', { name: '粘贴到终端' }).click(),
+  ]);
+  await acceptedDialog.accept();
+  await expect(firstTerminal).toContainText('echo multiline-one');
+  await expect(firstTerminal).toContainText('echo multiline-two');
+  await page.keyboard.press('Control+KeyR');
+
+  const history = page.getByRole('dialog', { name: '命令历史' });
+  await expect(history).toBeVisible();
+  await history.getByRole('searchbox', { name: '搜索命令历史' }).fill('harbor');
+  await expect(history.getByRole('option', {
+    name: /echo harbor-history/u,
+  })).toBeVisible();
+  await history.getByRole('searchbox', { name: '搜索命令历史' }).press('Enter');
+  await expect(history).toHaveCount(0);
+
+  await page.getByRole('button', { name: '新增终端会话' }).click();
+  await expect(page.getByRole('tab', { name: '切换到 终端 2' })).toBeVisible();
+  await expect(page.getByLabel('终端会话数量')).toContainText('2/8');
+  await page.getByRole('button', { name: '关闭会话 终端 2' }).click();
+  await expect(page.getByRole('tab', { name: '切换到 终端 2' })).toHaveCount(0);
+  await expect(page.getByLabel('终端会话数量')).toContainText('1/8');
+
+  await page.getByRole('button', { name: /^打开服务器 dev-box/u }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  await page.getByRole('button', { name: /^打开服务器 prod-web-01/u }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'echo harbor-history',
+  );
+  await expect(
+    page.locator('main:visible').getByLabel('终端会话数量'),
+  ).toContainText('1/8');
+});
+
+test('editing a connected endpoint closes the old SSH identity first', async ({ page }) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  const oldConnectionId = await page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: {
+        harborStore: {
+          getState(): {
+            servers: Array<{ id: string }>;
+          };
+        };
+        terminalStore: {
+          getState(): {
+            runtimes: Record<string, {
+              connection: { connectionId: string } | null;
+            }>;
+          };
+        };
+      };
+    };
+    return runtime.__harborRuntime.terminalStore
+      .getState()
+      .runtimes['019c62b2-2970-7000-8000-000000000101']
+      ?.connection?.connectionId;
+  });
+
+  await page.getByRole('button', { name: '编辑服务器' }).click();
+  const dialog = page.getByRole('dialog', { name: '编辑服务器' });
+  await dialog.getByLabel('主机').fill('replacement.example.com');
+  await dialog.getByLabel('用户名').fill('replacement');
+  await dialog.getByRole('button', { name: '保存服务器' }).click();
+
+  await expect.poll(() => page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: {
+        core: {
+          calls: Array<{ method: string }>;
+        };
+        terminalStore: {
+          getState(): {
+            runtimes: Record<string, {
+              connection: { connectionId: string } | null;
+              connectionIdentity: string | null;
+            }>;
+          };
+        };
+      };
+    };
+    const state = runtime.__harborRuntime;
+    return {
+      connects: state.core.calls.filter((call) => call.method === 'connect').length,
+      disconnects: state.core.calls.filter((call) => call.method === 'disconnect').length,
+      connectionId: state.terminalStore.getState()
+        .runtimes['019c62b2-2970-7000-8000-000000000101']
+        ?.connection?.connectionId,
+    };
+  })).toEqual({
+    connects: 2,
+    disconnects: 1,
+    connectionId: expect.not.stringMatching(oldConnectionId ?? '^$'),
+  });
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+});
+
+test('unknown host keys require explicit trust and a closed session can reconnect', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=host-key');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+
+  const hostKeyDialog = page.getByRole('dialog', {
+    name: '首次连接，核对主机指纹',
+  });
+  await expect(hostKeyDialog).toBeVisible();
+  await expect(hostKeyDialog).toContainText('SHA256:rendererFixtureHostKey');
+  const trust = hostKeyDialog.getByRole('button', {
+    name: '信任并以 SSH 连接',
+  });
+  await expect(trust).toBeDisabled();
+  await hostKeyDialog.getByLabel(
+    '我已通过独立渠道核对上述 SHA-256 主机指纹。',
+  ).check();
+  await trust.click();
+
+  await expect(hostKeyDialog).toHaveCount(0);
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'harbor renderer fixture',
+  );
+
+  await page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: { disconnectFirstSession(): void };
+    };
+    runtime.__harborRuntime.disconnectFirstSession();
+  });
+  await expect(page.getByRole('heading', {
+    name: 'SSH 连接已断开',
+  })).toBeVisible();
+  await page.getByRole('button', { name: '重连会话' }).click();
+  await expect(page.getByRole('heading', { name: 'SSH 连接已断开' })).toHaveCount(0);
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'harbor renderer fixture',
+  );
+});
+
+test('changed host keys stay blocked until explicit fingerprint replacement', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=host-key-changed');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+
+  const hostKeyDialog = page.getByRole('dialog', {
+    name: '主机指纹已变化，重新核对',
+  });
+  await expect(hostKeyDialog).toBeVisible();
+  await expect(hostKeyDialog).toContainText('SHA256:rendererFixtureOldHostKey');
+  await expect(hostKeyDialog).toContainText('SHA256:rendererFixtureNewHostKey');
+  const trust = hostKeyDialog.getByRole('button', {
+    name: '确认变化并连接',
+  });
+  await expect(trust).toBeDisabled();
+  await hostKeyDialog.getByLabel(
+    '我已确认服务器密钥确实发生变更，并核对了当前 SHA-256 指纹。',
+  ).check();
+  await trust.click();
+
+  await expect(hostKeyDialog).toHaveCount(0);
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'harbor renderer fixture',
+  );
 });
 
 test('imports an SSH Config preview and marks the server as pending credentials', async ({ page }) => {

@@ -3,6 +3,7 @@
 @import "@fontsource/inter-tight/600.css";
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
+@import "@xterm/xterm/css/xterm.css";
 @import "tailwindcss";
 
 @source "./**/*.{ts,tsx}";
@@ -74,4 +75,12 @@ input[type="search"]::-webkit-search-cancel-button {
 
 .font-mono {
   font-variant-numeric: tabular-nums;
+}
+
+.harbor-xterm,
+.harbor-xterm .xterm,
+.harbor-xterm .xterm-screen,
+.harbor-xterm .xterm-rows,
+.harbor-xterm .xterm-helper-textarea {
+  font-family: var(--font-mono);
 }

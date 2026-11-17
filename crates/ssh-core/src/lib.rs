@@ -18,14 +18,16 @@ pub use openssh::{
     SshConfigWarning, read_ssh_config,
 };
 pub use russh_backend::{
-    ConnectOutcome, ConnectionRequest, ExecOutput, HostKeyProbe, HostKeyPrompt,
-    RusshConnectionManager, RusshShellBackend,
+    ConnectOutcome, ConnectionRequest, ExecOutput, HostKeyChangedPrompt, HostKeyProbe,
+    HostKeyPrompt, RusshConnectionManager, RusshShellBackend,
 };
 pub use sftp::{
     ConflictPolicy, LocalSftpAdapter, RemotePath, TransferCheckpoint, TransferFailure,
     UploadOptions, UploadResult,
 };
 pub use terminal::{
-    ConnectionHandle, InMemoryShellBackend, PtySize, ShellBackend, TerminalCommand, TerminalData,
-    TerminalManager, TerminalSession,
+    ConnectionHandle, InMemoryShellBackend, MAX_TERMINAL_SESSIONS_PER_SERVER,
+    MAX_TERMINAL_WRITE_BYTES, PtySize, SHELL_EVENT_CHANNEL_CAPACITY, ShellBackend, ShellEvent,
+    ShellEventReceiver, TerminalCloseReason, TerminalClosed, TerminalCommand, TerminalData,
+    TerminalEvent, TerminalGap, TerminalManager, TerminalSession,
 };
