@@ -667,10 +667,26 @@ describe('FileBrowser', () => {
 
     expect(await within(rename).findByRole('alert')).toHaveTextContent('源文件删除失败');
     expect(within(rename).getByText('/next.conf')).toBeVisible();
+    expect(await screen.findByRole('button', { name: '打开文件 next.conf' })).toBeVisible();
     fireEvent.click(within(rename).getByRole('button', { name: '删除源文件…' }));
 
     const cleanup = await screen.findByRole('alertdialog', { name: '删除文件' });
     expect(within(cleanup).getByText('/app.conf')).toBeVisible();
     expect(within(cleanup).getByRole('button', { name: '取消' })).toHaveFocus();
+  });
+
+  it('rejects renaming a file to its current name before calling the core', async () => {
+    const core = readyCore();
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.click(screen.getByRole('button', { name: '重命名 app.conf' }));
+    const rename = await screen.findByRole('dialog', { name: '重命名 app.conf' });
+    fireEvent.click(within(rename).getByRole('button', { name: '确认重命名' }));
+
+    expect(await within(rename).findByRole('alert')).toHaveTextContent(
+      '新名称必须与原名称不同',
+    );
+    expect(core.calls.some((call) => call.method === 'renameFile')).toBe(false);
   });
 });

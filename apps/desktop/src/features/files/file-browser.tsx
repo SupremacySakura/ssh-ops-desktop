@@ -600,6 +600,10 @@ export function FileBrowser({
       setRenameError('新名称必须是安全的 basename，不能包含 / 或控制字符。');
       return;
     }
+    if (target === renameEntry.path) {
+      setRenameError('新名称必须与原名称不同。');
+      return;
+    }
     const requestedConnectionId = connection.connectionId;
     setRenameBusy(true);
     setRenameError(null);
@@ -613,6 +617,7 @@ export function FileBrowser({
           result.warning
           ?? '目标文件已创建，但源文件未删除；请确认后重试清理源文件。',
         );
+        refreshAfterMutation();
         return;
       }
       setRenameEntry(null);
@@ -972,7 +977,9 @@ export function FileBrowser({
               <strong className="break-all font-medium text-ink">{deleteEntry.path}</strong>
               {deleteEntry.kind === 'directory'
                 ? '。Harbor 只删除空目录，不会递归删除其中的内容。'
-                : '。此操作无法撤销。'}
+                : deleteEntry.kind === 'symlink'
+                  ? '。只会删除符号链接本身，不会跟随或删除目标。'
+                  : '。此操作无法撤销。'}
             </>
           )}
           error={deleteError}
