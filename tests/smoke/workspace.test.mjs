@@ -155,7 +155,8 @@ test('Harbor commands are registered and authorized exactly once', () => {
   );
   const expectedCapabilityPermissions = [
     ...expectedAllowPermissions,
-    'core:event:default',
+    'core:event:allow-listen',
+    'core:event:allow-unlisten',
   ];
   const expectedPermissions = expectedCommands
     .flatMap((command) => [

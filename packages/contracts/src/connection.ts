@@ -19,6 +19,13 @@ export const HostKeyPromptSchema = z.object({
   expiresAt: z.string().trim().min(1),
 }).strict();
 
+export const HostKeyChangedPromptSchema = z.object({
+  verificationId: IdSchema,
+  expectedSha256: Sha256Schema,
+  actualSha256: Sha256Schema,
+  expiresAt: z.string().trim().min(1),
+}).strict();
+
 export const ConnectOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('ready'),
@@ -30,8 +37,7 @@ export const ConnectOutcomeSchema = z.discriminatedUnion('kind', [
   }).strict(),
   z.object({
     kind: z.literal('hostKeyChanged'),
-    expectedSha256: Sha256Schema,
-    actualSha256: Sha256Schema,
+    prompt: HostKeyChangedPromptSchema,
   }).strict(),
 ]);
 
@@ -107,6 +113,7 @@ export const ConnectionStateEventSchema = z.union([
 
 export type ConnectionHandle = z.infer<typeof ConnectionHandleSchema>;
 export type HostKeyPrompt = z.infer<typeof HostKeyPromptSchema>;
+export type HostKeyChangedPrompt = z.infer<typeof HostKeyChangedPromptSchema>;
 export type ConnectOutcome = z.infer<typeof ConnectOutcomeSchema>;
 export type TerminalSession = z.infer<typeof TerminalSessionSchema>;
 export type TerminalDataEvent = z.infer<typeof TerminalDataSchema>;

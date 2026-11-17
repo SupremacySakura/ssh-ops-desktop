@@ -1,9 +1,88 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use opspilot_domain::{CoreErrorCode, Id};
 use opspilot_ssh_core::{
-    ConnectionHandle, InMemoryShellBackend, PtySize, SHELL_EVENT_CHANNEL_CAPACITY,
-    TerminalCloseReason, TerminalClosed, TerminalCommand, TerminalData, TerminalEvent, TerminalGap,
-    TerminalManager,
+    ConnectionHandle, InMemoryShellBackend, PtySize, SHELL_EVENT_CHANNEL_CAPACITY, ShellBackend,
+    ShellEventReceiver, TerminalCloseReason, TerminalClosed, TerminalCommand, TerminalData,
+    TerminalEvent, TerminalGap, TerminalManager,
 };
+use tokio::sync::Semaphore;
+
+#[derive(Clone)]
+struct PausedBackend {
+    inner: InMemoryShellBackend,
+    started: Arc<Semaphore>,
+    resume: Arc<Semaphore>,
+}
+
+impl PausedBackend {
+    fn new() -> (Self, Arc<Semaphore>, Arc<Semaphore>) {
+        let started = Arc::new(Semaphore::new(0));
+        let resume = Arc::new(Semaphore::new(0));
+        (
+            Self {
+                inner: InMemoryShellBackend::new(),
+                started: started.clone(),
+                resume: resume.clone(),
+            },
+            started,
+            resume,
+        )
+    }
+
+    async fn pause(&self) {
+        self.started.add_permits(1);
+        let permit = self
+            .resume
+            .acquire()
+            .await
+            .expect("the test must release the paused backend");
+        permit.forget();
+    }
+}
+
+#[async_trait]
+impl ShellBackend for PausedBackend {
+    async fn open(
+        &self,
+        session_id: Id,
+        connection: &ConnectionHandle,
+        size: PtySize,
+    ) -> Result<ShellEventReceiver, opspilot_domain::CoreError> {
+        self.pause().await;
+        self.inner.open(session_id, connection, size).await
+    }
+
+    async fn open_command(
+        &self,
+        session_id: Id,
+        connection: &ConnectionHandle,
+        size: PtySize,
+        command: &TerminalCommand,
+    ) -> Result<ShellEventReceiver, opspilot_domain::CoreError> {
+        self.pause().await;
+        self.inner
+            .open_command(session_id, connection, size, command)
+            .await
+    }
+
+    async fn write(&self, session_id: Id, bytes: &[u8]) -> Result<(), opspilot_domain::CoreError> {
+        self.inner.write(session_id, bytes).await
+    }
+
+    async fn resize(
+        &self,
+        session_id: Id,
+        size: PtySize,
+    ) -> Result<(), opspilot_domain::CoreError> {
+        self.inner.resize(session_id, size).await
+    }
+
+    async fn close(&self, session_id: Id) -> Result<(), opspilot_domain::CoreError> {
+        self.inner.close(session_id).await
+    }
+}
 
 async fn register(manager: &TerminalManager<InMemoryShellBackend>, connection: &ConnectionHandle) {
     manager
@@ -453,9 +532,19 @@ async fn retains_an_early_close_when_a_later_burst_exceeds_the_old_bus_capacity(
         .await
         .unwrap();
     let mut events = manager.subscribe();
+    let flood = SHELL_EVENT_CHANNEL_CAPACITY + 64;
+    let consumer = tokio::spawn(async move {
+        let mut received = Vec::new();
+        for _ in 0..=flood {
+            let Some(event) = events.recv().await else {
+                break;
+            };
+            received.push(event);
+        }
+        received
+    });
 
     manager.close(first.id()).await.unwrap();
-    let flood = SHELL_EVENT_CHANNEL_CAPACITY + 64;
     for _ in 0..flood {
         let session = manager
             .open(connection.clone(), PtySize::try_new(80, 24).unwrap())
@@ -464,28 +553,121 @@ async fn retains_an_early_close_when_a_later_burst_exceeds_the_old_bus_capacity(
         manager.close(session.id()).await.unwrap();
     }
 
-    let mut retained_first_close = false;
-    let mut received = 0;
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        for _ in 0..=flood {
-            received += 1;
-            if matches!(
-                events.recv().await,
-                Some(TerminalEvent::Closed(closed))
-                    if closed.terminal_session_id == first.id()
-            ) {
-                retained_first_close = true;
+    let events = tokio::time::timeout(std::time::Duration::from_secs(2), consumer)
+        .await
+        .expect("the bounded terminal queue should drain while the bridge is active")
+        .unwrap();
+    assert_eq!(events.len(), flood + 1);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        TerminalEvent::Closed(closed) if closed.terminal_session_id == first.id()
+    )));
+}
+
+#[tokio::test]
+async fn reports_a_gap_before_the_terminal_close_after_an_output_burst() {
+    let backend = InMemoryShellBackend::new();
+    let manager = TerminalManager::new(backend.clone());
+    let connection = ConnectionHandle::new(Id::new(), Id::new());
+    register(&manager, &connection).await;
+    let session = manager
+        .open(connection, PtySize::try_new(80, 24).unwrap())
+        .await
+        .unwrap();
+    let mut events = manager.subscribe();
+
+    for _ in 0..(SHELL_EVENT_CHANNEL_CAPACITY * 2) {
+        backend
+            .emit_data(session.id(), vec![b'x'; 32])
+            .await
+            .unwrap();
+    }
+    backend.emit_closed(session.id(), Some(0)).await.unwrap();
+
+    let (saw_gap, saw_close) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut saw_gap = false;
+        loop {
+            match events.recv().await {
+                Some(TerminalEvent::Gap(_)) => saw_gap = true,
+                Some(TerminalEvent::Closed(closed)) => {
+                    assert_eq!(closed.terminal_session_id, session.id());
+                    break (saw_gap, true);
+                }
+                Some(TerminalEvent::Data(_)) => continue,
+                None => break (saw_gap, false),
             }
         }
     })
     .await
-    .expect("all queued terminal events should be available without a reader running");
+    .expect("the bounded bridge must drain the output burst and its close");
 
-    assert_eq!(received, flood + 1);
+    assert!(saw_gap, "dropped terminal output must be reported");
+    assert!(saw_close, "the terminal close must follow the gap");
     assert!(
-        retained_first_close,
-        "the transport bridge must retain the earliest close across an output burst"
+        tokio::time::timeout(std::time::Duration::from_millis(50), events.recv())
+            .await
+            .is_err(),
+        "a terminal close must be the final event for its session"
     );
+}
+
+#[tokio::test]
+async fn disconnecting_a_connection_waits_for_an_in_flight_terminal_open() {
+    let (backend, started, resume) = PausedBackend::new();
+    let manager = TerminalManager::new(backend);
+    let connection = ConnectionHandle::new(Id::new(), Id::new());
+    manager
+        .register_connection(&connection)
+        .await
+        .expect("fixture connection should register");
+
+    let opener = {
+        let manager = manager.clone();
+        let connection = connection.clone();
+        tokio::spawn(async move {
+            manager
+                .open(connection, PtySize::try_new(80, 24).unwrap())
+                .await
+        })
+    };
+    let permit = started
+        .acquire()
+        .await
+        .expect("terminal open should reach the paused backend");
+    permit.forget();
+    let mut closer = {
+        let manager = manager.clone();
+        let connection = connection.clone();
+        tokio::spawn(async move { manager.close_connection(&connection).await })
+    };
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut closer)
+            .await
+            .is_err(),
+        "connection teardown must wait for the in-flight terminal open"
+    );
+    resume.add_permits(1);
+
+    let opened = opener
+        .await
+        .unwrap()
+        .expect("the terminal should finish opening");
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), closer)
+            .await
+            .expect("connection teardown should resume after open")
+            .unwrap()
+            .unwrap(),
+        1
+    );
+    assert!(
+        manager
+            .write(opened.id(), b"must-not-reach-closed-channel")
+            .await
+            .is_err()
+    );
+    assert!(!manager.is_connection_registered(&connection).await);
 }
 
 #[test]

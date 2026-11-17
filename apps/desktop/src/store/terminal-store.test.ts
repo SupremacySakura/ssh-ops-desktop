@@ -1,5 +1,6 @@
 import type {
   ConnectOutcome,
+  ConnectionHandle,
   ConnectionStateEvent,
   Server,
 } from '@opspilot/contracts';
@@ -9,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFakeCoreClient } from '../test/fake-core';
 import {
   attachTerminalEvents,
+  countOpenSessions,
   connectionErrorMessage,
   MAX_TERMINAL_SESSIONS,
   subscribeTerminalOutput,
@@ -147,6 +149,136 @@ describe('terminal workspace store', () => {
     expect(useTerminalStore.getState().runtimes[server.id]?.error).toContain('最多');
   });
 
+  it('counts only live sessions toward the eight-session budget', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const first = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: first?.id as string,
+      reason: 'remoteExit',
+      exitStatus: 0,
+    });
+
+    for (let index = 0; index < MAX_TERMINAL_SESSIONS; index += 1) {
+      await expect(useTerminalStore.getState().openSession(server.id)).resolves.not.toBeNull();
+    }
+
+    const runtime = useTerminalStore.getState().runtimes[server.id];
+    expect(runtime?.sessions).toHaveLength(MAX_TERMINAL_SESSIONS + 1);
+    expect(runtime && countOpenSessions(runtime)).toBe(MAX_TERMINAL_SESSIONS);
+  });
+
+  it('closes the old transport before connecting an edited server identity', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().ensureConnected(server);
+    const original = useTerminalStore.getState().runtimes[server.id];
+    const oldSessionId = original?.sessions[0]?.id;
+
+    await useTerminalStore.getState().ensureConnected({
+      ...server,
+      host: 'replacement.example.com',
+      user: 'replacement',
+    });
+
+    const current = useTerminalStore.getState().runtimes[server.id];
+    expect(core.calls).toContainEqual({
+      method: 'disconnect',
+      args: [original?.connection],
+    });
+    expect(
+      core.calls.filter((call) => call.method === 'connect'),
+    ).toHaveLength(2);
+    expect(current?.sessions).toHaveLength(1);
+    expect(current?.sessions[0]?.id).not.toBe(oldSessionId);
+    expect(current?.connectionIdentity).toContain('replacement.example.com');
+  });
+
+  it('coalesces concurrent reconnects into one replacement session', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const original = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: original?.id as string,
+      reason: 'disconnected',
+    });
+    let resolveOpen!: (session: { id: string; connection: ConnectionHandle }) => void;
+    let opened = 0;
+    let orphanId = '';
+    core.openTerminal = async (connection) => {
+      opened += 1;
+      return new Promise((resolve) => {
+        resolveOpen = (session) => {
+          orphanId = session.id;
+          resolve(session);
+        };
+        void connection;
+      });
+    };
+
+    const first = useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+    const second = useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+    resolveOpen({
+      id: '019c62b2-2970-7000-8000-000000000099',
+      connection: original?.connection as ConnectionHandle,
+    });
+    await Promise.all([first, second]);
+
+    expect(opened).toBe(1);
+    expect(
+      useTerminalStore.getState().runtimes[server.id]?.sessions,
+    ).toHaveLength(1);
+    expect(
+      useTerminalStore.getState().runtimes[server.id]?.sessions[0]?.id,
+    ).toBe(orphanId);
+  });
+
+  it('closes a reconnected channel when its original tab was removed mid-flight', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const original = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+    core.emitTerminalClosed({
+      terminalSessionId: original?.id as string,
+      reason: 'disconnected',
+    });
+    let resolveOpen!: (session: { id: string; connection: ConnectionHandle }) => void;
+    core.openTerminal = async () => new Promise((resolve) => {
+      resolveOpen = resolve;
+    });
+
+    const reconnecting = useTerminalStore.getState().reconnectSession(
+      server.id,
+      original?.id as string,
+    );
+    await useTerminalStore.getState().closeSession(
+      server.id,
+      original?.id as string,
+    );
+    const replacementId = '019c62b2-2970-7000-8000-000000000098';
+    resolveOpen({
+      id: replacementId,
+      connection: original?.connection as ConnectionHandle,
+    });
+    await reconnecting;
+
+    expect(
+      useTerminalStore.getState().runtimes[server.id]?.sessions,
+    ).toHaveLength(0);
+    expect(core.calls).toContainEqual({
+      method: 'closeTerminal',
+      args: [replacementId],
+    });
+  });
+
   it('blocks on an unknown host key until explicit trust and then retries', async () => {
     let attempt = 0;
     const outcomes: ConnectOutcome[] = [
@@ -230,13 +362,30 @@ describe('terminal workspace store', () => {
     expect(useTerminalStore.getState().runtimes[server.id]?.sessions).toHaveLength(1);
   });
 
-  it('blocks a changed host key without offering a trust path', async () => {
+  it('blocks a changed host key until the user explicitly confirms replacement', async () => {
+    let attempt = 0;
     const core = createFakeCoreClient({
       servers: [server],
-      connectOutcome: {
-        kind: 'hostKeyChanged',
-        expectedSha256: 'SHA256:expected',
-        actualSha256: 'SHA256:actual',
+      connectOutcome: () => {
+        attempt += 1;
+        if (attempt === 1) {
+          return {
+            kind: 'hostKeyChanged',
+            prompt: {
+              verificationId: '019c62b2-2970-7000-8000-000000000022',
+              expectedSha256: 'SHA256:expected',
+              actualSha256: 'SHA256:actual',
+              expiresAt: '2026-01-01T00:00:00.000Z',
+            },
+          } satisfies ConnectOutcome;
+        }
+        return {
+          kind: 'ready',
+          connection: {
+            serverId: server.id,
+            connectionId: '019c62b2-2970-7000-8000-000000000023',
+          },
+        } satisfies ConnectOutcome;
       },
     });
     unlisten = await attachTerminalEvents(core);
@@ -244,13 +393,22 @@ describe('terminal workspace store', () => {
     await useTerminalStore.getState().connectServer(server.id);
 
     const blocked = useTerminalStore.getState().runtimes[server.id];
-    expect(blocked?.status).toBe('blocked');
+    expect(blocked?.status).toBe('host-key');
     expect(blocked?.hostKeyPrompt).toBeNull();
-    expect(blocked?.error).toContain('服务器主机指纹已变化');
+    expect(blocked?.hostKeyChangedPrompt?.actualSha256).toBe('SHA256:actual');
     expect(blocked?.sessions).toHaveLength(0);
-    expect(core.calls).not.toContainEqual(
-      expect.objectContaining({ method: 'trustHostKey' }),
-    );
+    expect(core.calls).not.toContainEqual(expect.objectContaining({
+      method: 'trustHostKey',
+    }));
+
+    await useTerminalStore.getState().trustHostKey(server.id);
+
+    expect(core.calls).toContainEqual({
+      method: 'trustHostKey',
+      args: [server.id, '019c62b2-2970-7000-8000-000000000022'],
+    });
+    expect(useTerminalStore.getState().runtimes[server.id]?.status).toBe('ready');
+    expect(useTerminalStore.getState().runtimes[server.id]?.sessions).toHaveLength(1);
   });
 
   it('shows a Chinese authentication failure and a disconnected session state', async () => {
@@ -385,7 +543,7 @@ describe('terminal workspace store', () => {
     expect(after?.error).toBeNull();
   });
 
-  it('fails closed when a ready connection-state event has no connection id', async () => {
+  it('ignores an uncorrelated ready event instead of replacing the local connection', async () => {
     const core = createFakeCoreClient({ servers: [server] });
     unlisten = await attachTerminalEvents(core);
     await useTerminalStore.getState().connectServer(server.id);
@@ -399,9 +557,38 @@ describe('terminal workspace store', () => {
     } as unknown as ConnectionStateEvent);
 
     const after = useTerminalStore.getState().runtimes[server.id];
-    expect(after?.status).toBe('error');
+    expect(after?.status).toBe('ready');
+    expect(after?.connection).toEqual(before?.connection);
+    expect(after?.error).toBeNull();
+  });
+
+  it('closes sessions only for the matching connection-state event', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const before = useTerminalStore.getState().runtimes[server.id];
+
+    core.emitConnectionState({
+      serverId: server.id,
+      connectionId: '019c62b2-2970-7000-8000-000000000099',
+      sequence: (before?.lastConnectionSequence ?? 0) + 1,
+      state: { kind: 'closed' },
+    });
+    expect(
+      useTerminalStore.getState().runtimes[server.id]?.sessions[0]?.status,
+    ).toBe('open');
+
+    core.emitConnectionState({
+      serverId: server.id,
+      connectionId: before?.connection?.connectionId as string,
+      sequence: (before?.lastConnectionSequence ?? 0) + 2,
+      state: { kind: 'closed' },
+    });
+    const after = useTerminalStore.getState().runtimes[server.id];
+    expect(after?.status).toBe('closed');
     expect(after?.connection).toBeNull();
-    expect(after?.error).toContain('连接状态无效');
+    expect(after?.sessions[0]?.status).toBe('closed');
+    expect(after?.sessions[0]?.closeReason).toBe('connectionClosed');
   });
 
   it('keeps a server runtime when disconnect fails so deletion cannot leak Core state', async () => {

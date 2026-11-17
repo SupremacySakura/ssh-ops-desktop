@@ -4,11 +4,25 @@ import { useEffect, useRef } from 'react';
 
 import { subscribeTerminalOutput } from '../../store/terminal-store';
 import type { TerminalSessionView } from '../../store/terminal-store';
-import { trackExecutedCommands } from './command-tracking';
+import {
+  commandAppearsInTerminalEcho,
+  trackExecutedCommands,
+} from './command-tracking';
+import {
+  exceedsTerminalPasteLimit,
+  inspectTerminalPaste,
+} from './paste-guard';
+
+export type PasteOutcome =
+  | { kind: 'pasted' }
+  | { kind: 'empty' }
+  | { kind: 'too-large'; bytes: number }
+  | { kind: 'confirmation-cancelled' }
+  | { kind: 'unavailable' };
 
 export interface TerminalActions {
   copy(): Promise<boolean>;
-  paste(): Promise<boolean>;
+  paste(): Promise<PasteOutcome>;
   insertCommand(command: string): void;
   focus(): void;
 }
@@ -90,11 +104,21 @@ export function XtermViewport({
     terminalRef.current = terminal;
     fitRef.current = fit;
     const lineState = { current: '', inEscape: false };
+    const commandTimers = new Set<number>();
     let lastSize = { columns: 0, rows: 0 };
 
     const sendTracked = (text: string) => {
       for (const command of trackExecutedCommands(text, lineState)) {
-        onCommandRef.current(command);
+        const timer = window.setTimeout(() => {
+          commandTimers.delete(timer);
+          if (
+            statusRef.current === 'open'
+            && commandAppearsInTerminalEcho(recentVisibleLines(terminal), command)
+          ) {
+            onCommandRef.current(command);
+          }
+        }, 60);
+        commandTimers.add(timer);
       }
       onInputRef.current(new TextEncoder().encode(text));
     };
@@ -122,13 +146,31 @@ export function XtermViewport({
       if (!selection) return false;
       return writeClipboardText(selection);
     };
-    const paste = async () => {
-      if (statusRef.current !== 'open') return false;
+    const paste = async (): Promise<PasteOutcome> => {
+      if (statusRef.current !== 'open') return { kind: 'unavailable' };
       const text = await readClipboardText();
-      if (!text) return false;
-      sendTracked(text);
+      if (text === null) return { kind: 'unavailable' };
+      if (text.length === 0) return { kind: 'empty' };
+
+      const inspection = inspectTerminalPaste(text);
+      if (exceedsTerminalPasteLimit(text)) {
+        return {
+          kind: 'too-large',
+          bytes: inspection.bytes,
+        };
+      }
+      if (
+        inspection.requiresConfirmation
+        && !window.confirm(
+          `剪贴板内容包含 ${inspection.lines} 行或控制字符（${inspection.bytes} 字节），`
+          + '粘贴到远程终端后可能立即执行。仍要发送吗？',
+        )
+      ) {
+        return { kind: 'confirmation-cancelled' };
+      }
+      terminal.paste(text);
       terminal.focus();
-      return true;
+      return { kind: 'pasted' };
     };
     const insertCommand = (command: string) => {
       if (statusRef.current !== 'open') return;
@@ -180,6 +222,8 @@ export function XtermViewport({
 
     return () => {
       onRegisterActionsRef.current(session.id, null);
+      for (const timer of commandTimers) window.clearTimeout(timer);
+      commandTimers.clear();
       resizeObserver?.disconnect();
       unsubscribeOutput();
       input.dispose();
@@ -237,10 +281,22 @@ async function writeClipboardText(value: string): Promise<boolean> {
   }
 }
 
-async function readClipboardText(): Promise<string> {
+async function readClipboardText(): Promise<string | null> {
   try {
     return await navigator.clipboard.readText();
   } catch {
-    return '';
+    return null;
   }
+}
+
+function recentVisibleLines(terminal: Terminal): string[] {
+  const buffer = terminal.buffer.active;
+  const lines: string[] = [];
+  for (let offset = 0; offset <= 2; offset += 1) {
+    const row = buffer.baseY + buffer.cursorY - offset;
+    if (row < 0) continue;
+    const line = buffer.getLine(row)?.translateToString(true);
+    if (line) lines.push(line);
+  }
+  return lines;
 }

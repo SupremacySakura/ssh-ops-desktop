@@ -1,4 +1,8 @@
-import type { HostKeyPrompt, Server } from '@opspilot/contracts';
+import type {
+  HostKeyChangedPrompt,
+  HostKeyPrompt,
+  Server,
+} from '@opspilot/contracts';
 import {
   AlertTriangle,
   Pencil,
@@ -11,6 +15,7 @@ import { useEffect, useId, useState } from 'react';
 import { ConfirmDialog } from '../../components/confirm-dialog';
 import { formatLastConnectedAt, useHarborStore } from '../../store/harbor-store';
 import {
+  countOpenSessions,
   connectionErrorMessage,
   useTerminalStore,
 } from '../../store/terminal-store';
@@ -44,25 +49,31 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
     ? groups.find((candidate) => candidate.id === canonicalServer.groupId)
     : null;
   const connectionStatus = runtime?.status ?? 'idle';
-  const activeSessions = runtime?.sessions.length ?? 0;
+  const activeSessions = runtime ? countOpenSessions(runtime) : 0;
   const prompt = runtime?.hostKeyPrompt ?? null;
+  const changedPrompt = runtime?.hostKeyChangedPrompt ?? null;
   const credentialPending = canonicalServer.secretRef === null;
 
   useEffect(() => {
-    if (credentialPending) return;
     if (eventBridgeStatus !== 'ready') return;
-    void ensureConnected(canonicalServer.id);
+    void ensureConnected(canonicalServer);
   }, [
+    canonicalServer,
+    canonicalServer.authType,
+    canonicalServer.host,
     canonicalServer.id,
+    canonicalServer.port,
     canonicalServer.secretRef,
+    canonicalServer.user,
     credentialPending,
     ensureConnected,
     eventBridgeStatus,
   ]);
 
   useEffect(() => {
-    if (prompt?.verificationId) setTrustChecked(false);
-  }, [prompt?.verificationId]);
+    const verificationId = prompt?.verificationId ?? changedPrompt?.verificationId;
+    if (verificationId) setTrustChecked(false);
+  }, [changedPrompt?.verificationId, prompt?.verificationId]);
 
   return (
     <>
@@ -177,14 +188,14 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
         </section>
       </main>
 
-      {prompt ? (
+      {prompt || changedPrompt ? (
         <HostKeyDialog
           checked={trustChecked}
           checkboxId={trustCheckboxId}
           onCancel={() => dismissHostKey(server.id)}
           onCheckedChange={setTrustChecked}
           onTrust={() => void trustHostKey(server.id)}
-          prompt={prompt}
+          prompt={prompt ?? (changedPrompt as HostKeyChangedPrompt)}
           server={canonicalServer}
         />
       ) : null}
@@ -238,9 +249,10 @@ function HostKeyDialog({
   onCancel(): void;
   onCheckedChange(checked: boolean): void;
   onTrust(): void;
-  prompt: HostKeyPrompt;
+  prompt: HostKeyPrompt | HostKeyChangedPrompt;
   server: Server;
 }) {
+  const changed = 'expectedSha256' in prompt;
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-ink/45 p-6">
       <section
@@ -255,10 +267,10 @@ function HostKeyDialog({
           </span>
           <div className="min-w-0 flex-1">
             <p className="font-mono text-[9px] tracking-[0.16em] text-accent">
-              HOST IDENTITY / FIRST CONTACT
+              HOST IDENTITY / {changed ? 'CHANGED' : 'FIRST CONTACT'}
             </p>
             <h2 className="mt-1 text-[20px] font-semibold tracking-[-0.01em] text-ink" id="host-key-title">
-              首次连接，核对主机指纹
+              {changed ? '主机指纹已变化，重新核对' : '首次连接，核对主机指纹'}
             </h2>
           </div>
           <button
@@ -279,18 +291,34 @@ function HostKeyDialog({
             </p>
           </div>
           <dl className="mt-3 grid grid-cols-[92px_1fr] gap-x-3 gap-y-2 border-y border-hairline py-3 font-mono text-[10px]">
-            <dt className="text-muted">算法</dt>
-            <dd className="truncate text-ink">{prompt.algorithm}</dd>
-            <dt className="text-muted">SHA-256</dt>
-            <dd className="break-all text-ink">{prompt.sha256}</dd>
+            {changed ? (
+              <>
+                <dt className="text-muted">已信任</dt>
+                <dd className="break-all text-muted line-through">
+                  {prompt.expectedSha256}
+                </dd>
+                <dt className="text-muted">当前</dt>
+                <dd className="break-all font-semibold text-danger">
+                  {prompt.actualSha256}
+                </dd>
+              </>
+            ) : (
+              <>
+                <dt className="text-muted">算法</dt>
+                <dd className="truncate text-ink">{prompt.algorithm}</dd>
+                <dt className="text-muted">SHA-256</dt>
+                <dd className="break-all text-ink">{prompt.sha256}</dd>
+              </>
+            )}
             <dt className="text-muted">确认期限</dt>
             <dd className="text-ink">{formatPromptExpiry(prompt.expiresAt)}</dd>
           </dl>
           <div className="mt-3 flex gap-2 border-l-2 border-warning bg-paper px-3 py-2">
             <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-warning" strokeWidth={1.5} />
             <p className="text-[10px] leading-4 text-muted">
-              未知指纹不会自动信任。请通过云控制台、服务器本地终端或管理员提供的独立渠道核对指纹。
-              指纹一旦记录，后续变化会被直接阻断。
+              {changed
+                ? '已记录的指纹与服务器当前身份不一致，连接保持阻断。只有确认服务器确实更换过密钥后，才可显式替换信任。'
+                : '未知指纹不会自动信任。请通过云控制台、服务器本地终端或管理员提供的独立渠道核对指纹。'}
             </p>
           </div>
           <label
@@ -304,7 +332,9 @@ function HostKeyDialog({
               onChange={(event) => onCheckedChange(event.target.checked)}
               type="checkbox"
             />
-            我已通过独立渠道核对上述 SHA-256 主机指纹。
+            {changed
+              ? '我已确认服务器密钥确实发生变更，并核对了当前 SHA-256 指纹。'
+              : '我已通过独立渠道核对上述 SHA-256 主机指纹。'}
           </label>
         </div>
 
@@ -322,7 +352,7 @@ function HostKeyDialog({
             onClick={onTrust}
             type="button"
           >
-            信任并以 SSH 连接
+            {changed ? '确认变化并连接' : '信任并以 SSH 连接'}
           </button>
         </footer>
       </section>

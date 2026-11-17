@@ -18,8 +18,8 @@ pub use openssh::{
     SshConfigWarning, read_ssh_config,
 };
 pub use russh_backend::{
-    ConnectOutcome, ConnectionRequest, ExecOutput, HostKeyProbe, HostKeyPrompt,
-    RusshConnectionManager, RusshShellBackend,
+    ConnectOutcome, ConnectionRequest, ExecOutput, HostKeyChangedPrompt, HostKeyProbe,
+    HostKeyPrompt, RusshConnectionManager, RusshShellBackend,
 };
 pub use sftp::{
     ConflictPolicy, LocalSftpAdapter, RemotePath, TransferCheckpoint, TransferFailure,

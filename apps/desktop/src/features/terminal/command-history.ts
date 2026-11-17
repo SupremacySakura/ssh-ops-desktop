@@ -178,8 +178,15 @@ function searchEntries(
 
 function normalizeCommand(command: string): string {
   const normalized = command.trim();
-  if (normalized.length === 0 || normalized.length > 4_096) {
-    throw new Error('命令不能为空');
+  if (
+    normalized.length === 0
+    || normalized.length > 4_096
+    || [...normalized].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return (code < 32 && code !== 9) || code === 127;
+    })
+  ) {
+    throw new Error('命令不能为空或包含控制字符');
   }
   return normalized;
 }

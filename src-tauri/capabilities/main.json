@@ -23,6 +23,7 @@
     "allow-terminal-close",
     "allow-ssh-config-import-preview",
     "allow-ssh-config-import-apply",
-    "core:event:default"
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
   ]
 }

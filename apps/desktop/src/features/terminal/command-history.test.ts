@@ -46,6 +46,7 @@ describe('terminal command history', () => {
     const history = createMemoryCommandHistory(() => 1_700_000_000_000);
 
     await expect(history.add('server-a', '   ')).rejects.toThrow();
+    await expect(history.add('server-a', 'echo secret\u0003')).rejects.toThrow();
     for (let index = 0; index < 5; index += 1) {
       await history.add('server-a', `echo ${index}`);
     }

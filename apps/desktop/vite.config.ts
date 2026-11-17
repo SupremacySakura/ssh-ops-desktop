@@ -4,11 +4,16 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
+import { xtermFreezePrototypeCompatibility } from './vite/xterm-freeze-prototype.ts';
+
 const desktopModules = new URL('./node_modules/', import.meta.url);
 
 export default defineConfig({
   clearScreen: false,
-  plugins: [react(), tailwindcss()],
+  plugins: [xtermFreezePrototypeCompatibility(), react(), tailwindcss()],
+  optimizeDeps: {
+    exclude: ['@xterm/xterm'],
+  },
   resolve: {
     alias: [
       {

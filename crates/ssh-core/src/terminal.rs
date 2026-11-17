@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 pub const MAX_TERMINAL_SESSIONS_PER_SERVER: usize = 8;
 pub const MAX_TERMINAL_WRITE_BYTES: usize = 1024 * 1024;
 pub const SHELL_EVENT_CHANNEL_CAPACITY: usize = 512;
+pub const TERMINAL_EVENT_QUEUE_CAPACITY: usize = 512;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -175,6 +176,7 @@ pub trait ShellBackend: Clone + Send + Sync + 'static {
 struct SessionState {
     session: TerminalSession,
     sequence: u64,
+    event_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -182,8 +184,9 @@ pub struct TerminalManager<B> {
     backend: B,
     sessions: Arc<Mutex<HashMap<Id, SessionState>>>,
     connections: Arc<Mutex<HashMap<Id, Id>>>,
-    events: mpsc::UnboundedSender<TerminalEvent>,
-    event_receiver: Arc<StdMutex<Option<mpsc::UnboundedReceiver<TerminalEvent>>>>,
+    connection_locks: Arc<Mutex<HashMap<Id, Arc<Mutex<()>>>>>,
+    events: mpsc::Sender<TerminalEvent>,
+    event_receiver: Arc<StdMutex<Option<mpsc::Receiver<TerminalEvent>>>>,
 }
 
 impl<B> TerminalManager<B>
@@ -191,17 +194,18 @@ where
     B: ShellBackend,
 {
     pub fn new(backend: B) -> Self {
-        let (events, event_receiver) = mpsc::unbounded_channel();
+        let (events, event_receiver) = mpsc::channel(TERMINAL_EVENT_QUEUE_CAPACITY);
         Self {
             backend,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
+            connection_locks: Arc::new(Mutex::new(HashMap::new())),
             events,
             event_receiver: Arc::new(StdMutex::new(Some(event_receiver))),
         }
     }
 
-    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<TerminalEvent> {
+    pub fn subscribe(&self) -> mpsc::Receiver<TerminalEvent> {
         self.event_receiver
             .lock()
             .expect("terminal event receiver lock poisoned")
@@ -260,10 +264,16 @@ where
         command: Option<&TerminalCommand>,
     ) -> Result<TerminalSession, CoreError> {
         self.require_registered_connection(&connection).await?;
+        let connection_lock = self
+            .connection_operation_lock(connection.connection_id())
+            .await;
+        let _connection_guard = connection_lock.lock().await;
+        self.require_registered_connection(&connection).await?;
         let session = TerminalSession {
             id: Id::new(),
             connection,
         };
+        let event_lock = Arc::new(Mutex::new(()));
         {
             let mut sessions = self.sessions.lock().await;
             let session_count = sessions
@@ -284,6 +294,7 @@ where
                 SessionState {
                     session: session.clone(),
                     sequence: 0,
+                    event_lock: event_lock.clone(),
                 },
             );
         }
@@ -307,7 +318,7 @@ where
                 return Err(error);
             }
         };
-        self.forward_events(session.id, events);
+        self.forward_events(session.id, event_lock, events);
         Ok(session)
     }
 
@@ -335,6 +346,11 @@ where
         &self,
         connection: &ConnectionHandle,
     ) -> Result<usize, CoreError> {
+        self.require_registered_connection(connection).await?;
+        let connection_lock = self
+            .connection_operation_lock(connection.connection_id())
+            .await;
+        let _connection_guard = connection_lock.lock().await;
         self.require_registered_connection(connection).await?;
         let session_ids = {
             let sessions = self.sessions.lock().await;
@@ -366,31 +382,46 @@ where
             .lock()
             .await
             .remove(&connection.connection_id());
+        self.connection_locks
+            .lock()
+            .await
+            .remove(&connection.connection_id());
         Ok(closed)
     }
 
     pub async fn discard_connection(&self, connection: &ConnectionHandle) -> usize {
-        let session_ids = {
+        let connection_lock = self
+            .connection_operation_lock(connection.connection_id())
+            .await;
+        let _connection_guard = connection_lock.lock().await;
+        let sessions_to_close = {
             let mut sessions = self.sessions.lock().await;
-            let session_ids = sessions
+            let sessions_to_close = sessions
                 .values()
                 .filter(|state| state.session.connection == *connection)
-                .map(|state| state.session.id)
+                .map(|state| (state.session.id, state.event_lock.clone()))
                 .collect::<Vec<_>>();
-            for session_id in &session_ids {
+            for (session_id, _) in &sessions_to_close {
                 sessions.remove(session_id);
             }
-            session_ids
+            sessions_to_close
         };
-        for session_id in &session_ids {
-            self.emit_closed(*session_id, TerminalCloseReason::ConnectionClosed, None);
+        for (session_id, event_lock) in &sessions_to_close {
+            let _event_guard = event_lock.lock().await;
+            self.emit_closed(*session_id, TerminalCloseReason::ConnectionClosed, None)
+                .await;
         }
 
         let mut connections = self.connections.lock().await;
         if connections.get(&connection.connection_id()) == Some(&connection.server_id()) {
             connections.remove(&connection.connection_id());
         }
-        session_ids.len()
+        drop(connections);
+        self.connection_locks
+            .lock()
+            .await
+            .remove(&connection.connection_id());
+        sessions_to_close.len()
     }
 
     pub async fn close_all(&self) -> Result<usize, CoreError> {
@@ -404,12 +435,12 @@ where
         let mut first_error = None;
         let mut closed = 0;
         for session_id in &session_ids {
-            match self.backend.close(*session_id).await {
+            match self
+                .close_with_reason(*session_id, TerminalCloseReason::ConnectionClosed)
+                .await
+            {
                 Ok(()) => {
-                    if self.sessions.lock().await.remove(session_id).is_some() {
-                        self.emit_closed(*session_id, TerminalCloseReason::ConnectionClosed, None);
-                        closed += 1;
-                    }
+                    closed += 1;
                 }
                 Err(error) => {
                     if first_error.is_none() {
@@ -422,21 +453,28 @@ where
             return Err(error);
         }
         self.connections.lock().await.clear();
+        self.connection_locks.lock().await.clear();
         Ok(closed)
     }
 
     pub async fn discard_all(&self) -> usize {
-        let session_ids = {
+        let sessions_to_close = {
             let mut sessions = self.sessions.lock().await;
-            let session_ids = sessions.keys().copied().collect::<Vec<_>>();
+            let sessions_to_close = sessions
+                .values()
+                .map(|state| (state.session.id, state.event_lock.clone()))
+                .collect::<Vec<_>>();
             sessions.clear();
-            session_ids
+            sessions_to_close
         };
-        for session_id in &session_ids {
-            self.emit_closed(*session_id, TerminalCloseReason::ConnectionClosed, None);
+        for (session_id, event_lock) in &sessions_to_close {
+            let _event_guard = event_lock.lock().await;
+            self.emit_closed(*session_id, TerminalCloseReason::ConnectionClosed, None)
+                .await;
         }
         self.connections.lock().await.clear();
-        session_ids.len()
+        self.connection_locks.lock().await.clear();
+        sessions_to_close.len()
     }
 
     pub async fn active_session_ids(&self) -> Vec<Id> {
@@ -456,24 +494,37 @@ where
         session_id: Id,
         reason: TerminalCloseReason,
     ) -> Result<(), CoreError> {
-        let exists = self.sessions.lock().await.contains_key(&session_id);
-        if !exists {
+        let event_lock = {
+            let sessions = self.sessions.lock().await;
+            let Some(state) = sessions.get(&session_id) else {
+                return Ok(());
+            };
+            state.event_lock.clone()
+        };
+        let _event_guard = event_lock.lock().await;
+        if !self.sessions.lock().await.contains_key(&session_id) {
             return Ok(());
         }
         self.backend.close(session_id).await?;
         if self.sessions.lock().await.remove(&session_id).is_some() {
-            self.emit_closed(session_id, reason, None);
+            self.emit_closed(session_id, reason, None).await;
         }
         Ok(())
     }
 
-    fn forward_events(&self, session_id: Id, mut receiver: ShellEventReceiver) {
+    fn forward_events(
+        &self,
+        session_id: Id,
+        event_lock: Arc<Mutex<()>>,
+        mut receiver: ShellEventReceiver,
+    ) {
         let sessions = self.sessions.clone();
         let events = self.events.clone();
         tokio::spawn(async move {
             loop {
                 match receiver.recv().await {
                     Ok(ShellEvent::Data { bytes }) => {
+                        let _event_guard = event_lock.lock().await;
                         let mut sessions = sessions.lock().await;
                         let Some(state) = sessions.get_mut(&session_id) else {
                             break;
@@ -483,13 +534,18 @@ where
                             break;
                         };
                         state.sequence = sequence;
-                        let _ = events.send(TerminalEvent::Data(TerminalData {
+                        let data = TerminalEvent::Data(TerminalData {
                             terminal_session_id: session_id,
                             sequence,
                             bytes,
-                        }));
+                        });
+                        drop(sessions);
+                        if events.send(data).await.is_err() {
+                            break;
+                        }
                     }
                     Ok(ShellEvent::Closed { exit_status }) => {
+                        let _event_guard = event_lock.lock().await;
                         if sessions.lock().await.remove(&session_id).is_none() {
                             break;
                         }
@@ -498,18 +554,31 @@ where
                         } else {
                             TerminalCloseReason::Disconnected
                         };
-                        let _ = events.send(TerminalEvent::Closed(TerminalClosed {
+                        let closed = TerminalEvent::Closed(TerminalClosed {
                             terminal_session_id: session_id,
                             reason,
                             exit_status,
-                        }));
+                        });
+                        if events.send(closed).await.is_err() {
+                            break;
+                        }
                         break;
                     }
                     Err(broadcast::error::RecvError::Lagged(missed)) => {
-                        let _ = events.send(TerminalEvent::Gap(TerminalGap {
-                            terminal_session_id: session_id,
-                            missed,
-                        }));
+                        let _event_guard = event_lock.lock().await;
+                        if !sessions.lock().await.contains_key(&session_id) {
+                            break;
+                        }
+                        if events
+                            .send(TerminalEvent::Gap(TerminalGap {
+                                terminal_session_id: session_id,
+                                missed,
+                            }))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -517,12 +586,20 @@ where
         });
     }
 
-    fn emit_closed(&self, session_id: Id, reason: TerminalCloseReason, exit_status: Option<u32>) {
-        let _ = self.events.send(TerminalEvent::Closed(TerminalClosed {
-            terminal_session_id: session_id,
-            reason,
-            exit_status,
-        }));
+    async fn emit_closed(
+        &self,
+        session_id: Id,
+        reason: TerminalCloseReason,
+        exit_status: Option<u32>,
+    ) {
+        let _ = self
+            .events
+            .send(TerminalEvent::Closed(TerminalClosed {
+                terminal_session_id: session_id,
+                reason,
+                exit_status,
+            }))
+            .await;
     }
 
     async fn require_registered_connection(
@@ -543,6 +620,15 @@ where
             )),
             None => Err(not_found("SSH connection")),
         }
+    }
+
+    async fn connection_operation_lock(&self, connection_id: Id) -> Arc<Mutex<()>> {
+        self.connection_locks
+            .lock()
+            .await
+            .entry(connection_id)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     async fn require_session(&self, session_id: Id) -> Result<(), CoreError> {

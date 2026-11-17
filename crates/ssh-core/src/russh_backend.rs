@@ -71,22 +71,24 @@ pub struct HostKeyPrompt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostKeyChangedPrompt {
+    pub verification_id: Id,
+    pub expected_sha256: String,
+    pub actual_sha256: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
 pub enum ConnectOutcome {
-    Ready {
-        connection: ConnectionHandle,
-    },
-    HostKeyRequired {
-        prompt: HostKeyPrompt,
-    },
-    HostKeyChanged {
-        expected_sha256: String,
-        actual_sha256: String,
-    },
+    Ready { connection: ConnectionHandle },
+    HostKeyRequired { prompt: HostKeyPrompt },
+    HostKeyChanged { prompt: HostKeyChangedPrompt },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -590,11 +592,18 @@ fn host_decision_to_outcome(
             },
         }),
         HostKeyDecision::Changed {
+            verification_id,
             expected_sha256,
             actual_sha256,
+            expires_at,
         } => Ok(ConnectOutcome::HostKeyChanged {
-            expected_sha256,
-            actual_sha256,
+            prompt: HostKeyChangedPrompt {
+                verification_id,
+                expected_sha256,
+                actual_sha256,
+                expires_at: DateTime::<Utc>::from(expires_at)
+                    .to_rfc3339_opts(SecondsFormat::Millis, true),
+            },
         }),
     }
 }
@@ -761,12 +770,14 @@ where
     }
 
     async fn close(&self, session_id: Id) -> Result<(), CoreError> {
-        if let Some(channel) = self.channels.lock().await.remove(&session_id) {
+        let channel = self.channels.lock().await.get(&session_id).cloned();
+        if let Some(channel) = channel {
             let _ = channel.eof().await;
             channel
                 .close()
                 .await
                 .map_err(|error| ssh_error("close terminal channel", error, false))?;
+            self.channels.lock().await.remove(&session_id);
         }
         Ok(())
     }

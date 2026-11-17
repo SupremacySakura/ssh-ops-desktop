@@ -3,6 +3,15 @@ export interface CommandTrackingState {
   inEscape: boolean;
 }
 
+export function commandAppearsInTerminalEcho(
+  lines: readonly string[],
+  command: string,
+): boolean {
+  const normalizedCommand = normalizeForEcho(command);
+  if (normalizedCommand.length === 0) return false;
+  return lines.some((line) => normalizeForEcho(line).includes(normalizedCommand));
+}
+
 export function trackExecutedCommands(
   text: string,
   state: CommandTrackingState,
@@ -35,4 +44,11 @@ export function trackExecutedCommands(
     if (character >= ' ') state.current += character;
   }
   return commands;
+}
+
+function normalizeForEcho(value: string): string {
+  return value
+    .replaceAll('\r', '')
+    .replaceAll(/\s+/gu, ' ')
+    .trim();
 }

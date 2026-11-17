@@ -112,16 +112,24 @@ fn connection_outcomes_serialize_with_the_shared_camel_case_contract() {
     );
 
     let changed = serde_json::to_value(ConnectOutcome::HostKeyChanged {
-        expected_sha256: "SHA256:expected".to_owned(),
-        actual_sha256: "SHA256:actual".to_owned(),
+        prompt: opspilot_ssh_core::HostKeyChangedPrompt {
+            verification_id,
+            expected_sha256: "SHA256:expected".to_owned(),
+            actual_sha256: "SHA256:actual".to_owned(),
+            expires_at: "2026-01-01T00:00:00.000Z".to_owned(),
+        },
     })
     .unwrap();
     assert_eq!(
         changed,
         serde_json::json!({
             "kind": "hostKeyChanged",
-            "expectedSha256": "SHA256:expected",
-            "actualSha256": "SHA256:actual",
+            "prompt": {
+                "verificationId": verification_id,
+                "expectedSha256": "SHA256:expected",
+                "actualSha256": "SHA256:actual",
+                "expiresAt": "2026-01-01T00:00:00.000Z",
+            },
         })
     );
 }

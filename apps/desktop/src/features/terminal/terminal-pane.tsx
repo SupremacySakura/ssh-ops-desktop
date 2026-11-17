@@ -11,6 +11,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
+  countOpenSessions,
   MAX_TERMINAL_SESSIONS,
   useTerminalStore,
 } from '../../store/terminal-store';
@@ -30,10 +31,12 @@ interface TerminalPaneProps {
 
 const idleRuntime: ServerRuntime = {
   serverId: '',
+  connectionIdentity: null,
   connection: null,
   status: 'idle',
   error: null,
   hostKeyPrompt: null,
+  hostKeyChangedPrompt: null,
   lastConnectionSequence: 0,
   sessions: [],
   activeSessionId: null,
@@ -61,9 +64,10 @@ export function TerminalPane({ server, workspaceActive }: TerminalPaneProps) {
     (session) => session.id === runtime.activeSessionId,
   ) ?? runtime.sessions[0];
   const sessionLimitReached = (
-    runtime.sessions.length + runtime.openingSessions
+    countOpenSessions(runtime) + runtime.openingSessions
     >= MAX_TERMINAL_SESSIONS
   );
+  const openSessionCount = countOpenSessions(runtime);
   const canOpen = runtime.status === 'ready' && !sessionLimitReached;
 
   useEffect(() => {
@@ -97,8 +101,23 @@ export function TerminalPane({ server, workspaceActive }: TerminalPaneProps) {
 
   async function pasteClipboard() {
     if (!activeSession) return;
-    const pasted = await actionsRef.current.get(activeSession.id)?.paste();
-    setNotice(pasted ? '已粘贴' : '无法读取剪贴板');
+    const result = await actionsRef.current.get(activeSession.id)?.paste();
+    switch (result?.kind) {
+      case 'pasted':
+        setNotice('已粘贴');
+        break;
+      case 'empty':
+        setNotice('剪贴板为空');
+        break;
+      case 'too-large':
+        setNotice('粘贴内容超过 1 MiB，未发送');
+        break;
+      case 'confirmation-cancelled':
+        setNotice('已取消粘贴');
+        break;
+      default:
+        setNotice('无法读取剪贴板');
+    }
   }
 
   return (
@@ -182,7 +201,7 @@ export function TerminalPane({ server, workspaceActive }: TerminalPaneProps) {
           aria-label="终端会话数量"
           className="flex shrink-0 items-center border-l border-hairline px-2.5 font-mono text-[9px] tracking-[0.08em] text-muted"
         >
-          {runtime.sessions.length}/{MAX_TERMINAL_SESSIONS}
+          {openSessionCount}/{MAX_TERMINAL_SESSIONS}
         </span>
       </div>
 

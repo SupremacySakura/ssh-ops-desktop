@@ -135,20 +135,7 @@ pub(crate) async fn connection_connect(
             .await;
         }
         Ok(ConnectOutcome::HostKeyRequired { .. }) => {}
-        Ok(ConnectOutcome::HostKeyChanged { .. }) => {
-            emit_connection_state_event(
-                &app,
-                &services,
-                server_id,
-                None,
-                ConnectionState::Error {
-                    code: CoreErrorCode::SshHostKeyChanged,
-                    message: "SSH host key changed; connection blocked".to_owned(),
-                    retryable: false,
-                },
-            )
-            .await;
-        }
+        Ok(ConnectOutcome::HostKeyChanged { .. }) => {}
         Err(error) => {
             emit_connection_state_event(
                 &app,

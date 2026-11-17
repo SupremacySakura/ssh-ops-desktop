@@ -100,6 +100,9 @@ export function createFakeCoreClient({
     updateServer: async (id, input, credential) => {
       remember(calls, 'updateServer', [id, input, credential]);
       const existing = requireServer(servers, id);
+      if (credential === undefined && input.authType !== existing.authType) {
+        throw fakeError('VALIDATION', '更改认证方式时必须提供新凭据');
+      }
       const updated: Server = {
         ...existing,
         ...input,
@@ -158,6 +161,9 @@ export function createFakeCoreClient({
     connect: async (serverId) => {
       remember(calls, 'connect', [serverId]);
       const server = requireServer(servers, serverId);
+      if (server.secretRef === null) {
+        throw fakeError('SECRET_UNAVAILABLE', '该服务器的凭据尚未配置');
+      }
       const outcome = typeof connectOutcome === 'function'
         ? connectOutcome(serverId)
         : connectOutcome ?? {
@@ -181,7 +187,6 @@ export function createFakeCoreClient({
           state: { kind: 'ready' },
         });
       }
-      void server;
       return outcome;
     },
     trustHostKey: async (serverId, verificationId) => {

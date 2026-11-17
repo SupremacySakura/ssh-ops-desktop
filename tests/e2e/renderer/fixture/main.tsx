@@ -38,13 +38,26 @@ const core = createFakeCoreClient({
     databaseReady: true,
     secretStoreReady: true,
   },
-  servers: scenario === 'terminal' || scenario === 'host-key'
+  servers: scenario === 'terminal'
+    || scenario === 'host-key'
+    || scenario === 'host-key-changed'
     ? terminalServers
     : [],
-  connectOutcome: scenario === 'host-key'
+  connectOutcome: scenario === 'host-key' || scenario === 'host-key-changed'
     ? (serverId) => {
         attempts += 1;
         if (attempts === 1) {
+          if (scenario === 'host-key-changed') {
+            return {
+              kind: 'hostKeyChanged',
+              prompt: {
+                verificationId: '019c62b2-2970-7000-8000-000000000203',
+                expectedSha256: 'SHA256:rendererFixtureOldHostKey',
+                actualSha256: 'SHA256:rendererFixtureNewHostKey',
+                expiresAt: '2026-11-17T13:05:00.000Z',
+              },
+            };
+          }
           return {
             kind: 'hostKeyRequired',
             prompt: {
@@ -72,7 +85,7 @@ const core = createFakeCoreClient({
           emitTerminalData?.({
             terminalSessionId,
             sequence,
-            bytes: Array.from(bytes),
+            bytes: ptyEchoBytes(bytes),
           });
         },
       }
@@ -172,4 +185,13 @@ function fixtureServer(id: string, name: string, host: string) {
     lastConnectedAt: null,
     createdAt: 1_699_000_000,
   };
+}
+
+function ptyEchoBytes(bytes: Uint8Array): number[] {
+  const normalized = new TextDecoder()
+    .decode(bytes)
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
+    .replaceAll('\n', '\r\n');
+  return Array.from(new TextEncoder().encode(normalized));
 }

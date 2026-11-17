@@ -154,12 +154,20 @@ describe('SSH connection and terminal contracts', () => {
     });
     expect(ConnectOutcomeSchema.parse({
       kind: 'hostKeyChanged',
-      expectedSha256: 'SHA256:expected',
-      actualSha256: 'SHA256:actual',
+      prompt: {
+        verificationId,
+        expectedSha256: 'SHA256:expected',
+        actualSha256: 'SHA256:actual',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      },
     })).toEqual({
       kind: 'hostKeyChanged',
-      expectedSha256: 'SHA256:expected',
-      actualSha256: 'SHA256:actual',
+      prompt: {
+        verificationId,
+        expectedSha256: 'SHA256:expected',
+        actualSha256: 'SHA256:actual',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      },
     });
   });
 

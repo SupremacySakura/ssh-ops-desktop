@@ -3,7 +3,9 @@ import {
   type ConnectOutcome,
   type ConnectionHandle,
   type ConnectionStateEvent,
+  type HostKeyChangedPrompt,
   type HostKeyPrompt,
+  type Server,
   type TerminalCloseReason,
   type TerminalClosedEvent,
   type TerminalDataEvent,
@@ -45,10 +47,12 @@ export interface TerminalSessionView {
 
 export interface ServerRuntime {
   serverId: string;
+  connectionIdentity: string | null;
   connection: ConnectionHandle | null;
   status: ServerConnectionStatus;
   error: string | null;
   hostKeyPrompt: HostKeyPrompt | null;
+  hostKeyChangedPrompt: HostKeyChangedPrompt | null;
   lastConnectionSequence: number;
   sessions: TerminalSessionView[];
   activeSessionId: string | null;
@@ -70,7 +74,7 @@ interface TerminalStore {
   acceptTerminalData: (event: TerminalDataEvent) => void;
   acceptTerminalGap: (event: TerminalGapEvent) => void;
   acceptTerminalClosed: (event: TerminalClosedEvent) => void;
-  ensureConnected: (serverId: string) => Promise<void>;
+  ensureConnected: (server: Server) => Promise<void>;
   connectServer: (serverId: string) => Promise<void>;
   retryServer: (serverId: string) => Promise<void>;
   trustHostKey: (serverId: string) => Promise<void>;
@@ -103,9 +107,31 @@ interface OutputBuffer {
   listeners: Set<(bytes: Uint8Array) => void>;
 }
 
+interface ConnectionRequest {
+  generation: number;
+  promise: Promise<void>;
+}
+
 const pendingTerminalEvents = new Map<string, PendingTerminalBuffer>();
 const terminalOutput = new Map<string, OutputBuffer>();
-const connectionRequests = new Map<string, Promise<void>>();
+const connectionRequests = new Map<string, ConnectionRequest>();
+const connectionGenerations = new Map<string, number>();
+const reconnectRequests = new Map<string, Promise<void>>();
+const terminalWriteQueues = new Map<string, Promise<void>>();
+
+export function serverConnectionIdentity(server: Server): string {
+  return JSON.stringify([
+    server.host,
+    server.port,
+    server.user,
+    server.authType,
+    server.secretRef,
+  ]);
+}
+
+export function countOpenSessions(runtime: ServerRuntime): number {
+  return runtime.sessions.filter((session) => session.status === 'open').length;
+}
 
 export const useTerminalStore = create<TerminalStore>((set, get) => ({
   core: null,
@@ -120,45 +146,31 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   acceptConnectionState: (event) => {
     set((state) => {
       const runtime = state.runtimes[event.serverId];
-      if (!runtime || event.sequence <= runtime.lastConnectionSequence) {
+      if (
+        !runtime
+        || event.state.kind !== 'closed'
+        || runtime.connection === null
+        || event.connectionId !== runtime.connection.connectionId
+        || event.sequence <= runtime.lastConnectionSequence
+      ) {
         return state;
       }
       const next: ServerRuntime = {
         ...runtime,
         lastConnectionSequence: event.sequence,
+        connection: null,
+        error: null,
+        status: 'closed',
+        sessions: runtime.sessions.map((session) => (
+          session.status === 'open'
+            ? {
+                ...session,
+                status: 'closed',
+                closeReason: 'connectionClosed',
+              }
+            : session
+        )),
       };
-      switch (event.state.kind) {
-        case 'connecting':
-          next.status = 'connecting';
-          break;
-        case 'ready':
-          if (event.connectionId === null) {
-            next.status = 'error';
-            next.connection = null;
-            next.error = 'Core 返回的连接状态无效，请重试';
-            break;
-          }
-          next.status = 'ready';
-          next.connection = {
-            serverId: event.serverId,
-            connectionId: event.connectionId,
-          };
-          next.error = null;
-          break;
-        case 'closed':
-          next.status = 'closed';
-          break;
-        case 'error':
-          next.status = event.state.code === 'SSH_HOST_KEY_CHANGED'
-            ? 'blocked'
-            : 'error';
-          next.error = connectionErrorMessage({
-            code: event.state.code,
-            message: event.state.message,
-            retryable: event.state.retryable,
-          });
-          break;
-      }
       return {
         runtimes: {
           ...state.runtimes,
@@ -200,70 +212,33 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     }
     applyTerminalClosed(set, event);
   },
-  ensureConnected: async (serverId) => {
-    const runtime = get().runtimes[serverId];
-    if (runtime && runtime.status !== 'idle') return;
-    await get().connectServer(serverId);
-  },
-  connectServer: async (serverId) => {
-    const existing = connectionRequests.get(serverId);
-    if (existing) return existing;
-    const runtime = get().runtimes[serverId];
-    if (runtime?.status === 'connecting' || runtime?.status === 'host-key') return;
-    if (runtime?.status === 'ready') {
-      if (runtime.sessions.length === 0 && runtime.openingSessions === 0) {
-        await get().openSession(serverId);
+  ensureConnected: async (server) => {
+    const identity = serverConnectionIdentity(server);
+    const runtime = get().runtimes[server.id];
+    if (runtime && runtime.connectionIdentity !== identity) {
+      try {
+        await get().disposeServer(server.id);
+      } catch {
+        return;
       }
-      return;
     }
-    const core = get().core;
-    if (!core) {
-      updateRuntime(set, serverId, (current) => ({
+    if (server.secretRef === null) {
+      updateRuntime(set, server.id, (current) => ({
         ...current,
-        status: 'error',
-        error: 'Core 尚未连接，无法建立 SSH 连接',
-      }));
-      return;
-    }
-
-    const request = (async () => {
-      updateRuntime(set, serverId, (current) => ({
-        ...current,
-        status: 'connecting',
-        error: null,
+        connectionIdentity: identity,
+        connection: null,
+        status: 'idle',
         hostKeyPrompt: null,
       }));
-      try {
-        const outcome = await core.connect(serverId);
-        if (!get().runtimes[serverId]) {
-          if (outcome.kind === 'ready') {
-            await core.disconnect(outcome.connection).catch(() => undefined);
-          }
-          return;
-        }
-        applyConnectOutcome(set, serverId, outcome);
-        if (outcome.kind === 'ready') {
-          useHarborStore.getState().markServerConnected(serverId);
-        }
-        if (
-          outcome.kind === 'ready'
-          && (get().runtimes[serverId]?.sessions.length ?? 0) === 0
-        ) {
-          await get().openSession(serverId);
-        }
-      } catch (error) {
-        if (!get().runtimes[serverId]) return;
-        updateRuntime(set, serverId, (current) => ({
-          ...current,
-          status: 'error',
-          error: connectionErrorMessage(error),
-        }));
-      } finally {
-        connectionRequests.delete(serverId);
-      }
-    })();
-    connectionRequests.set(serverId, request);
-    await request;
+      return;
+    }
+    const current = get().runtimes[server.id];
+    if (current && current.status !== 'idle') return;
+    await startConnection(set, get, server.id, identity);
+  },
+  connectServer: async (serverId) => {
+    const identity = get().runtimes[serverId]?.connectionIdentity ?? null;
+    await startConnection(set, get, serverId, identity);
   },
   retryServer: async (serverId) => {
     const runtime = get().runtimes[serverId];
@@ -276,34 +251,48 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       status: 'idle',
       error: null,
     }));
-    await get().connectServer(serverId);
+    await startConnection(
+      set,
+      get,
+      serverId,
+      get().runtimes[serverId]?.connectionIdentity ?? null,
+    );
   },
   trustHostKey: async (serverId) => {
     const core = get().core;
     const runtime = get().runtimes[serverId];
-    if (!core || !runtime?.hostKeyPrompt) return;
+    const prompt = runtime?.hostKeyPrompt ?? runtime?.hostKeyChangedPrompt;
+    if (!core || !runtime || !prompt) return;
+    const identity = runtime.connectionIdentity;
+    const verificationId = prompt.verificationId;
     try {
-      await core.trustHostKey(serverId, runtime.hostKeyPrompt.verificationId);
-      if (!get().runtimes[serverId]) return;
-      updateRuntime(set, serverId, (current) => ({
-        ...current,
+      await core.trustHostKey(serverId, verificationId);
+      const current = get().runtimes[serverId];
+      if (!current || current.connectionIdentity !== identity) return;
+      updateRuntime(set, serverId, (currentRuntime) => ({
+        ...currentRuntime,
         hostKeyPrompt: null,
+        hostKeyChangedPrompt: null,
         status: 'idle',
         error: null,
       }));
-      await get().connectServer(serverId);
+      await startConnection(set, get, serverId, identity);
     } catch (error) {
-      updateRuntime(set, serverId, (current) => ({
-        ...current,
-        status: 'error',
-        error: connectionErrorMessage(error),
-      }));
+      const current = get().runtimes[serverId];
+      if (current?.connectionIdentity === identity) {
+        updateRuntime(set, serverId, (currentRuntime) => ({
+          ...currentRuntime,
+          status: 'error',
+          error: connectionErrorMessage(error),
+        }));
+      }
     }
   },
   dismissHostKey: (serverId) => {
     updateRuntime(set, serverId, (current) => ({
       ...current,
       hostKeyPrompt: null,
+      hostKeyChangedPrompt: null,
       status: 'closed',
       error: '已取消主机指纹确认，SSH 连接尚未建立',
     }));
@@ -313,7 +302,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     const runtime = get().runtimes[serverId];
     if (!core || !runtime?.connection || runtime.status !== 'ready') return null;
     if (
-      runtime.sessions.length + runtime.openingSessions
+      countOpenSessions(runtime) + runtime.openingSessions
       >= MAX_TERMINAL_SESSIONS
     ) {
       updateRuntime(set, serverId, (current) => ({
@@ -336,7 +325,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       const current = get().runtimes[serverId];
       if (
         !current
+        || current.connectionIdentity !== runtime.connectionIdentity
         || current.connection?.connectionId !== runtime.connection.connectionId
+        || !sameConnection(session.connection, runtime.connection)
       ) {
         discardPendingTerminalEvents(session.id);
         await core.closeTerminal(session.id).catch(() => undefined);
@@ -346,16 +337,20 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       drainPendingTerminalEvents(set, session.id);
       return view;
     } catch (error) {
-      updateRuntime(set, serverId, (current) => ({
-        ...current,
-        error: openSessionErrorMessage(error),
-      }));
+      if (get().runtimes[serverId]) {
+        updateRuntime(set, serverId, (current) => ({
+          ...current,
+          error: openSessionErrorMessage(error),
+        }));
+      }
       return null;
     } finally {
-      updateRuntime(set, serverId, (current) => ({
-        ...current,
-        openingSessions: Math.max(0, current.openingSessions - 1),
-      }));
+      if (get().runtimes[serverId]) {
+        updateRuntime(set, serverId, (current) => ({
+          ...current,
+          openingSessions: Math.max(0, current.openingSessions - 1),
+        }));
+      }
     }
   },
   closeSession: async (serverId, sessionId) => {
@@ -376,68 +371,97 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     removeTerminalSession(set, serverId, sessionId);
   },
   reconnectSession: async (serverId, sessionId) => {
+    const existing = reconnectRequests.get(sessionId);
+    if (existing) return existing;
     const core = get().core;
     const runtime = get().runtimes[serverId];
     const session = runtime?.sessions.find((candidate) => candidate.id === sessionId);
     if (!core || !runtime || !session) return;
-    const replace = (opened: TerminalSession) => {
-      replaceTerminalSession(set, serverId, sessionId, opened);
+    const identity = runtime.connectionIdentity;
+    const replace = async (
+      opened: TerminalSession,
+      expectedConnection: ConnectionHandle,
+    ): Promise<boolean> => {
+      const current = get().runtimes[serverId];
+      if (
+        !current
+        || current.connectionIdentity !== identity
+        || !current.sessions.some((candidate) => candidate.id === sessionId)
+        || !sameConnection(opened.connection, expectedConnection)
+      ) {
+        discardPendingTerminalEvents(opened.id);
+        await core.closeTerminal(opened.id).catch(() => undefined);
+        return false;
+      }
+      const replaced = replaceTerminalSession(set, serverId, sessionId, opened);
+      if (!replaced) {
+        discardPendingTerminalEvents(opened.id);
+        await core.closeTerminal(opened.id).catch(() => undefined);
+        return false;
+      }
       drainPendingTerminalEvents(set, opened.id);
+      return true;
     };
 
-    if (runtime.connection) {
+    const request = (async () => {
+      if (runtime.connection) {
+        try {
+          const opened = await core.openTerminal(
+            runtime.connection,
+            DEFAULT_COLUMNS,
+            DEFAULT_ROWS,
+          );
+          await replace(opened, runtime.connection);
+          return;
+        } catch {
+          // The SSH transport may be gone even though the logical connection remains.
+        }
+      }
+
+      if (runtime.connection) {
+        try {
+          await core.disconnect(runtime.connection);
+        } catch {
+          // Reconnect must still be able to replace a dead connection.
+        }
+      }
+      updateRuntime(set, serverId, (current) => ({
+        ...current,
+        connection: null,
+        status: 'idle',
+        error: null,
+      }));
+      await get().connectServer(serverId);
+      const connected = get().runtimes[serverId];
+      if (
+        !connected?.connection
+        || connected.connectionIdentity !== identity
+        || !connected.sessions.some((candidate) => candidate.id === sessionId)
+      ) {
+        return;
+      }
       try {
         const opened = await core.openTerminal(
-          runtime.connection,
+          connected.connection,
           DEFAULT_COLUMNS,
           DEFAULT_ROWS,
         );
-        if (!get().runtimes[serverId]) {
-          discardPendingTerminalEvents(opened.id);
-          await core.closeTerminal(opened.id).catch(() => undefined);
-          return;
+        await replace(opened, connected.connection);
+      } catch (error) {
+        if (get().runtimes[serverId]) {
+          updateRuntime(set, serverId, (current) => ({
+            ...current,
+            error: openSessionErrorMessage(error),
+          }));
         }
-        replace(opened);
-        return;
-      } catch {
-        // The SSH transport may be gone even though the logical connection remains.
       }
-    }
-
-    if (runtime.connection) {
-      try {
-        await core.disconnect(runtime.connection);
-      } catch {
-        // Reconnect must still be able to replace a dead connection.
+    })().finally(() => {
+      if (reconnectRequests.get(sessionId) === request) {
+        reconnectRequests.delete(sessionId);
       }
-    }
-    updateRuntime(set, serverId, (current) => ({
-      ...current,
-      connection: null,
-      status: 'idle',
-      error: null,
-    }));
-    await get().connectServer(serverId);
-    const connected = get().runtimes[serverId];
-    if (!connected?.connection) return;
-    try {
-      const opened = await core.openTerminal(
-        connected.connection,
-        DEFAULT_COLUMNS,
-        DEFAULT_ROWS,
-      );
-      if (!get().runtimes[serverId]) {
-        discardPendingTerminalEvents(opened.id);
-        await core.closeTerminal(opened.id).catch(() => undefined);
-        return;
-      }
-      replace(opened);
-    } catch (error) {
-      updateRuntime(set, serverId, (current) => ({
-        ...current,
-        error: openSessionErrorMessage(error),
-      }));
-    }
+    });
+    reconnectRequests.set(sessionId, request);
+    await request;
   },
   activateSession: (serverId, sessionId) => {
     updateRuntime(set, serverId, (current) => (
@@ -466,8 +490,13 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   writeSession: async (sessionId, bytes) => {
     const core = get().core;
     if (!core) return;
+    const previous = terminalWriteQueues.get(sessionId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(() => core.writeTerminal(sessionId, bytes));
+    terminalWriteQueues.set(sessionId, current);
     try {
-      await core.writeTerminal(sessionId, bytes);
+      await current;
     } catch (error) {
       const located = locateSession(get().runtimes, sessionId);
       if (located && coreErrorCode(error) !== 'NOT_FOUND') {
@@ -476,11 +505,16 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
           error: openSessionErrorMessage(error),
         }));
       }
+    } finally {
+      if (terminalWriteQueues.get(sessionId) === current) {
+        terminalWriteQueues.delete(sessionId);
+      }
     }
   },
   disconnectServer: async (serverId) => {
     const core = get().core;
     const runtime = get().runtimes[serverId];
+    invalidateConnectionRequests(serverId);
     if (core && runtime?.connection) {
       try {
         await core.disconnect(runtime.connection);
@@ -494,7 +528,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         }
       }
     }
-    clearServerSessions(set, get, serverId, 'connectionClosed');
+    clearServerSessions(set, serverId, 'connectionClosed');
     updateRuntime(set, serverId, (current) => ({
       ...current,
       connection: null,
@@ -504,7 +538,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
   disposeServer: async (serverId) => {
     const runtime = get().runtimes[serverId];
     const core = get().core;
-    connectionRequests.delete(serverId);
+    invalidateConnectionRequests(serverId);
+    for (const session of runtime?.sessions ?? []) {
+      discardPendingTerminalEvents(session.id);
+      reconnectRequests.delete(session.id);
+    }
     if (runtime?.connection) {
       if (!core) {
         const error = new Error('Core 尚未连接，无法安全关闭 SSH 连接');
@@ -528,7 +566,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         }
       }
     }
-    clearServerSessions(set, get, serverId, 'connectionClosed');
+    clearServerSessions(set, serverId, 'connectionClosed');
+    for (const session of runtime?.sessions ?? []) {
+      terminalOutput.delete(session.id);
+    }
     set((state) => {
       const runtimes = { ...state.runtimes };
       delete runtimes[serverId];
@@ -539,6 +580,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
     for (const id of terminalOutput.keys()) terminalOutput.delete(id);
     pendingTerminalEvents.clear();
     connectionRequests.clear();
+    connectionGenerations.clear();
+    reconnectRequests.clear();
+    terminalWriteQueues.clear();
     set({
       core: null,
       eventBridgeStatus: 'idle',
@@ -644,6 +688,96 @@ function openSessionErrorMessage(error: unknown): string {
     : message;
 }
 
+async function startConnection(
+  set: SetState,
+  get: () => TerminalStore,
+  serverId: string,
+  identity: string | null,
+) {
+  const existing = connectionRequests.get(serverId);
+  if (existing) return existing.promise;
+  const runtime = get().runtimes[serverId];
+  if (runtime?.status === 'connecting' || runtime?.status === 'host-key') return;
+  if (runtime?.status === 'ready') {
+    if (countOpenSessions(runtime) + runtime.openingSessions === 0) {
+      await get().openSession(serverId);
+    }
+    return;
+  }
+  const core = get().core;
+  if (!core) {
+    updateRuntime(set, serverId, (current) => ({
+      ...current,
+      connectionIdentity: identity,
+      status: 'error',
+      error: 'Core 尚未连接，无法建立 SSH 连接',
+    }));
+    return;
+  }
+
+  const generation = connectionGenerations.get(serverId) ?? 0;
+  const isCurrent = () => (
+    (connectionGenerations.get(serverId) ?? 0) === generation
+    && get().runtimes[serverId]?.connectionIdentity === identity
+  );
+  const request: ConnectionRequest = {
+    generation,
+    promise: (async () => {
+      updateRuntime(set, serverId, (current) => ({
+        ...current,
+        connectionIdentity: identity,
+        status: 'connecting',
+        error: null,
+        hostKeyPrompt: null,
+      }));
+      try {
+        const outcome = await core.connect(serverId);
+        if (!isCurrent()) {
+          if (outcome.kind === 'ready') {
+            await core.disconnect(outcome.connection).catch(() => undefined);
+          }
+          return;
+        }
+        applyConnectOutcome(set, serverId, outcome);
+        if (outcome.kind === 'ready') {
+          useHarborStore.getState().markServerConnected(serverId);
+        }
+        const connected = get().runtimes[serverId];
+        if (
+          outcome.kind === 'ready'
+          && connected
+          && countOpenSessions(connected) + connected.openingSessions === 0
+        ) {
+          await get().openSession(serverId);
+        }
+      } catch (error) {
+        if (!isCurrent()) return;
+        updateRuntime(set, serverId, (current) => ({
+          ...current,
+          status: 'error',
+          error: connectionErrorMessage(error),
+        }));
+      }
+    })(),
+  };
+  connectionRequests.set(serverId, request);
+  try {
+    await request.promise;
+  } finally {
+    if (connectionRequests.get(serverId) === request) {
+      connectionRequests.delete(serverId);
+    }
+  }
+}
+
+function invalidateConnectionRequests(serverId: string) {
+  connectionRequests.delete(serverId);
+  connectionGenerations.set(
+    serverId,
+    (connectionGenerations.get(serverId) ?? 0) + 1,
+  );
+}
+
 function applyConnectOutcome(
   set: SetState,
   serverId: string,
@@ -658,21 +792,23 @@ function applyConnectOutcome(
           status: 'ready',
           error: null,
           hostKeyPrompt: null,
+          hostKeyChangedPrompt: null,
         };
       case 'hostKeyRequired':
         return {
           ...current,
           status: 'host-key',
           hostKeyPrompt: outcome.prompt,
+          hostKeyChangedPrompt: null,
           error: null,
         };
       case 'hostKeyChanged':
         return {
           ...current,
-          status: 'blocked',
+          status: 'host-key',
           hostKeyPrompt: null,
-          error:
-            `服务器主机指纹已变化，连接已阻断。期望 ${outcome.expectedSha256}，实际 ${outcome.actualSha256}`,
+          hostKeyChangedPrompt: outcome.prompt,
+          error: null,
         };
     }
   });
@@ -707,8 +843,20 @@ function replaceTerminalSession(
   serverId: string,
   previousSessionId: string,
   opened: TerminalSession,
-) {
+): boolean {
+  const runtime = useTerminalStore.getState().runtimes[serverId];
+  if (!runtime?.sessions.some((session) => session.id === previousSessionId)) {
+    return false;
+  }
+  const previousOutput = terminalOutput.get(previousSessionId);
   terminalOutput.delete(previousSessionId);
+  if (previousOutput) {
+    terminalOutput.set(opened.id, {
+      chunks: [...previousOutput.chunks],
+      bytes: previousOutput.bytes,
+      listeners: new Set(),
+    });
+  }
   updateRuntime(set, serverId, (current) => ({
     ...current,
     activeSessionId: opened.id,
@@ -727,6 +875,7 @@ function replaceTerminalSession(
         : session
     )),
   }));
+  return true;
 }
 
 function removeTerminalSession(
@@ -749,14 +898,9 @@ function removeTerminalSession(
 
 function clearServerSessions(
   set: SetState,
-  get: () => TerminalStore,
   serverId: string,
   reason: TerminalCloseReason,
 ) {
-  const runtime = get().runtimes[serverId];
-  for (const session of runtime?.sessions ?? []) {
-    terminalOutput.delete(session.id);
-  }
   updateRuntime(set, serverId, (current) => ({
     ...current,
     activeSessionId: null,
@@ -774,7 +918,11 @@ function applyTerminalData(set: SetState, event: TerminalDataEvent) {
   const session = located.runtime.sessions.find(
     (candidate) => candidate.id === event.terminalSessionId,
   );
-  if (!session || event.sequence <= session.lastSequence) return;
+  if (
+    !session
+    || session.status === 'closed'
+    || event.sequence <= session.lastSequence
+  ) return;
   const gap = session.gap || event.sequence > session.lastSequence + 1;
   pushTerminalOutput(event.terminalSessionId, Uint8Array.from(event.bytes));
   updateTerminalSession(set, located.serverId, event.terminalSessionId, (current) => ({
@@ -787,6 +935,10 @@ function applyTerminalData(set: SetState, event: TerminalDataEvent) {
 function applyTerminalGap(set: SetState, event: TerminalGapEvent) {
   const located = locateSession(useTerminalStore.getState().runtimes, event.terminalSessionId);
   if (!located) return;
+  const session = located.runtime.sessions.find(
+    (candidate) => candidate.id === event.terminalSessionId,
+  );
+  if (!session || session.status === 'closed') return;
   updateTerminalSession(set, located.serverId, event.terminalSessionId, (current) => ({
     ...current,
     gap: true,
@@ -796,6 +948,10 @@ function applyTerminalGap(set: SetState, event: TerminalGapEvent) {
 function applyTerminalClosed(set: SetState, event: TerminalClosedEvent) {
   const located = locateSession(useTerminalStore.getState().runtimes, event.terminalSessionId);
   if (!located) return;
+  const session = located.runtime.sessions.find(
+    (candidate) => candidate.id === event.terminalSessionId,
+  );
+  if (!session || session.status === 'closed') return;
   updateTerminalSession(set, located.serverId, event.terminalSessionId, (current) => ({
     ...current,
     status: 'closed',
@@ -813,6 +969,12 @@ function bufferPendingTerminalEvent(
     buffer = { events: [], bytes: 0, overflowMissed: 0 };
     pendingTerminalEvents.set(sessionId, buffer);
   }
+  if (event.kind !== 'closed' && buffer.events.some(({ kind }) => kind === 'closed')) {
+    return;
+  }
+  if (event.kind === 'closed') {
+    buffer.events = buffer.events.filter(({ kind }) => kind !== 'closed');
+  }
   buffer.events.push(event);
   if (event.kind === 'data') buffer.bytes += event.event.bytes.length;
   trimPendingBuffer(buffer);
@@ -823,12 +985,12 @@ function trimPendingBuffer(buffer: PendingTerminalBuffer) {
     buffer.events.length > MAX_PENDING_TERMINAL_EVENTS
     || buffer.bytes > MAX_PENDING_TERMINAL_BYTES
   ) {
-    const removed = buffer.events.shift();
-    if (!removed) break;
-    if (removed.kind === 'data') {
-      buffer.bytes = Math.max(0, buffer.bytes - removed.event.bytes.length);
-      buffer.overflowMissed += 1;
-    }
+    const dataIndex = buffer.events.findIndex(({ kind }) => kind === 'data');
+    if (dataIndex < 0) break;
+    const [removed] = buffer.events.splice(dataIndex, 1);
+    if (!removed || removed.kind !== 'data') break;
+    buffer.bytes = Math.max(0, buffer.bytes - removed.event.bytes.length);
+    buffer.overflowMissed += 1;
   }
 }
 
@@ -919,13 +1081,25 @@ function locateSession(
   return null;
 }
 
+function sameConnection(
+  left: ConnectionHandle,
+  right: ConnectionHandle,
+): boolean {
+  return (
+    left.serverId === right.serverId
+    && left.connectionId === right.connectionId
+  );
+}
+
 function emptyRuntime(serverId: string): ServerRuntime {
   return {
     serverId,
+    connectionIdentity: null,
     connection: null,
     status: 'idle',
     error: null,
     hostKeyPrompt: null,
+    hostKeyChangedPrompt: null,
     lastConnectionSequence: 0,
     sessions: [],
     activeSessionId: null,

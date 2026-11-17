@@ -260,6 +260,59 @@ describe('Harbor empty shell', () => {
     expect(core.calls).toContainEqual(expect.objectContaining({ method: 'updateServer' }));
   });
 
+  it('disconnects the old SSH identity before reconnecting an edited endpoint', async () => {
+    const core = createFakeCoreClient({
+      servers: [{
+        id: '019c62b2-2970-7000-8000-000000000007',
+        name: 'prod-web-01',
+        host: 'prod.example.com',
+        port: 22,
+        user: 'deploy',
+        authType: 'key',
+        secretRef: 'secret-ref-fixture-1',
+        groupId: null,
+        favorite: false,
+        lastConnectedAt: null,
+        createdAt: 1_699_000_000,
+      }],
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    const oldConnection = useTerminalStore.getState()
+      .runtimes['019c62b2-2970-7000-8000-000000000007']?.connection;
+    const oldSessionId = useTerminalStore.getState()
+      .runtimes['019c62b2-2970-7000-8000-000000000007']?.sessions[0]?.id;
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑服务器' }));
+    const dialog = screen.getByRole('dialog', { name: '编辑服务器' });
+    fireEvent.change(within(dialog).getByLabelText('主机'), {
+      target: { value: 'replacement.example.com' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('用户名'), {
+      target: { value: 'replacement' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存服务器' }));
+
+    await waitFor(() => {
+      expect(
+        core.calls.filter((call) => call.method === 'connect'),
+      ).toHaveLength(2);
+    });
+    expect(core.calls).toContainEqual({
+      method: 'disconnect',
+      args: [oldConnection],
+    });
+    const current = useTerminalStore.getState()
+      .runtimes['019c62b2-2970-7000-8000-000000000007'];
+    expect(current?.connection?.connectionId).not.toBe(oldConnection?.connectionId);
+    expect(current?.sessions[0]?.id).not.toBe(oldSessionId);
+    expect(current?.connectionIdentity).toContain('replacement.example.com');
+  });
+
   it('keeps imported servers visibly pending while their metadata is edited', async () => {
     const core = createFakeCoreClient({
       servers: [{
