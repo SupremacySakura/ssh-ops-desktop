@@ -45,6 +45,7 @@ pub struct ScopedMetadata {
 pub struct CreateFileFailure {
     pub error: CoreError,
     pub residual: Option<String>,
+    pub collision: bool,
 }
 
 impl CreateFileFailure {
@@ -52,6 +53,7 @@ impl CreateFileFailure {
         Self {
             error,
             residual: None,
+            collision: false,
         }
     }
 
@@ -59,8 +61,35 @@ impl CreateFileFailure {
         Self {
             error,
             residual: Some(residual),
+            collision: false,
         }
     }
+
+    pub fn collision(error: CoreError) -> Self {
+        Self {
+            error,
+            residual: None,
+            collision: true,
+        }
+    }
+
+    pub fn collision_with_residual(error: CoreError, residual: String) -> Self {
+        Self {
+            error,
+            residual: Some(residual),
+            collision: true,
+        }
+    }
+}
+
+struct StagedUpload {
+    path: RemotePath,
+    ambiguous: Vec<String>,
+}
+
+struct StageFailure {
+    failure: CreateFileFailure,
+    ambiguous: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -700,15 +729,21 @@ async fn upload_with_session(
     }
 
     let mut staged = Vec::with_capacity(files.len());
+    let mut staging_residual = Vec::new();
     for (file, target) in files.iter().zip(targets.iter()) {
         match stage_upload_file(session, directory, &file.bytes).await {
-            Ok(temp) => staged.push((temp, target.clone())),
-            Err(failure) => {
+            Ok(staged_upload) => {
+                staging_residual.extend(staged_upload.ambiguous);
+                staged.push((staged_upload.path, target.clone()));
+            }
+            Err(stage_failure) => {
                 let mut residual =
                     cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
-                if let Some(path) = failure.residual {
+                if let Some(path) = stage_failure.failure.residual {
                     residual.insert(0, path);
                 }
+                extend_unique(&mut residual, stage_failure.ambiguous);
+                extend_unique(&mut residual, staging_residual);
                 return Ok(RemoteUploadOutcome {
                     status: if residual.is_empty() {
                         UploadBatchStatus::FailedRolledBack
@@ -723,7 +758,7 @@ async fn upload_with_session(
                         )
                     }),
                     residual,
-                    error: Some(failure.error),
+                    error: Some(stage_failure.failure.error),
                 });
             }
         }
@@ -764,10 +799,11 @@ async fn upload_with_session(
         }
     }
 
-    let residual = cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
+    let mut residual = cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
+    extend_unique(&mut residual, staging_residual);
     let warning = (!residual.is_empty()).then(|| {
         format!(
-            "文件已上传，但临时文件清理失败；请稍后手动清理 {}",
+            "文件已上传，但临时文件清理失败或状态未知；请稍后手动核对 {}",
             residual.join("、")
         )
     });
@@ -813,7 +849,7 @@ async fn failed_upload_outcome(
     }
     let temp_residual = cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
     let temp_cleanup_failed = !temp_residual.is_empty();
-    residual.extend(temp_residual);
+    extend_unique(&mut residual, temp_residual);
     let warning = (!residual.is_empty()).then(|| {
         let mut parts: Vec<String> = Vec::new();
         if ambiguous_target.is_some() {
@@ -848,25 +884,39 @@ async fn stage_upload_file(
     session: &dyn ScopedSftp,
     directory: &RemoteDirectoryPath,
     bytes: &[u8],
-) -> Result<RemotePath, CreateFileFailure> {
+) -> Result<StagedUpload, StageFailure> {
+    let mut ambiguous = Vec::new();
     let mut last_collision = None;
     for _ in 0..UPLOAD_TEMP_NAME_ATTEMPTS {
         let temp_name = format!(".harbor-upload-{}.part", Uuid::new_v4());
         let temp = directory
             .join_resource(&temp_name)
-            .map_err(CreateFileFailure::new)?;
+            .map_err(|error| StageFailure {
+                failure: CreateFileFailure::new(error),
+                ambiguous: Vec::new(),
+            })?;
         match session.create_new_file(&temp, bytes, None).await {
-            Ok(()) => return Ok(temp),
-            Err(failure)
-                if failure.residual.is_none()
-                    && failure.error.code() == CoreErrorCode::Conflict =>
-            {
+            Ok(()) => {
+                return Ok(StagedUpload {
+                    path: temp,
+                    ambiguous,
+                });
+            }
+            Err(failure) if failure.collision => {
+                if let Some(residual) = failure.residual.clone() {
+                    ambiguous.push(residual);
+                }
                 last_collision = Some(failure);
             }
-            Err(failure) => return Err(failure),
+            Err(failure) => {
+                return Err(StageFailure { failure, ambiguous });
+            }
         }
     }
-    Err(last_collision.expect("at least one upload staging attempt"))
+    Err(StageFailure {
+        failure: last_collision.expect("at least one upload staging attempt"),
+        ambiguous,
+    })
 }
 
 async fn cleanup_paths<'a>(
@@ -882,6 +932,14 @@ async fn cleanup_paths<'a>(
         }
     }
     residual
+}
+
+fn extend_unique(target: &mut Vec<String>, paths: impl IntoIterator<Item = String>) {
+    for path in paths {
+        if !target.contains(&path) {
+            target.push(path);
+        }
+    }
 }
 
 fn append_warning(outcome: &mut RemoteUploadOutcome, warning: Option<String>) {
@@ -1025,6 +1083,17 @@ async fn write_with_session(
     .await;
 
     if let Err(error) = replacement {
+        let temp_state = session.symlink_metadata(&temp).await;
+        if matches!(temp_state, Ok(None)) {
+            return Err(CoreError::new(
+                error.code(),
+                format!(
+                    "{}；临时文件已不存在，替换可能已成功，请重新加载远程文件核对后再决定是否重试",
+                    error.message()
+                ),
+                error.is_retryable(),
+            ));
+        }
         if let Err(cleanup_error) = session.remove_file(&temp).await
             && cleanup_error.code() != CoreErrorCode::NotFound
         {
@@ -1032,6 +1101,17 @@ async fn write_with_session(
                 error.code(),
                 format!(
                     "{}；临时文件 {} 清理失败，请手动清理",
+                    error.message(),
+                    temp.as_str()
+                ),
+                error.is_retryable(),
+            ));
+        }
+        if temp_state.is_err() {
+            return Err(CoreError::new(
+                error.code(),
+                format!(
+                    "{}；无法确认临时文件 {} 的状态，请手动核对",
                     error.message(),
                     temp.as_str()
                 ),
@@ -1282,7 +1362,7 @@ impl ScopedSftp for RusshScopedSftp {
             Err(error) => {
                 let error = sftp_error("创建远程临时文件", error);
                 if error.code() == CoreErrorCode::Conflict {
-                    return Err(CreateFileFailure::new(error));
+                    return Err(CreateFileFailure::collision(error));
                 }
                 return Err(match self.session.symlink_metadata(path.as_str()).await {
                     Err(SftpError::Status(status))
@@ -1290,9 +1370,10 @@ impl ScopedSftp for RusshScopedSftp {
                     {
                         CreateFileFailure::new(error)
                     }
-                    Ok(_) | Err(_) => {
-                        CreateFileFailure::with_residual(error, path.as_str().to_owned())
+                    Ok(_) => {
+                        CreateFileFailure::collision_with_residual(error, path.as_str().to_owned())
                     }
+                    Err(_) => CreateFileFailure::with_residual(error, path.as_str().to_owned()),
                 });
             }
         };

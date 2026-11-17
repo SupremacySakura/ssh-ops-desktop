@@ -75,10 +75,11 @@ struct FakeState {
     remove_not_found_paths: HashSet<String>,
     fail_remove_contains: Option<String>,
     fail_rename: bool,
+    fail_rename_after_move: bool,
     chmod_after_read: Option<(String, Option<u32>)>,
     create_attempts: usize,
     create_fail_at: Option<usize>,
-    create_conflict_at: Option<usize>,
+    create_conflict_attempts: HashSet<usize>,
     create_cleanup_failed: bool,
 }
 
@@ -139,6 +140,10 @@ impl FakeConnector {
         self.state.lock().await.fail_rename = true;
     }
 
+    async fn fail_rename_after_move(&self) {
+        self.state.lock().await.fail_rename_after_move = true;
+    }
+
     async fn fail_create_at(&self, attempt: usize, cleanup_failed: bool) {
         let mut state = self.state.lock().await;
         state.create_fail_at = Some(attempt);
@@ -146,7 +151,11 @@ impl FakeConnector {
     }
 
     async fn fail_create_conflict_at(&self, attempt: usize) {
-        self.state.lock().await.create_conflict_at = Some(attempt);
+        self.state
+            .lock()
+            .await
+            .create_conflict_attempts
+            .insert(attempt);
     }
 
     async fn chmod_after_read(&self, path: &str, permissions: Option<u32>) {
@@ -289,12 +298,18 @@ impl ScopedSftp for FakeSession {
         let path = path.as_str();
         let mut state = self.state.lock().await;
         state.create_attempts += 1;
-        if state.create_conflict_at == Some(state.create_attempts) {
-            return Err(CreateFileFailure::new(CoreError::new(
-                CoreErrorCode::Conflict,
-                "injected temporary name collision",
-                false,
-            )));
+        if state
+            .create_conflict_attempts
+            .contains(&state.create_attempts)
+        {
+            return Err(CreateFileFailure::collision_with_residual(
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    "injected temporary name collision",
+                    false,
+                ),
+                path.to_owned(),
+            ));
         }
         if state.create_fail_at == Some(state.create_attempts) {
             let error = CoreError::new(CoreErrorCode::Internal, "injected create failure", true);
@@ -336,6 +351,13 @@ impl ScopedSftp for FakeSession {
         }
         let node = state.nodes.remove(source).ok_or_else(not_found)?;
         state.nodes.insert(destination.to_owned(), node);
+        if state.fail_rename_after_move {
+            return Err(CoreError::new(
+                CoreErrorCode::Internal,
+                "injected lost rename response",
+                true,
+            ));
+        }
         Ok(())
     }
 
@@ -736,6 +758,36 @@ async fn write_reports_a_failed_edit_temp_cleanup_without_hiding_the_commit_erro
 }
 
 #[tokio::test]
+async fn write_does_not_claim_a_safe_retry_after_a_lost_rename_response() {
+    let old = "old\n";
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/etc", FakeNode::directory()),
+        ("/etc/app.conf", FakeNode::file(old)),
+    ])
+    .await;
+    connector.fail_rename_after_move().await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let error = service
+        .write(
+            &connection(),
+            &RemotePath::try_new("/etc/app.conf").unwrap(),
+            "new\n".to_owned(),
+            &sha256(old.as_bytes()),
+        )
+        .await
+        .expect_err("a lost rename response must be reported as uncertain");
+
+    assert_eq!(error.code(), CoreErrorCode::Internal);
+    assert!(error.message().contains("替换可能已成功"));
+    assert_eq!(
+        connector.node("/etc/app.conf").await.unwrap().bytes,
+        b"new\n"
+    );
+}
+
+#[tokio::test]
 async fn write_rejects_symlinks_invalid_limits_and_missing_expected_hash() {
     let connector = FakeConnector::with_nodes([
         ("/", FakeNode::directory()),
@@ -1080,6 +1132,43 @@ async fn upload_retries_a_bounded_temporary_name_collision() {
     assert_eq!(outcome.committed, vec!["/docs/one.txt"]);
     assert_eq!(connector.create_attempts().await, 2);
     assert_eq!(connector.paths().await, vec!["/", "/docs", "/docs/one.txt"]);
+}
+
+#[tokio::test]
+async fn upload_stops_after_the_temporary_name_retry_budget() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+    ])
+    .await;
+    for attempt in 1..=3 {
+        connector.fail_create_conflict_at(attempt).await;
+    }
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .upload_batch(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/docs").unwrap(),
+            &[RemoteUploadFile {
+                name: "one.txt".to_owned(),
+                bytes: b"one".to_vec(),
+            }],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, UploadBatchStatus::FailedWithResidue);
+    assert_eq!(outcome.residual.len(), 3);
+    assert!(
+        outcome
+            .residual
+            .iter()
+            .all(|path| path.starts_with("/docs/.harbor-upload-"))
+    );
+    assert_eq!(outcome.error.unwrap().code(), CoreErrorCode::Internal);
+    assert_eq!(connector.create_attempts().await, 3);
+    assert_eq!(connector.paths().await, vec!["/", "/docs"]);
 }
 
 #[tokio::test]
