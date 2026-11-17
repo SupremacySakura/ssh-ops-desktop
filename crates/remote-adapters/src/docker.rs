@@ -16,11 +16,13 @@ pub struct ContainerIdentifier(String);
 impl ContainerIdentifier {
     pub fn try_new(value: &str) -> Result<Self, CoreError> {
         let value = value.trim();
+        let mut characters = value.chars();
         if value.is_empty()
             || value.len() > 128
-            || value.starts_with('-')
-            || value.chars().any(char::is_control)
-            || !value.chars().all(|character| {
+            || !characters
+                .next()
+                .is_some_and(|character| character.is_ascii_alphanumeric())
+            || !characters.all(|character| {
                 character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-')
             })
         {

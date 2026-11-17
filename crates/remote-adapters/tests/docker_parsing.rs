@@ -81,6 +81,8 @@ fn parses_version_and_stats_and_rejects_option_like_ids() {
     let stats = parse_stats(br#"{"ID":"abc123","Name":"web","CPUPerc":"0.10%","MemUsage":"1MiB / 1GiB","MemPerc":"0.10%","NetIO":"1kB / 2kB","BlockIO":"0B / 0B"}"#).unwrap();
     assert_eq!(stats.name, "web");
     assert!(ContainerIdentifier::try_new("--host=tcp://evil").is_err());
+    assert!(ContainerIdentifier::try_new(".hidden").is_err());
+    assert!(ContainerIdentifier::try_new("_named").is_err());
 }
 
 #[tokio::test]
