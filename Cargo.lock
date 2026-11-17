@@ -3152,6 +3152,7 @@ dependencies = [
  "opspilot-persistence",
  "opspilot-secrets",
  "serde",
+ "serde_json",
  "sqlx",
  "tauri",
  "tauri-build",
@@ -3174,6 +3175,7 @@ version = "0.1.0"
 dependencies = [
  "opspilot-domain",
  "sqlx",
+ "tempfile",
  "tokio",
 ]
 

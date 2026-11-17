@@ -1,1 +1,1 @@
-{"main":{"identifier":"main","description":"Minimal IPC access for the Harbor main window.","local":true,"windows":["main"],"permissions":["allow-core-health"]}}
+{"main":{"identifier":"main","description":"Minimal IPC access for the Harbor main window.","local":true,"windows":["main"],"permissions":["allow-core-health","allow-server-list","allow-server-create","allow-server-update","allow-server-delete","allow-server-credential-set","allow-server-group-list","allow-server-group-create","allow-server-group-update","allow-server-group-delete"]}}

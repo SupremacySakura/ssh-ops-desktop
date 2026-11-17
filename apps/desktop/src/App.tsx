@@ -2,6 +2,9 @@ import { useEffect } from 'react';
 
 import type { CoreClient } from './api/core';
 import { HarborShell } from './app/harbor-shell';
+import { GroupManagerDialog } from './features/catalog/group-manager-dialog';
+import { ServerFormDialog } from './features/catalog/server-form-dialog';
+import { CommandPalette } from './features/command-palette/command-palette';
 import { useHarborStore } from './store/harbor-store';
 
 interface AppProps {
@@ -9,7 +12,14 @@ interface AppProps {
 }
 
 export default function App({ core }: AppProps) {
+  const configureCore = useHarborStore((state) => state.configureCore);
+  const loadCatalog = useHarborStore((state) => state.loadCatalog);
   const setCoreHealth = useHarborStore((state) => state.setCoreHealth);
+
+  useEffect(() => {
+    configureCore(core);
+    void loadCatalog();
+  }, [configureCore, core, loadCatalog]);
 
   useEffect(() => {
     let active = true;
@@ -28,5 +38,12 @@ export default function App({ core }: AppProps) {
     };
   }, [core, setCoreHealth]);
 
-  return <HarborShell />;
+  return (
+    <>
+      <HarborShell />
+      <ServerFormDialog />
+      <GroupManagerDialog />
+      <CommandPalette />
+    </>
+  );
 }
