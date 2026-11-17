@@ -6,10 +6,10 @@ use std::{
 use async_trait::async_trait;
 use opspilot_domain::{CoreError, CoreErrorCode, Id};
 use opspilot_ssh_core::{
-    ConnectionHandle, MAX_EDITABLE_FILE_BYTES, MAX_FILE_DOWNLOAD_BYTES, RemoteDirectoryPath,
-    RemoteFileKind, RemoteFileMutationResult, RemoteFileService, RemotePath, RemoteRenameResult,
-    RemoteUploadFile, RemoteUploadOutcome, RenameStatus, ScopedDirectoryEntry, ScopedMetadata,
-    ScopedSftp, SftpConnector, UploadBatchStatus,
+    ConnectionHandle, CreateFileFailure, MAX_EDITABLE_FILE_BYTES, MAX_FILE_DOWNLOAD_BYTES,
+    RemoteDirectoryPath, RemoteFileKind, RemoteFileMutationResult, RemoteFileService, RemotePath,
+    RemoteRenameResult, RemoteUploadFile, RemoteUploadOutcome, RenameStatus, ScopedDirectoryEntry,
+    ScopedMetadata, ScopedSftp, SftpConnector, UploadBatchStatus,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -73,6 +73,9 @@ struct FakeState {
     fail_remove_paths: HashSet<String>,
     fail_remove_contains: Option<String>,
     chmod_after_read: Option<(String, Option<u32>)>,
+    create_attempts: usize,
+    create_fail_at: Option<usize>,
+    create_cleanup_failed: bool,
 }
 
 #[derive(Clone, Default)]
@@ -114,6 +117,12 @@ impl FakeConnector {
 
     async fn fail_remove_containing(&self, fragment: &str) {
         self.state.lock().await.fail_remove_contains = Some(fragment.to_owned());
+    }
+
+    async fn fail_create_at(&self, attempt: usize, cleanup_failed: bool) {
+        let mut state = self.state.lock().await;
+        state.create_fail_at = Some(attempt);
+        state.create_cleanup_failed = cleanup_failed;
     }
 
     async fn chmod_after_read(&self, path: &str, permissions: Option<u32>) {
@@ -249,15 +258,24 @@ impl ScopedSftp for FakeSession {
         path: &RemotePath,
         bytes: &[u8],
         permissions: Option<u32>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<(), CreateFileFailure> {
         let path = path.as_str();
         let mut state = self.state.lock().await;
+        state.create_attempts += 1;
+        if state.create_fail_at == Some(state.create_attempts) {
+            let error = CoreError::new(CoreErrorCode::Internal, "injected create failure", true);
+            if state.create_cleanup_failed {
+                state.nodes.insert(path.to_owned(), FakeNode::file(bytes));
+                return Err(CreateFileFailure::with_residual(error, path.to_owned()));
+            }
+            return Err(CreateFileFailure::new(error));
+        }
         if state.nodes.contains_key(path) {
-            return Err(CoreError::new(
+            return Err(CreateFileFailure::new(CoreError::new(
                 CoreErrorCode::Conflict,
                 "target exists",
                 false,
-            ));
+            )));
         }
         state.nodes.insert(
             path.to_owned(),
@@ -866,6 +884,49 @@ async fn upload_reports_residue_when_rollback_removal_fails() {
     );
     assert_eq!(outcome.error.unwrap().code(), CoreErrorCode::Conflict);
     assert_eq!(connector.paths().await, vec!["/", "/docs", "/docs/one.txt"]);
+}
+
+#[tokio::test]
+async fn upload_reports_staging_temp_residue_instead_of_claiming_full_rollback() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+    ])
+    .await;
+    connector.fail_create_at(1, true).await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .upload_batch(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/docs").unwrap(),
+            &[RemoteUploadFile {
+                name: "one.txt".to_owned(),
+                bytes: b"one".to_vec(),
+            }],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, UploadBatchStatus::FailedWithResidue);
+    assert!(outcome.committed.is_empty());
+    assert_eq!(outcome.residual.len(), 1);
+    assert!(outcome.residual[0].contains(".harbor-upload-"));
+    assert!(
+        outcome
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("临时文件清理失败"))
+    );
+    let residual = outcome.residual.clone();
+    assert_eq!(outcome.error.unwrap().code(), CoreErrorCode::Internal);
+    assert!(
+        connector
+            .paths()
+            .await
+            .iter()
+            .any(|path| residual.contains(path))
+    );
 }
 
 #[tokio::test]

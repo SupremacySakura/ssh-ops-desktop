@@ -19,8 +19,8 @@ pub use openssh::{
     SshConfigWarning, read_ssh_config,
 };
 pub use remote_files::{
-    FILE_DOWNLOAD_WARNING_BYTES, FILE_UPLOAD_WARNING_BYTES, MAX_EDIT_WRITE_BYTES,
-    MAX_EDITABLE_FILE_BYTES, MAX_FILE_DOWNLOAD_BYTES, MAX_FILE_UPLOAD_BYTES,
+    CreateFileFailure, FILE_DOWNLOAD_WARNING_BYTES, FILE_UPLOAD_WARNING_BYTES,
+    MAX_EDIT_WRITE_BYTES, MAX_EDITABLE_FILE_BYTES, MAX_FILE_DOWNLOAD_BYTES, MAX_FILE_UPLOAD_BYTES,
     MAX_UPLOAD_BATCH_BYTES, MAX_UPLOAD_BATCH_FILES, RemoteFileDownload, RemoteFileEntry,
     RemoteFileKind, RemoteFileMutationResult, RemoteFileService, RemoteFileWriteResult,
     RemoteRenameResult, RemoteTextFile, RemoteUploadFile, RemoteUploadOutcome, RenameStatus,

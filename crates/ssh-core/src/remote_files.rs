@@ -40,6 +40,28 @@ pub struct ScopedMetadata {
     pub permissions: Option<u32>,
 }
 
+#[derive(Clone, Debug)]
+pub struct CreateFileFailure {
+    pub error: CoreError,
+    pub residual: Option<String>,
+}
+
+impl CreateFileFailure {
+    pub fn new(error: CoreError) -> Self {
+        Self {
+            error,
+            residual: None,
+        }
+    }
+
+    pub fn with_residual(error: CoreError, residual: String) -> Self {
+        Self {
+            error,
+            residual: Some(residual),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScopedDirectoryEntry {
     pub name: String,
@@ -66,7 +88,7 @@ pub trait ScopedSftp: Send + Sync {
         path: &RemotePath,
         bytes: &[u8],
         permissions: Option<u32>,
-    ) -> Result<(), CoreError>;
+    ) -> Result<(), CreateFileFailure>;
     async fn rename(&self, source: &RemotePath, destination: &RemotePath) -> Result<(), CoreError>;
     async fn hardlink(
         &self,
@@ -640,15 +662,11 @@ async fn upload_with_session(
     for (file, target) in files.iter().zip(targets.iter()) {
         let temp_name = format!(".harbor-upload-{}.part", Uuid::new_v4());
         let temp = directory.join_resource(&temp_name)?;
-        if let Err(error) = session.create_new_file(&temp, &file.bytes, None).await {
-            let residual = cleanup_paths(
-                session,
-                staged
-                    .iter()
-                    .map(|(path, _)| path)
-                    .chain(std::iter::once(&temp)),
-            )
-            .await;
+        if let Err(failure) = session.create_new_file(&temp, &file.bytes, None).await {
+            let mut residual = cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
+            if let Some(path) = failure.residual {
+                residual.insert(0, path);
+            }
             return Ok(RemoteUploadOutcome {
                 status: if residual.is_empty() {
                     UploadBatchStatus::FailedRolledBack
@@ -663,7 +681,7 @@ async fn upload_with_session(
                     )
                 }),
                 residual,
-                error: Some(error),
+                error: Some(failure.error),
             });
         }
         staged.push((temp, target.clone()));
@@ -871,9 +889,23 @@ async fn write_with_session(
 
     let temp_name = format!(".harbor-edit-{}.tmp", Uuid::new_v4());
     let temp = path.parent_directory().join_resource(&temp_name)?;
-    session
+    if let Err(failure) = session
         .create_new_file(&temp, content.as_bytes(), metadata.permissions)
-        .await?;
+        .await
+    {
+        return Err(match failure.residual {
+            Some(residual) => CoreError::new(
+                failure.error.code(),
+                format!(
+                    "{}；临时文件 {} 清理失败，请手动清理",
+                    failure.error.message(),
+                    residual
+                ),
+                failure.error.is_retryable(),
+            ),
+            None => failure.error,
+        });
+    }
 
     let replacement = async {
         let latest_metadata = session.symlink_metadata(path).await?.ok_or_else(|| {
@@ -1025,6 +1057,16 @@ struct RusshScopedSftp {
     session: SftpSession,
 }
 
+impl RusshScopedSftp {
+    async fn cleanup_created_file(&self, path: &RemotePath) -> Option<String> {
+        match self.session.remove_file(path.as_str()).await {
+            Ok(()) => None,
+            Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => None,
+            Err(_) => Some(path.as_str().to_owned()),
+        }
+    }
+}
+
 #[async_trait]
 impl ScopedSftp for RusshScopedSftp {
     async fn list_dir(
@@ -1122,7 +1164,7 @@ impl ScopedSftp for RusshScopedSftp {
         path: &RemotePath,
         bytes: &[u8],
         permissions: Option<u32>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<(), CreateFileFailure> {
         let mut attributes = FileAttributes::empty();
         attributes.permissions = permissions.map(|mode| mode & 0o7777);
         let mut file = self
@@ -1133,20 +1175,29 @@ impl ScopedSftp for RusshScopedSftp {
                 attributes,
             )
             .await
-            .map_err(|error| sftp_error("创建远程临时文件", error))?;
+            .map_err(|error| CreateFileFailure::new(sftp_error("创建远程临时文件", error)))?;
         if let Err(error) = file.write_all(bytes).await {
             drop(file);
-            let _ = self.session.remove_file(path.as_str()).await;
-            return Err(io_error("写入远程临时文件", error));
+            let error = io_error("写入远程临时文件", error);
+            return Err(match self.cleanup_created_file(path).await {
+                Some(residual) => CreateFileFailure::with_residual(error, residual),
+                None => CreateFileFailure::new(error),
+            });
         }
         if let Err(error) = file.sync_all().await {
             drop(file);
-            let _ = self.session.remove_file(path.as_str()).await;
-            return Err(sftp_error("同步远程临时文件", error));
+            let error = sftp_error("同步远程临时文件", error);
+            return Err(match self.cleanup_created_file(path).await {
+                Some(residual) => CreateFileFailure::with_residual(error, residual),
+                None => CreateFileFailure::new(error),
+            });
         }
         if let Err(error) = file.close().await {
-            let _ = self.session.remove_file(path.as_str()).await;
-            return Err(io_error("关闭远程临时文件", error));
+            let error = io_error("关闭远程临时文件", error);
+            return Err(match self.cleanup_created_file(path).await {
+                Some(residual) => CreateFileFailure::with_residual(error, residual),
+                None => CreateFileFailure::new(error),
+            });
         }
         Ok(())
     }
