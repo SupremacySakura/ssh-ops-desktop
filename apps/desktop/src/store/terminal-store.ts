@@ -605,7 +605,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
       try {
         await core.disconnect(runtime.connection);
       } catch (error) {
-        if (coreErrorCode(error) !== 'NOT_FOUND') {
+        const code = coreErrorCode(error);
+        if (code !== 'NOT_FOUND' && code !== 'SSH_CONNECTION') {
           updateRuntime(set, serverId, (current) => ({
             ...current,
             error: connectionErrorMessage(error),

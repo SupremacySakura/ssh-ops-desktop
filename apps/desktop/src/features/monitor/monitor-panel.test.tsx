@@ -3,7 +3,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import type { MonitorSnapshot } from '@opspilot/contracts';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -113,5 +113,50 @@ describe('Monitor topbar gauges', () => {
     const cpu = screen.getByRole('region', { name: 'CPU 概览' });
     expect(cpu).toHaveTextContent('正在采样');
     expect(cpu).not.toHaveTextContent('0.0%');
+  });
+
+  it('forces a dead transport down before reconnecting from the offline state', async () => {
+    useMonitorStore.setState({
+      states: {
+        [serverId]: {
+          connectionId,
+          phase: 'offline',
+          latest: null,
+          samples: [],
+          error: 'SSH 连接已断开，监控采样已暂停',
+          unavailable: [],
+          inFlight: false,
+          lastUpdatedAt: null,
+        },
+      },
+    });
+    const originalDisconnect = useTerminalStore.getState().disconnectServer;
+    const originalRetry = useTerminalStore.getState().retryServer;
+    const disconnectServer = vi.fn(async () => undefined);
+    const retryServer = vi.fn(async () => undefined);
+    useTerminalStore.setState({ disconnectServer, retryServer });
+
+    try {
+      render(
+        <MonitorPanel
+          connectionId={connectionId}
+          connectionStatus="ready"
+          serverId={serverId}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: '重新连接' }));
+
+      await vi.waitFor(() => {
+        expect(disconnectServer).toHaveBeenCalledWith(serverId);
+        expect(retryServer).toHaveBeenCalledWith(serverId);
+      });
+      expect(disconnectServer.mock.invocationCallOrder[0])
+        .toBeLessThan(retryServer.mock.invocationCallOrder[0] ?? 0);
+    } finally {
+      useTerminalStore.setState({
+        disconnectServer: originalDisconnect,
+        retryServer: originalRetry,
+      });
+    }
   });
 });

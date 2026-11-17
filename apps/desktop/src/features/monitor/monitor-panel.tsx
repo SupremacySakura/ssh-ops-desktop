@@ -31,6 +31,7 @@ export function MonitorPanel({
 }: MonitorPanelProps) {
   const state = useMonitorStore((store) => store.states[serverId]);
   const retrySampling = useMonitorStore((store) => store.retrySampling);
+  const disconnectServer = useTerminalStore((store) => store.disconnectServer);
   const retryServer = useTerminalStore((store) => store.retryServer);
   const [sort, setSort] = useState<MonitorProcessSort>('cpu');
   const titleId = useId();
@@ -112,7 +113,14 @@ export function MonitorPanel({
           </div>
           <button
             className="h-7 shrink-0 border border-danger px-2.5 text-[10px] font-medium text-danger hover:bg-paper"
-            onClick={() => void retryServer(serverId)}
+            onClick={() => {
+              void (async () => {
+                if (connectionStatus === 'ready') {
+                  await disconnectServer(serverId);
+                }
+                await retryServer(serverId);
+              })();
+            }}
             type="button"
           >
             重新连接
