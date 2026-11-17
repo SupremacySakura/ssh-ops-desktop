@@ -27,18 +27,37 @@ describe('terminal command tracking', () => {
     expect(trackExecutedCommands('   \r', state)).toEqual([]);
   });
 
-  it('only treats commands visible in the echoed terminal line as executable history', () => {
+  it('only records a command after its own echo extends the prompt line', () => {
     expect(commandAppearsInTerminalEcho(
-      ['deploy@prod:~$ sudo systemctl restart nginx'],
+      'deploy@prod:~$ ',
+      'deploy@prod:~$ sudo systemctl restart nginx',
       'sudo systemctl restart nginx',
     )).toBe(true);
     expect(commandAppearsInTerminalEcho(
-      ['deploy@prod:~$ sudo systemctl restart nginx', '[sudo] password for deploy:'],
-      'correct-horse-battery-staple',
+      '[sudo] password for deploy:',
+      '[sudo] password for deploy:',
+      'deploy',
     )).toBe(false);
     expect(commandAppearsInTerminalEcho(
-      ['[sudo] password for deploy:'],
-      'correct-horse-battery-staple',
+      '[sudo] password for deploy: ',
+      '[sudo] password for deploy: deploy',
+      'deploy',
     )).toBe(false);
+    expect(commandAppearsInTerminalEcho(
+      'Last successful login: deploy',
+      'Last successful login: deploy',
+      'deploy',
+    )).toBe(false);
+    expect(commandAppearsInTerminalEcho(
+      'deploy@prod:~$ ',
+      'deploy@prod:~$ echo deploy@prod',
+      'deploy',
+    )).toBe(false);
+    expect(commandAppearsInTerminalEcho(
+      '',
+      'echo without-a-prompt',
+      'echo without-a-prompt',
+    )).toBe(true);
+    expect(commandAppearsInTerminalEcho('', '', 'hidden-password')).toBe(false);
   });
 });

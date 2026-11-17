@@ -104,22 +104,23 @@ export function XtermViewport({
     terminalRef.current = terminal;
     fitRef.current = fit;
     const lineState = { current: '', inEscape: false };
-    const commandTimers = new Set<number>();
+    let draftBaseline: string | null = null;
     let lastSize = { columns: 0, rows: 0 };
 
     const sendTracked = (text: string) => {
-      for (const command of trackExecutedCommands(text, lineState)) {
-        const timer = window.setTimeout(() => {
-          commandTimers.delete(timer);
-          if (
-            statusRef.current === 'open'
-            && commandAppearsInTerminalEcho(recentVisibleLines(terminal), command)
-          ) {
+      const hadDraft = lineState.current.length > 0;
+      const baseline = hadDraft ? draftBaseline : currentVisibleLine(terminal);
+      const commands = trackExecutedCommands(text, lineState);
+      if (!hadDraft && lineState.current.length > 0) draftBaseline = baseline;
+      const currentLine = currentVisibleLine(terminal);
+      if (statusRef.current === 'open' && baseline !== null) {
+        for (const command of commands) {
+          if (commandAppearsInTerminalEcho(baseline, currentLine, command)) {
             onCommandRef.current(command);
           }
-        }, 60);
-        commandTimers.add(timer);
+        }
       }
+      if (lineState.current.length === 0) draftBaseline = null;
       onInputRef.current(new TextEncoder().encode(text));
     };
     const fitAndReport = () => {
@@ -146,10 +147,8 @@ export function XtermViewport({
       if (!selection) return false;
       return writeClipboardText(selection);
     };
-    const paste = async (): Promise<PasteOutcome> => {
+    const pasteText = (text: string): PasteOutcome => {
       if (statusRef.current !== 'open') return { kind: 'unavailable' };
-      const text = await readClipboardText();
-      if (text === null) return { kind: 'unavailable' };
       if (text.length === 0) return { kind: 'empty' };
 
       const inspection = inspectTerminalPaste(text);
@@ -172,12 +171,27 @@ export function XtermViewport({
       terminal.focus();
       return { kind: 'pasted' };
     };
+    const paste = async (): Promise<PasteOutcome> => {
+      if (statusRef.current !== 'open') return { kind: 'unavailable' };
+      const text = await readClipboardText();
+      return text === null ? { kind: 'unavailable' } : pasteText(text);
+    };
     const insertCommand = (command: string) => {
       if (statusRef.current !== 'open') return;
+      if (lineState.current.length === 0) draftBaseline = currentVisibleLine(terminal);
       lineState.current += command;
       onInputRef.current(new TextEncoder().encode(command));
       terminal.focus();
     };
+    const handleNativePaste = (event: ClipboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const text = event.clipboardData?.getData('text/plain');
+      if (text !== undefined) pasteText(text);
+    };
+    terminal.element?.addEventListener('paste', handleNativePaste, {
+      capture: true,
+    });
 
     const input = terminal.onData((value) => {
       if (value === '\u0012') return;
@@ -185,6 +199,7 @@ export function XtermViewport({
       sendTracked(value);
     });
     terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
       const commandKey = event.metaKey || event.ctrlKey;
       if (!commandKey) return true;
       const key = event.key.toLocaleLowerCase('en-US');
@@ -222,8 +237,9 @@ export function XtermViewport({
 
     return () => {
       onRegisterActionsRef.current(session.id, null);
-      for (const timer of commandTimers) window.clearTimeout(timer);
-      commandTimers.clear();
+      terminal.element?.removeEventListener('paste', handleNativePaste, {
+        capture: true,
+      });
       resizeObserver?.disconnect();
       unsubscribeOutput();
       input.dispose();
@@ -289,14 +305,7 @@ async function readClipboardText(): Promise<string | null> {
   }
 }
 
-function recentVisibleLines(terminal: Terminal): string[] {
+function currentVisibleLine(terminal: Terminal): string {
   const buffer = terminal.buffer.active;
-  const lines: string[] = [];
-  for (let offset = 0; offset <= 2; offset += 1) {
-    const row = buffer.baseY + buffer.cursorY - offset;
-    if (row < 0) continue;
-    const line = buffer.getLine(row)?.translateToString(true);
-    if (line) lines.push(line);
-  }
-  return lines;
+  return buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true) ?? '';
 }

@@ -136,6 +136,132 @@ test('selecting a server opens a live xterm with sessions, history, and keepaliv
   ).toContainText('1/8');
 });
 
+test('never records interactive input that the remote pty does not echo', async ({ page }) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  const terminal = page.getByRole('log', { name: '终端 1' });
+  await expect(terminal).toBeVisible();
+
+  await page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: {
+        core: {
+          emitTerminalData(event: {
+            terminalSessionId: string;
+            sequence: number;
+            bytes: number[];
+          }): void;
+          writeTerminal: () => Promise<void>;
+        };
+        terminalStore: {
+          getState(): {
+            runtimes: Record<string, {
+              sessions: Array<{ id: string }>;
+            }>;
+          };
+        };
+      };
+    };
+    const state = runtime.__harborRuntime;
+    const session = Object.values(state.terminalStore.getState().runtimes)
+      .flatMap((entry) => entry.sessions)[0];
+    if (!session) throw new Error('missing fixture session');
+    state.core.writeTerminal = async () => undefined;
+    state.core.emitTerminalData({
+      terminalSessionId: session.id,
+      sequence: 2,
+      bytes: Array.from(new TextEncoder().encode('[sudo] password for deploy: ')),
+    });
+  });
+  await expect(terminal).toContainText('[sudo] password for deploy:');
+
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.type('deploy');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(150);
+  await page.keyboard.press('Control+KeyR');
+
+  const history = page.getByRole('dialog', { name: '命令历史' });
+  await expect(history).toBeVisible();
+  await history.getByRole('searchbox', { name: '搜索命令历史' }).fill('deploy');
+  await expect(history.getByRole('option')).toHaveCount(0);
+});
+
+test('routes native paste through confirmation and sends one keyboard paste', async ({ page }) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  const terminal = page.getByRole('log', { name: '终端 1' });
+  await expect(terminal).toBeVisible();
+  await page.locator('.xterm-helper-textarea').focus();
+
+  const dispatchNativePaste = (text: string) => page.evaluate((value) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', value);
+    const textarea = document.querySelector('.xterm-helper-textarea');
+    if (!(textarea instanceof HTMLElement)) {
+      throw new Error('missing xterm textarea');
+    }
+    textarea.dispatchEvent(new ClipboardEvent('paste', {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: data,
+    }));
+  }, text);
+
+  const declined = page.waitForEvent('dialog');
+  const declinedPaste = dispatchNativePaste(
+    'echo native-one\necho native-two',
+  );
+  const declinedDialog = await declined;
+  expect(declinedDialog.message()).toContain('2 行');
+  await declinedDialog.dismiss();
+  await declinedPaste;
+  await expect(terminal).not.toContainText('echo native-one');
+
+  const accepted = page.waitForEvent('dialog');
+  const acceptedPaste = dispatchNativePaste(
+    'echo native-one\necho native-two',
+  );
+  const acceptedDialog = await accepted;
+  await acceptedDialog.accept();
+  await acceptedPaste;
+  await expect(terminal).toContainText('echo native-one');
+  await expect(terminal).toContainText('echo native-two');
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, 'readText', {
+      configurable: true,
+      value: async () => 'echo keyboard-paste',
+    });
+  });
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.evaluate(() => {
+    const textarea = document.querySelector('.xterm-helper-textarea');
+    if (!(textarea instanceof HTMLElement)) {
+      throw new Error('missing xterm textarea');
+    }
+    for (const type of ['keydown', 'keyup']) {
+      textarea.dispatchEvent(new KeyboardEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        key: 'v',
+      }));
+    }
+  });
+  await expect(terminal).toContainText('echo keyboard-paste');
+  await expect.poll(async () => (
+    await terminal.locator('.xterm-rows').evaluate(
+      (element, command) => element.textContent?.split(command).length - 1,
+      'echo keyboard-paste',
+    )
+  )).toBe(1);
+});
+
 test('editing a connected endpoint closes the old SSH identity first', async ({ page }) => {
   await page.goto('/?scenario=terminal');
   await page.getByRole('button', {

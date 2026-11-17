@@ -3,13 +3,27 @@ export interface CommandTrackingState {
   inEscape: boolean;
 }
 
+const SECRET_PROMPT_PATTERN = (
+  /\b(?:password|passphrase|passcode|token|secret)\b|密码|口令|私钥/iu
+);
+
 export function commandAppearsInTerminalEcho(
-  lines: readonly string[],
+  baselineLine: string,
+  currentLine: string,
   command: string,
 ): boolean {
+  const normalizedBaseline = normalizeForEcho(baselineLine);
+  const normalizedLine = normalizeForEcho(currentLine);
   const normalizedCommand = normalizeForEcho(command);
-  if (normalizedCommand.length === 0) return false;
-  return lines.some((line) => normalizeForEcho(line).includes(normalizedCommand));
+  if (
+    normalizedCommand.length === 0
+    || normalizedLine === normalizedBaseline
+    || !normalizedLine.startsWith(normalizedBaseline)
+    || SECRET_PROMPT_PATTERN.test(normalizedBaseline)
+  ) {
+    return false;
+  }
+  return normalizedLine.slice(normalizedBaseline.length).trim() === normalizedCommand;
 }
 
 export function trackExecutedCommands(
