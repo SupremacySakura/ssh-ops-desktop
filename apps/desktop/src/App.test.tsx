@@ -14,6 +14,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from './App';
+import { useDockerStore } from './store/docker-store';
 import { useHarborStore } from './store/harbor-store';
 import { useMonitorStore } from './store/monitor-store';
 import { useTerminalStore } from './store/terminal-store';
@@ -37,12 +38,14 @@ beforeEach(() => {
   useHarborStore.getState().reset();
   useMonitorStore.getState().reset();
   useTerminalStore.getState().reset();
+  useDockerStore.getState().reset();
 });
 
 afterEach(() => {
   cleanup();
   useMonitorStore.getState().reset();
   useTerminalStore.getState().reset();
+  useDockerStore.getState().reset();
 });
 
 describe('Harbor empty shell', () => {
@@ -770,6 +773,236 @@ describe('Harbor empty shell', () => {
     expect(
       core.calls.filter((call) => call.method === 'connect'),
     ).toHaveLength(2);
+  });
+
+  it('lists Docker containers, opens logs, and refreshes after a confirmed restart', async () => {
+    const server = terminalServer('prod-web-01');
+    const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const core = createFakeCoreClient({
+      servers: [server],
+      dockerContainers: [{
+        id: containerId,
+        names: ['web'],
+        image: 'nginx:alpine',
+        state: 'running',
+        status: 'Up 3 hours',
+        ports: ['0.0.0.0:8080->80/tcp'],
+        startedAt: '2026-11-17T12:00:00Z',
+      }],
+      dockerLogs: {
+        [containerId]: {
+          containerId,
+          tail: 500,
+          stdout: 'request completed\n',
+          stderr: 'warning from stderr\n',
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+
+    expect(await screen.findByText('web')).toBeVisible();
+    expect(screen.getByText('nginx:alpine')).toBeVisible();
+    expect(screen.getByText('运行中')).toBeVisible();
+    expect(screen.getByText('0.0.0.0:8080->80/tcp')).toBeVisible();
+    expect(screen.getByText(/2026-11-17/u)).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 web 日志' }));
+    const logsDialog = screen.getByRole('dialog', { name: '容器日志 web' });
+    expect(await within(logsDialog).findByText(/request completed/u)).toBeVisible();
+    expect(within(logsDialog).getByText(/warning from stderr/u)).toBeVisible();
+    fireEvent.change(within(logsDialog).getByRole('combobox', { name: '日志行数' }), {
+      target: { value: '100' },
+    });
+    await waitFor(() => {
+      expect(core.calls).toContainEqual({
+        method: 'getDockerLogs',
+        args: [
+          useTerminalStore.getState().runtimes[server.id]?.connection,
+          containerId,
+          100,
+        ],
+      });
+    });
+    fireEvent.click(within(logsDialog).getByRole('button', { name: '关闭日志' }));
+    expect(screen.queryByRole('dialog', { name: '容器日志 web' })).not.toBeInTheDocument();
+    expect(screen.getByText('web')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '重启 web' }));
+    const confirmation = screen.getByRole('alertdialog', { name: '重启容器？' });
+    expect(confirmation).toHaveTextContent('web');
+    fireEvent.click(within(confirmation).getByRole('button', { name: '确认重启' }));
+
+    expect(await screen.findByText('容器已重启')).toBeVisible();
+    expect(core.calls).toContainEqual({
+      method: 'runDockerAction',
+      args: [
+        useTerminalStore.getState().runtimes[server.id]?.connection,
+        containerId,
+        'restart',
+      ],
+    });
+  });
+
+  it('execs the selected container with sh and selects the new terminal session', async () => {
+    const server = terminalServer('prod-web-01');
+    const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const core = createFakeCoreClient({
+      servers: [server],
+      dockerContainers: [{
+        id: containerId,
+        names: ['web'],
+        image: 'nginx:alpine',
+        state: 'running',
+        status: 'Up 3 hours',
+        ports: [],
+        startedAt: '2026-11-17T12:00:00Z',
+      }],
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Exec web' }));
+
+    expect(await screen.findByRole('tab', { name: '切换到 终端 2' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(core.calls).toContainEqual(expect.objectContaining({
+      method: 'execDockerContainer',
+      args: [
+        useTerminalStore.getState().runtimes[server.id]?.connection,
+        containerId,
+        'sh',
+        100,
+        30,
+      ],
+    }));
+  });
+
+  it('offers whitelisted shell choices when sh is unavailable', async () => {
+    const server = terminalServer('prod-web-01');
+    const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    let attempts = 0;
+    const core = createFakeCoreClient({
+      servers: [server],
+      dockerContainers: [{
+        id: containerId,
+        names: ['web'],
+        image: 'nginx:alpine',
+        state: 'running',
+        status: 'Up 3 hours',
+        ports: [],
+        startedAt: '2026-11-17T12:00:00Z',
+      }],
+      overrides: {
+        execDockerContainer: async (connection) => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw {
+              code: 'DOCKER_SHELL_UNAVAILABLE',
+              message: 'sh unavailable',
+              retryable: false,
+            };
+          }
+          return { id: crypto.randomUUID(), connection };
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Exec web' }));
+
+    const shellDialog = await screen.findByRole('dialog', { name: '选择容器 shell' });
+    expect(within(shellDialog).getByText(/没有 sh/u)).toBeVisible();
+    fireEvent.click(within(shellDialog).getByRole('button', { name: '使用 bash' }));
+
+    expect(await screen.findByRole('tab', { name: '切换到 终端 2' })).toBeVisible();
+    expect(attempts).toBe(2);
+  });
+
+  it('shows explicit offline, missing Docker, and empty Docker states with retry', async () => {
+    const offlineServer = terminalServer('offline-box', '019c62b2-2970-7000-8000-000000000071');
+    const offline = createFakeCoreClient({
+      servers: [offlineServer],
+      overrides: {
+        connect: async () => {
+          throw {
+            code: 'SSH_CONNECTION',
+            message: 'fixture offline',
+            retryable: true,
+          };
+        },
+      },
+    });
+    const first = render(<App core={offline} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 offline-box/u,
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+    expect(await screen.findByText(/服务器离线/u)).toBeVisible();
+    expect(screen.getByRole('button', { name: '重新连接' })).toBeVisible();
+    first.unmount();
+    cleanup();
+    useHarborStore.getState().reset();
+    useTerminalStore.getState().reset();
+
+    const missingServer = terminalServer(
+      'missing-docker',
+      '019c62b2-2970-7000-8000-000000000072',
+    );
+    const missing = createFakeCoreClient({
+      servers: [missingServer],
+      overrides: {
+        listDockerContainers: async () => {
+          throw {
+            code: 'DOCKER_NOT_INSTALLED',
+            message: 'docker missing',
+            retryable: false,
+          };
+        },
+      },
+    });
+    render(<App core={missing} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 missing-docker/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+    expect(await screen.findByText(/未检测到 Docker CLI/u)).toBeVisible();
+    expect(screen.getByRole('button', { name: '重试 Docker' })).toBeVisible();
+
+    cleanup();
+    useHarborStore.getState().reset();
+    useTerminalStore.getState().reset();
+
+    const emptyServer = terminalServer(
+      'empty-docker',
+      '019c62b2-2970-7000-8000-000000000073',
+    );
+    const empty = createFakeCoreClient({ servers: [emptyServer] });
+    render(<App core={empty} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 empty-docker/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    fireEvent.click(screen.getByRole('button', { name: 'Docker' }));
+    expect(await screen.findByText('当前没有容器')).toBeVisible();
+    expect(screen.getByRole('button', { name: '刷新容器' })).toBeVisible();
   });
 
   it('previews SSH Config rows, imports only ready selections, and marks pending credentials', async () => {

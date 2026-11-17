@@ -23,6 +23,7 @@ import {
   connectionErrorMessage,
   useTerminalStore,
 } from '../../store/terminal-store';
+import { DockerPane } from '../docker/docker-pane';
 import { TerminalPane } from '../terminal/terminal-pane';
 
 interface ServerWorkspaceProps {
@@ -30,7 +31,7 @@ interface ServerWorkspaceProps {
   server: Server;
 }
 
-type WorkspaceTab = 'terminal' | 'monitor';
+type WorkspaceTab = 'terminal' | 'monitor' | 'docker';
 
 export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
   const canonicalServer = useHarborStore((state) => (
@@ -161,7 +162,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
               { key: 'terminal' as const, label: '终端', hint: 'SSH 终端' },
               { key: null, label: '文件', hint: '后续议题接入' },
               { key: 'monitor' as const, label: '监控', hint: '系统监控' },
-              { key: null, label: 'Docker', hint: '后续议题接入' },
+              { key: 'docker' as const, label: 'Docker', hint: 'Docker 容器' },
             ].map((tab) => (
               <button
                 aria-current={activeTab === tab.key ? 'page' : undefined}
@@ -198,6 +199,13 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
                   workspaceActive={active && activeTab === 'terminal'}
                 />
               </div>
+              <div className={activeTab === 'docker' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+                <DockerPane
+                  active={active && activeTab === 'docker'}
+                  onExecOpened={() => setActiveTab('terminal')}
+                  server={canonicalServer}
+                />
+              </div>
               {activeTab === 'monitor' ? (
                 <MonitorPanel
                   connectionId={runtime?.connection?.connectionId ?? null}
@@ -225,6 +233,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
       {confirmingDelete ? (
         <ConfirmDialog
           busy={catalogBusy || deleting}
+          busyLabel="正在删除…"
           confirmLabel="确认删除"
           description={
             <>

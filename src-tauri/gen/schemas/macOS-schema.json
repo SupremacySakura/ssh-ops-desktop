@@ -201,6 +201,30 @@
           "markdownDescription": "Enables the core_health command without any pre-configured scope."
         },
         {
+          "description": "Enables the docker_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-docker-action",
+          "markdownDescription": "Enables the docker_action command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the docker_exec command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-docker-exec",
+          "markdownDescription": "Enables the docker_exec command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the docker_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-docker-list",
+          "markdownDescription": "Enables the docker_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the docker_logs command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-docker-logs",
+          "markdownDescription": "Enables the docker_logs command without any pre-configured scope."
+        },
+        {
           "description": "Enables the monitor_snapshot command without any pre-configured scope.",
           "type": "string",
           "const": "allow-monitor-snapshot",
@@ -319,6 +343,30 @@
           "type": "string",
           "const": "deny-core-health",
           "markdownDescription": "Denies the core_health command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the docker_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-docker-action",
+          "markdownDescription": "Denies the docker_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the docker_exec command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-docker-exec",
+          "markdownDescription": "Denies the docker_exec command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the docker_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-docker-list",
+          "markdownDescription": "Denies the docker_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the docker_logs command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-docker-logs",
+          "markdownDescription": "Denies the docker_logs command without any pre-configured scope."
         },
         {
           "description": "Denies the monitor_snapshot command without any pre-configured scope.",

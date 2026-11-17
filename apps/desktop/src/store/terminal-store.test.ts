@@ -173,6 +173,84 @@ describe('terminal workspace store', () => {
     expect(useTerminalStore.getState().runtimes[server.id]?.error).toContain('最多');
   });
 
+  it('opens Docker exec through the active connection and selects the new session', async () => {
+    const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const core = createFakeCoreClient({
+      servers: [server],
+      dockerContainers: [{
+        id: containerId,
+        names: ['web'],
+        image: 'nginx:alpine',
+        state: 'running',
+        status: 'Up 3 hours',
+        ports: ['8080->80/tcp'],
+        startedAt: '2026-11-17T12:00:00Z',
+      }],
+    });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+
+    const result = await useTerminalStore.getState().openDockerSession(
+      server.id,
+      containerId,
+      'bash',
+    );
+
+    expect(result.kind).toBe('opened');
+    const runtime = useTerminalStore.getState().runtimes[server.id];
+    expect(runtime?.sessions).toHaveLength(2);
+    if (result.kind === 'opened') {
+      expect(runtime?.activeSessionId).toBe(result.session.id);
+    }
+    expect(core.calls).toContainEqual(expect.objectContaining({
+      method: 'execDockerContainer',
+      args: [
+        runtime?.connection,
+        containerId,
+        'bash',
+        100,
+        30,
+      ],
+    }));
+  });
+
+  it('closes a Docker exec channel that resolves after its workspace was disposed', async () => {
+    const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const staleSessionId = '019c62b2-2970-7000-8000-000000000099';
+    const pending = deferred<{
+      id: string;
+      connection: ConnectionHandle;
+    }>();
+    const core = createFakeCoreClient({
+      servers: [server],
+      overrides: {
+        execDockerContainer: async () => pending.promise,
+      },
+    });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const connection = useTerminalStore.getState()
+      .runtimes[server.id]?.connection;
+
+    const opening = useTerminalStore.getState().openDockerSession(
+      server.id,
+      containerId,
+      'sh',
+    );
+    await useTerminalStore.getState().disposeServer(server.id);
+    pending.resolve({
+      id: staleSessionId,
+      connection: connection as ConnectionHandle,
+    });
+
+    await expect(opening).resolves.toMatchObject({ kind: 'error' });
+    expect(useTerminalStore.getState().runtimes[server.id]).toBeUndefined();
+    expect(core.calls).toContainEqual({
+      method: 'closeTerminal',
+      args: [staleSessionId],
+    });
+  });
+
   it('counts only live sessions toward the eight-session budget', async () => {
     const core = createFakeCoreClient({ servers: [server] });
     unlisten = await attachTerminalEvents(core);
@@ -1036,3 +1114,13 @@ describe('terminal workspace store', () => {
     })).toBe('该服务器的凭据尚未配置，请先补充密码或私钥');
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}

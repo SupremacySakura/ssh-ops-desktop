@@ -20,6 +20,11 @@ pub enum CoreErrorCode {
     RemotePermission,
     RemoteCommand,
     RemoteParse,
+    DockerNotInstalled,
+    DockerPermissionDenied,
+    DockerDaemonUnavailable,
+    DockerContainerNotFound,
+    DockerShellUnavailable,
     Internal,
 }
 
@@ -40,6 +45,11 @@ impl fmt::Display for CoreErrorCode {
             Self::RemotePermission => "REMOTE_PERMISSION",
             Self::RemoteCommand => "REMOTE_COMMAND",
             Self::RemoteParse => "REMOTE_PARSE",
+            Self::DockerNotInstalled => "DOCKER_NOT_INSTALLED",
+            Self::DockerPermissionDenied => "DOCKER_PERMISSION_DENIED",
+            Self::DockerDaemonUnavailable => "DOCKER_DAEMON_UNAVAILABLE",
+            Self::DockerContainerNotFound => "DOCKER_CONTAINER_NOT_FOUND",
+            Self::DockerShellUnavailable => "DOCKER_SHELL_UNAVAILABLE",
             Self::Internal => "INTERNAL",
         };
 

@@ -5,6 +5,11 @@ import {
   ConnectionHandleSchema,
   ConnectionStateEventSchema,
   CoreHealthSchema,
+  CoreErrorSchema,
+  DockerActionSchema,
+  DockerContainerListSchema,
+  DockerLogsSchema,
+  DockerShellSchema,
   GroupSchema,
   GroupInputSchema,
   ServerCredentialInputSchema,
@@ -260,5 +265,81 @@ describe('SSH connection and terminal contracts', () => {
       sequence: 3,
       state: { kind: 'closed' },
     }).success).toBe(false);
+  });
+});
+
+describe('Docker contracts', () => {
+  const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
+  it('parses the camelCase container list, optional start time, and inspect warning', () => {
+    const list = {
+      containers: [{
+        id: containerId,
+        names: ['web', 'web-alias'],
+        image: 'nginx:alpine',
+        state: 'running',
+        status: 'Up 3 hours',
+        ports: ['0.0.0.0:8080->80/tcp', ':::8080->80/tcp'],
+        startedAt: '2026-11-17T12:00:00.123456789Z',
+      }, {
+        id: 'worker',
+        names: ['worker'],
+        image: 'worker:1',
+        state: 'exited',
+        status: 'Exited (0)',
+        ports: [],
+        startedAt: null,
+      }],
+      startedAtWarning: 'container inspect unavailable',
+    };
+
+    expect(DockerContainerListSchema.parse(list)).toEqual(list);
+    expect(DockerContainerListSchema.safeParse({
+      ...list,
+      containers: [{ ...list.containers[0], started_at: list.containers[0].startedAt }],
+    }).success).toBe(false);
+    expect(DockerContainerListSchema.safeParse({
+      ...list,
+      containers: [{ ...list.containers[0], names: [] }],
+    }).success).toBe(false);
+  });
+
+  it('accepts only the typed action and shell whitelists', () => {
+    for (const action of ['start', 'stop', 'restart'] as const) {
+      expect(DockerActionSchema.parse(action)).toBe(action);
+    }
+    for (const shell of ['sh', 'bash', 'ash'] as const) {
+      expect(DockerShellSchema.parse(shell)).toBe(shell);
+    }
+    expect(DockerActionSchema.safeParse('rm').success).toBe(false);
+    expect(DockerShellSchema.safeParse('zsh; id').success).toBe(false);
+  });
+
+  it('keeps bounded log output split by stdout and stderr', () => {
+    const logs = {
+      containerId,
+      tail: 500,
+      stdout: 'GET /health 200\n',
+      stderr: 'warn: retrying\n',
+    };
+    expect(DockerLogsSchema.parse(logs)).toEqual(logs);
+    expect(DockerLogsSchema.safeParse({ ...logs, tail: 0 }).success).toBe(false);
+    expect(DockerLogsSchema.safeParse({ ...logs, tail: 1_001 }).success).toBe(false);
+  });
+
+  it('exposes Docker-specific stable error codes', () => {
+    for (const code of [
+      'DOCKER_NOT_INSTALLED',
+      'DOCKER_PERMISSION_DENIED',
+      'DOCKER_DAEMON_UNAVAILABLE',
+      'DOCKER_CONTAINER_NOT_FOUND',
+      'DOCKER_SHELL_UNAVAILABLE',
+    ]) {
+      expect(CoreErrorSchema.parse({
+        code,
+        message: 'docker fixture',
+        retryable: false,
+      }).code).toBe(code);
+    }
   });
 });
