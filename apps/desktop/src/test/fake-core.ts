@@ -5,6 +5,8 @@ import type {
   Group,
   Server,
   ServerCredentialInput,
+  SshConfigImportPreview,
+  SshConfigImportResult,
   TerminalClosedEvent,
   TerminalDataEvent,
   TerminalGapEvent,
@@ -30,6 +32,7 @@ export interface FakeCoreOptions {
   groups?: Group[];
   health?: CoreHealth;
   connectOutcome?: ConnectOutcome | ((serverId: string) => ConnectOutcome);
+  sshConfigImport?: SshConfigImportPreview;
   overrides?: Partial<CoreClient>;
 }
 
@@ -44,6 +47,7 @@ export function createFakeCoreClient({
   groups: initialGroups = [],
   health = readyHealth,
   connectOutcome,
+  sshConfigImport,
   overrides = {},
 }: FakeCoreOptions = {}): FakeCoreClient {
   const calls: CoreCall[] = [];
@@ -67,6 +71,9 @@ export function createFakeCoreClient({
   const emitTerminalClosed = (event: TerminalClosedEvent) => {
     for (const handler of terminalClosedHandlers) handler(event);
   };
+  const importPreview = sshConfigImport
+    ? cloneSshConfigImportPreview(sshConfigImport)
+    : null;
 
   const base: CoreClient = {
     health: async () => {
@@ -232,6 +239,64 @@ export function createFakeCoreClient({
       terminalClosedHandlers.add(handler);
       return () => terminalClosedHandlers.delete(handler);
     },
+    previewSshConfigImport: async () => {
+      remember(calls, 'previewSshConfigImport', []);
+      if (!importPreview) {
+        throw fakeError(
+          'NOT_FOUND',
+          '未找到 SSH Config 文件，请确认 ~/.ssh/config 存在',
+        );
+      }
+      return cloneSshConfigImportPreview(importPreview);
+    },
+    applySshConfigImport: async (input) => {
+      remember(calls, 'applySshConfigImport', [input]);
+      if (!importPreview || input.previewId !== importPreview.previewId) {
+        throw fakeError('NOT_FOUND', 'SSH Config 导入预览不存在或已过期，请重新预览');
+      }
+
+      const rows = input.selectedRowIds.map((rowId) => {
+        const row = importPreview.items.find((item) => item.id === rowId);
+        if (!row) {
+          throw fakeError('VALIDATION', '所选条目不属于当前 SSH Config 预览');
+        }
+        return row;
+      });
+      const identities = new Set(
+        servers.map((server) => (
+          `${server.host.toLocaleLowerCase('en-US')}\0${server.port}\0${server.user}`
+        )),
+      );
+      const created: Server[] = [];
+      for (const row of rows) {
+        const identity = `${row.host.toLocaleLowerCase('en-US')}\0${row.port}\0${row.username}`;
+        if (row.status !== 'ready' || identities.has(identity)) {
+          continue;
+        }
+        identities.add(identity);
+        const server: Server = {
+          id: crypto.randomUUID(),
+          name: row.alias,
+          host: row.host,
+          port: row.port,
+          user: row.username,
+          authType: 'key',
+          secretRef: null,
+          groupId: null,
+          favorite: false,
+          lastConnectedAt: null,
+          createdAt: currentTimestamp(),
+        };
+        created.push(server);
+      }
+      servers = [...servers, ...created.map(cloneServer)];
+      const result: SshConfigImportResult = {
+        importedCount: created.length,
+        skippedCount: rows.length - created.length,
+        servers: created.map(cloneServer),
+      };
+      return result;
+    },
   };
 
   return Object.assign(base, {
@@ -292,6 +357,20 @@ function isCredentialInput(value: unknown): value is ServerCredentialInput {
 
 function cloneServer(server: Server): Server {
   return { ...server };
+}
+
+function cloneSshConfigImportPreview(
+  preview: SshConfigImportPreview,
+): SshConfigImportPreview {
+  return {
+    ...preview,
+    items: preview.items.map((item) => ({
+      ...item,
+      unsupportedDirectives: [...item.unsupportedDirectives],
+      warnings: [...item.warnings],
+    })),
+    warnings: preview.warnings.map((warning) => ({ ...warning })),
+  };
 }
 
 function secretReference(credential: ServerCredentialInput): string {

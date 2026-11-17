@@ -147,6 +147,8 @@ test('Harbor commands are registered and authorized exactly once', () => {
     'terminal_write',
     'terminal_resize',
     'terminal_close',
+    'ssh_config_import_preview',
+    'ssh_config_import_apply',
   ];
   const expectedAllowPermissions = expectedCommands.map(
     (command) => `allow-${command.replaceAll('_', '-')}`,

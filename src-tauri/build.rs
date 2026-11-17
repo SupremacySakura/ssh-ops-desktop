@@ -18,6 +18,8 @@ fn main() {
             "terminal_write",
             "terminal_resize",
             "terminal_close",
+            "ssh_config_import_preview",
+            "ssh_config_import_apply",
         ]));
     tauri_build::try_build(attributes).expect("failed to build Tauri command manifest");
 }

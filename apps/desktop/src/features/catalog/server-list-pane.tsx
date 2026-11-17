@@ -1,4 +1,11 @@
-import { Plus, RefreshCw, Search, Settings2, Star } from 'lucide-react';
+import {
+  FileInput,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings2,
+  Star,
+} from 'lucide-react';
 import { useRef } from 'react';
 
 import { CoreStatus } from '../../components/core-status';
@@ -16,6 +23,7 @@ export function ServerListPane() {
   const loadCatalog = useHarborStore((state) => state.loadCatalog);
   const openAddServer = useHarborStore((state) => state.openAddServer);
   const openGroupManager = useHarborStore((state) => state.openGroupManager);
+  const openSshConfigImport = useHarborStore((state) => state.openSshConfigImport);
   const query = useHarborStore((state) => state.query);
   const selectServer = useHarborStore((state) => state.selectServer);
   const selectedServerId = useHarborStore((state) => state.selectedServerId);
@@ -142,7 +150,9 @@ export function ServerListPane() {
                                   selected ? 'text-[#B9B4A8]' : 'text-muted'
                                 }`}
                               >
-                                {formatLastConnectedAt(server.lastConnectedAt)}
+                                {server.secretRef === null
+                                  ? '凭据待配置'
+                                  : formatLastConnectedAt(server.lastConnectedAt)}
                               </span>
                             </span>
                             <span
@@ -229,6 +239,15 @@ export function ServerListPane() {
             管理分组
           </button>
         </div>
+        <button
+          className="mb-3 inline-flex h-8 w-full items-center justify-center gap-1.5 border border-hairline bg-transparent px-2 text-[11px] font-medium text-ink hover:bg-paper disabled:opacity-40"
+          disabled={catalogBusy}
+          onClick={() => void openSshConfigImport()}
+          type="button"
+        >
+          <FileInput aria-hidden className="size-3.5" strokeWidth={1.5} />
+          从 SSH Config 导入
+        </button>
         <CoreStatus />
       </footer>
     </aside>

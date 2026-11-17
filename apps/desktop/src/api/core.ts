@@ -9,6 +9,9 @@ import {
   ServerCredentialInputSchema,
   ServerInputSchema,
   ServerSchema,
+  SshConfigImportApplyInputSchema,
+  SshConfigImportPreviewSchema,
+  SshConfigImportResultSchema,
   TerminalClosedSchema,
   TerminalDataSchema,
   TerminalGapSchema,
@@ -22,6 +25,9 @@ import {
   type Server,
   type ServerCredentialInput,
   type ServerInput,
+  type SshConfigImportApplyInput,
+  type SshConfigImportPreview,
+  type SshConfigImportResult,
   type TerminalClosedEvent,
   type TerminalDataEvent,
   type TerminalGapEvent,
@@ -58,6 +64,8 @@ export interface CoreClient {
   subscribeTerminalData(handler: (event: TerminalDataEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalGap(handler: (event: TerminalGapEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalClosed(handler: (event: TerminalClosedEvent) => void): Promise<UnlistenFn>;
+  previewSshConfigImport(): Promise<SshConfigImportPreview>;
+  applySshConfigImport(input: SshConfigImportApplyInput): Promise<SshConfigImportResult>;
 }
 
 export function createTauriCoreClient(): CoreClient {
@@ -147,5 +155,13 @@ export function createTauriCoreClient(): CoreClient {
       const parsed = TerminalClosedSchema.safeParse(event.payload);
       if (parsed.success) handler(parsed.data);
     }),
+    previewSshConfigImport: async () => SshConfigImportPreviewSchema.parse(
+      await invoke('ssh_config_import_preview'),
+    ),
+    applySshConfigImport: async (input) => SshConfigImportResultSchema.parse(
+      await invoke('ssh_config_import_apply', {
+        input: SshConfigImportApplyInputSchema.parse(input),
+      }),
+    ),
   };
 }

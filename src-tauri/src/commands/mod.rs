@@ -1,4 +1,9 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use opspilot_persistence::Database;
 use opspilot_secrets::{KeyringSecretStore, SecretStore};
@@ -7,9 +12,12 @@ use opspilot_ssh_core::{
 };
 use tokio::sync::Mutex;
 
+use self::ssh_config_import::SshConfigPreviewRegistry;
+
 mod catalog;
 mod connection;
 mod health;
+mod ssh_config_import;
 mod terminal;
 
 pub(crate) use catalog::{
@@ -18,6 +26,7 @@ pub(crate) use catalog::{
 };
 pub(crate) use connection::{connection_connect, connection_disconnect, connection_trust_host_key};
 pub(crate) use health::core_health;
+pub(crate) use ssh_config_import::{ssh_config_import_apply, ssh_config_import_preview};
 pub(crate) use terminal::{terminal_close, terminal_open, terminal_resize, terminal_write};
 
 #[derive(Clone)]
@@ -27,6 +36,8 @@ pub(crate) struct CoreServices<S = KeyringSecretStore> {
     pub(crate) connection_manager: RusshConnectionManager<S>,
     pub(crate) terminal_manager: TerminalManager<RusshShellBackend<S>>,
     connection_sequences: Arc<Mutex<HashMap<opspilot_domain::Id, u64>>>,
+    pub(crate) ssh_config_path: Option<PathBuf>,
+    pub(crate) ssh_config_previews: Arc<StdMutex<SshConfigPreviewRegistry>>,
 }
 
 impl<S> CoreServices<S>
@@ -48,6 +59,8 @@ where
             connection_manager,
             terminal_manager,
             connection_sequences: Arc::new(Mutex::new(HashMap::new())),
+            ssh_config_path: None,
+            ssh_config_previews: Arc::new(StdMutex::new(SshConfigPreviewRegistry::default())),
         }
     }
 
@@ -59,7 +72,9 @@ where
     }
 
     pub(crate) async fn shutdown(&self) {
-        let _ = self.terminal_manager.close_all().await;
+        if self.terminal_manager.close_all().await.is_err() {
+            self.terminal_manager.discard_all().await;
+        }
         self.connection_manager.disconnect_all().await;
     }
 
@@ -68,5 +83,11 @@ where
         connection: &ConnectionHandle,
     ) -> Result<(), opspilot_domain::CoreError> {
         self.terminal_manager.register_connection(connection).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_ssh_config_path(mut self, path: PathBuf) -> Self {
+        self.ssh_config_path = Some(path);
+        self
     }
 }

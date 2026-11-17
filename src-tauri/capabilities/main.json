@@ -21,6 +21,8 @@
     "allow-terminal-write",
     "allow-terminal-resize",
     "allow-terminal-close",
+    "allow-ssh-config-import-preview",
+    "allow-ssh-config-import-apply",
     "core:event:default"
   ]
 }

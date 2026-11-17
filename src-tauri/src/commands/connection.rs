@@ -51,7 +51,7 @@ where
 }
 
 pub(super) fn connection_auth(server: &Server) -> Result<AuthRequest, CoreError> {
-    let secret_ref = SecretRef::from_persisted(server.secret_ref.clone())?;
+    let secret_ref = SecretRef::from_persisted(server.require_secret_ref()?.to_owned())?;
     Ok(match server.auth_type {
         AuthType::Password => AuthRequest::Password { secret_ref },
         AuthType::Key => AuthRequest::PrivateKeyContent { secret_ref },
@@ -271,6 +271,11 @@ fn unix_timestamp() -> Result<i64, CoreError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use async_trait::async_trait;
     use opspilot_domain::{
         AuthType, CoreError, CoreErrorCode, Id, ServerInput as DomainServerInput,
@@ -291,6 +296,25 @@ mod tests {
     impl ConnectionAttempt for FakeAttempt {
         async fn connect(&self, _request: ConnectionRequest) -> Result<ConnectOutcome, CoreError> {
             self.outcome.clone()
+        }
+    }
+
+    struct CountingAttempt {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ConnectionAttempt for CountingAttempt {
+        async fn connect(&self, _request: ConnectionRequest) -> Result<ConnectOutcome, CoreError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ConnectOutcome::HostKeyRequired {
+                prompt: HostKeyPrompt {
+                    verification_id: Id::new(),
+                    algorithm: "ssh-ed25519".to_owned(),
+                    sha256: "SHA256:fixture".to_owned(),
+                    expires_at: "2026-01-01T00:00:00.000Z".to_owned(),
+                },
+            })
         }
     }
 
@@ -422,6 +446,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_pending_credential_fails_before_connection_attempt_or_timestamp_update() {
+        let database = Database::open(":memory:").await.unwrap();
+        let services = CoreServices::new(database, MemorySecretStore::default());
+        let input = DomainServerInput::try_new(
+            "pending",
+            "pending.example.com",
+            22,
+            "deploy",
+            AuthType::Password,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let server = ServerRepository::new(services.database.clone())
+            .create(&input, 1_700_000_000)
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let error = connect_server_at(
+            &services,
+            &CountingAttempt {
+                calls: calls.clone(),
+            },
+            server.id,
+            1_700_000_100,
+        )
+        .await
+        .expect_err("a server without a Keychain reference must not attempt authentication");
+
+        assert_eq!(error.code(), CoreErrorCode::SecretUnavailable);
+        assert_eq!(
+            error.message(),
+            "该服务器的凭据尚未配置，请先补充密码或私钥"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            ServerRepository::new(services.database.clone())
+                .get(server.id)
+                .await
+                .unwrap()
+                .last_connected_at,
+            None
+        );
+    }
+
     #[test]
     fn server_credentials_resolve_as_keyring_material_not_webview_auth() {
         let server = opspilot_domain::Server {
@@ -431,7 +503,7 @@ mod tests {
             port: 22,
             user: "deploy".to_owned(),
             auth_type: AuthType::Key,
-            secret_ref: "secret-ref-fixture".to_owned(),
+            secret_ref: Some("secret-ref-fixture".to_owned()),
             group_id: None,
             favorite: false,
             last_connected_at: None,
@@ -518,7 +590,7 @@ mod tests {
             22,
             "deploy",
             auth_type,
-            secret_ref.as_str(),
+            Some(secret_ref.as_str()),
             None,
             false,
         )

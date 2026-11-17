@@ -85,7 +85,7 @@ pub struct ServerInput {
     port: ServerPort,
     user: String,
     auth_type: AuthType,
-    secret_ref: String,
+    secret_ref: Option<String>,
     group_id: Option<Id>,
     favorite: bool,
 }
@@ -98,7 +98,7 @@ impl ServerInput {
         port: u32,
         user: &str,
         auth_type: AuthType,
-        secret_ref: &str,
+        secret_ref: Option<&str>,
         group_id: Option<Id>,
         favorite: bool,
     ) -> Result<Self, CoreError> {
@@ -108,7 +108,9 @@ impl ServerInput {
             port: ServerPort::try_from(port)?,
             user: normalized_identity(user, "user")?,
             auth_type,
-            secret_ref: normalized_required(secret_ref, "secret reference")?,
+            secret_ref: secret_ref
+                .map(|value| normalized_required(value, "secret reference"))
+                .transpose()?,
             group_id,
             favorite,
         })
@@ -134,8 +136,8 @@ impl ServerInput {
         self.auth_type
     }
 
-    pub fn secret_ref(&self) -> &str {
-        &self.secret_ref
+    pub fn secret_ref(&self) -> Option<&str> {
+        self.secret_ref.as_deref()
     }
 
     pub fn group_id(&self) -> Option<Id> {
@@ -156,13 +158,25 @@ pub struct Server {
     pub port: u16,
     pub user: String,
     pub auth_type: AuthType,
-    pub secret_ref: String,
+    pub secret_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<Id>,
     pub favorite: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_connected_at: Option<i64>,
     pub created_at: i64,
+}
+
+impl Server {
+    pub fn require_secret_ref(&self) -> Result<&str, CoreError> {
+        self.secret_ref.as_deref().ok_or_else(|| {
+            CoreError::new(
+                CoreErrorCode::SecretUnavailable,
+                "该服务器的凭据尚未配置，请先补充密码或私钥",
+                false,
+            )
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

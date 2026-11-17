@@ -425,6 +425,20 @@ where
         Ok(closed)
     }
 
+    pub async fn discard_all(&self) -> usize {
+        let session_ids = {
+            let mut sessions = self.sessions.lock().await;
+            let session_ids = sessions.keys().copied().collect::<Vec<_>>();
+            sessions.clear();
+            session_ids
+        };
+        for session_id in &session_ids {
+            self.emit_closed(*session_id, TerminalCloseReason::ConnectionClosed, None);
+        }
+        self.connections.lock().await.clear();
+        session_ids.len()
+    }
+
     pub async fn active_session_ids(&self) -> Vec<Id> {
         self.sessions.lock().await.keys().copied().collect()
     }

@@ -6,7 +6,8 @@ use commands::{
     CoreServices, connection_connect, connection_disconnect, connection_trust_host_key,
     core_health, server_create, server_credential_set, server_delete, server_group_create,
     server_group_delete, server_group_list, server_group_update, server_list, server_update,
-    terminal_close, terminal_open, terminal_resize, terminal_write,
+    ssh_config_import_apply, ssh_config_import_preview, terminal_close, terminal_open,
+    terminal_resize, terminal_write,
 };
 use opspilot_persistence::Database;
 use opspilot_secrets::KeyringSecretStore;
@@ -63,6 +64,8 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_close,
+            ssh_config_import_preview,
+            ssh_config_import_apply,
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {

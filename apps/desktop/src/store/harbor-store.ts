@@ -6,6 +6,8 @@ import {
   type Server,
   type ServerCredentialInput,
   type ServerInput,
+  type SshConfigImportPreview,
+  type SshConfigImportResult,
 } from '@opspilot/contracts';
 import { create } from 'zustand';
 
@@ -17,6 +19,13 @@ export type CoreHealthState =
   | { status: 'unavailable' };
 
 export type CatalogStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type SshConfigImportState =
+  | 'idle'
+  | 'loading'
+  | 'ready'
+  | 'error'
+  | 'applying'
+  | 'complete';
 
 export type ServerFormState =
   | { mode: 'create' }
@@ -43,6 +52,11 @@ export interface HarborState {
   serverForm: ServerFormState | null;
   groupManagerOpen: boolean;
   commandPaletteOpen: boolean;
+  sshConfigImportOpen: boolean;
+  sshConfigImportStatus: SshConfigImportState;
+  sshConfigImportPreview: SshConfigImportPreview | null;
+  sshConfigImportResult: SshConfigImportResult | null;
+  sshConfigImportError: string | null;
   configureCore: (core: CoreClient) => void;
   loadCatalog: () => Promise<void>;
   reset: () => void;
@@ -68,9 +82,16 @@ export interface HarborState {
   openCommandPalette: () => void;
   closeCommandPalette: () => void;
   setCommandPaletteOpen: (open: boolean) => void;
+  openSshConfigImport: () => Promise<void>;
+  refreshSshConfigImport: () => Promise<void>;
+  closeSshConfigImport: () => void;
+  applySshConfigImport: (
+    selectedRowIds: string[],
+  ) => Promise<SshConfigImportResult | null>;
 }
 
 let catalogRequestSequence = 0;
+let importRequestSequence = 0;
 
 export const useHarborStore = create<HarborState>((set, get) => ({
   ...initialState(),
@@ -114,6 +135,7 @@ export const useHarborStore = create<HarborState>((set, get) => ({
   },
   reset: () => {
     catalogRequestSequence += 1;
+    importRequestSequence += 1;
     set(initialState());
   },
   setCoreHealth: (coreHealth) => set({ coreHealth }),
@@ -314,6 +336,102 @@ export const useHarborStore = create<HarborState>((set, get) => ({
   openCommandPalette: () => set({ commandPaletteOpen: true }),
   closeCommandPalette: () => set({ commandPaletteOpen: false }),
   setCommandPaletteOpen: (commandPaletteOpen) => set({ commandPaletteOpen }),
+  openSshConfigImport: async () => {
+    set({
+      commandPaletteOpen: false,
+      sshConfigImportOpen: true,
+      sshConfigImportError: null,
+      sshConfigImportPreview: null,
+      sshConfigImportResult: null,
+    });
+    await get().refreshSshConfigImport();
+  },
+  refreshSshConfigImport: async () => {
+    const core = get().core;
+    const request = ++importRequestSequence;
+    if (!core) {
+      set({
+        sshConfigImportStatus: 'error',
+        sshConfigImportError: 'Core 尚未连接，无法读取 SSH Config',
+      });
+      return;
+    }
+
+    set({
+      sshConfigImportStatus: 'loading',
+      sshConfigImportError: null,
+      sshConfigImportPreview: null,
+      sshConfigImportResult: null,
+    });
+    try {
+      const preview = await core.previewSshConfigImport();
+      if (request !== importRequestSequence) return;
+      set({
+        sshConfigImportStatus: 'ready',
+        sshConfigImportPreview: preview,
+        sshConfigImportError: null,
+      });
+    } catch (error) {
+      if (request !== importRequestSequence) return;
+      set({
+        sshConfigImportStatus: 'error',
+        sshConfigImportError: catalogErrorMessage(error),
+      });
+    }
+  },
+  closeSshConfigImport: () => {
+    importRequestSequence += 1;
+    set({
+      sshConfigImportOpen: false,
+      sshConfigImportStatus: 'idle',
+      sshConfigImportPreview: null,
+      sshConfigImportResult: null,
+      sshConfigImportError: null,
+    });
+  },
+  applySshConfigImport: async (selectedRowIds) => {
+    const state = get();
+    const core = state.core;
+    const preview = state.sshConfigImportPreview;
+    if (
+      !core
+      || !preview
+      || state.sshConfigImportStatus !== 'ready'
+      || selectedRowIds.length === 0
+    ) {
+      return null;
+    }
+
+    set({
+      sshConfigImportStatus: 'applying',
+      sshConfigImportError: null,
+    });
+    try {
+      const result = await core.applySshConfigImport({
+        previewId: preview.previewId,
+        selectedRowIds,
+      });
+      if (get().sshConfigImportPreview?.previewId !== preview.previewId) {
+        return result;
+      }
+      set((current) => ({
+        sshConfigImportStatus: 'complete',
+        sshConfigImportResult: result,
+        sshConfigImportError: null,
+        servers: sortServers(mergeServers(current.servers, result.servers)),
+      }));
+      return result;
+    } catch (error) {
+      if (get().sshConfigImportPreview?.previewId !== preview.previewId) {
+        return null;
+      }
+      set({
+        sshConfigImportStatus: 'ready',
+        sshConfigImportError: catalogErrorMessage(error),
+      });
+      return null;
+    }
+  },
 }));
 
 export function filterServers(servers: Server[], query: string): Server[] {
@@ -421,6 +539,14 @@ function replaceServer(servers: Server[], replacement: Server): Server[] {
   ));
 }
 
+function mergeServers(current: Server[], incoming: Server[]): Server[] {
+  const byId = new Map(current.map((server) => [server.id, server]));
+  for (const server of incoming) {
+    byId.set(server.id, server);
+  }
+  return [...byId.values()];
+}
+
 function sortServers(servers: Server[]): Server[] {
   return [...servers].sort((left, right) => {
     if (left.favorite !== right.favorite) return left.favorite ? -1 : 1;
@@ -453,5 +579,10 @@ function initialState() {
     serverForm: null as ServerFormState | null,
     groupManagerOpen: false,
     commandPaletteOpen: false,
+    sshConfigImportOpen: false,
+    sshConfigImportStatus: 'idle' as SshConfigImportState,
+    sshConfigImportPreview: null as SshConfigImportPreview | null,
+    sshConfigImportResult: null as SshConfigImportResult | null,
+    sshConfigImportError: null as string | null,
   };
 }

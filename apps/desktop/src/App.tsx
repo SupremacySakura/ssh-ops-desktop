@@ -6,6 +6,7 @@ import { HarborShell } from './app/harbor-shell';
 import { GroupManagerDialog } from './features/catalog/group-manager-dialog';
 import { ServerFormDialog } from './features/catalog/server-form-dialog';
 import { CommandPalette } from './features/command-palette/command-palette';
+import { SshConfigImportDialog } from './features/import/ssh-config-import-dialog';
 import {
   CommandHistoryContext,
   createDefaultCommandHistory,
@@ -73,6 +74,7 @@ export default function App({ core }: AppProps) {
       <ServerFormDialog />
       <GroupManagerDialog />
       <CommandPalette />
+      <SshConfigImportDialog />
     </CommandHistoryContext.Provider>
   );
 }

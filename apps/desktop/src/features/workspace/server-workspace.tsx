@@ -46,11 +46,19 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
   const connectionStatus = runtime?.status ?? 'idle';
   const activeSessions = runtime?.sessions.length ?? 0;
   const prompt = runtime?.hostKeyPrompt ?? null;
+  const credentialPending = canonicalServer.secretRef === null;
 
   useEffect(() => {
+    if (credentialPending) return;
     if (eventBridgeStatus !== 'ready') return;
-    void ensureConnected(server.id);
-  }, [ensureConnected, eventBridgeStatus, server.id]);
+    void ensureConnected(canonicalServer.id);
+  }, [
+    canonicalServer.id,
+    canonicalServer.secretRef,
+    credentialPending,
+    ensureConnected,
+    eventBridgeStatus,
+  ]);
 
   useEffect(() => {
     if (prompt?.verificationId) setTrustChecked(false);
@@ -61,7 +69,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
       <main className="flex h-dvh min-w-0 flex-1 overflow-hidden">
         <div className="hidden w-[30px] shrink-0 items-center justify-center border-r border-hairline bg-[#E2DED6] xl:flex">
           <span className="font-mono text-[10px] tracking-[0.18em] text-muted [writing-mode:vertical-rl]">
-            {canonicalServer.name.toLocaleUpperCase('en-US')} · {statusLabel(connectionStatus)}
+            {canonicalServer.name.toLocaleUpperCase('en-US')} · {statusLabel(connectionStatus, credentialPending)}
           </span>
         </div>
 
@@ -76,7 +84,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
                   }`}
                 />
                 <p className="font-mono text-[10px] tracking-[0.14em] text-muted">
-                  {group?.name ?? '未分组'} / {statusLabel(connectionStatus)}
+                  {group?.name ?? '未分组'} / {statusLabel(connectionStatus, credentialPending)}
                 </p>
               </div>
               <h2 className="mt-1.5 truncate text-[22px] font-semibold leading-7 tracking-[-0.01em] text-ink">
@@ -103,7 +111,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
                   label="LINK"
                   maximum={3}
                   value={connectionStatus === 'ready' ? 3 : connectionStatus === 'connecting' ? 1 : 0}
-                  valueLabel={statusLabel(connectionStatus)}
+                  valueLabel={statusLabel(connectionStatus, credentialPending)}
                 />
               </div>
               <div className="flex items-center gap-1.5">
@@ -158,7 +166,14 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
             ))}
           </nav>
 
-          <TerminalPane server={canonicalServer} workspaceActive={active} />
+          {credentialPending ? (
+            <PendingCredentialPanel
+              onEdit={() => openEditServer(canonicalServer.id)}
+              server={canonicalServer}
+            />
+          ) : (
+            <TerminalPane server={canonicalServer} workspaceActive={active} />
+          )}
         </section>
       </main>
 
@@ -350,7 +365,8 @@ function CalibratedReadout({
   );
 }
 
-function statusLabel(status: string): string {
+function statusLabel(status: string, credentialPending = false): string {
+  if (credentialPending) return '凭据待配置';
   switch (status) {
     case 'ready':
       return '连接正常';
@@ -367,6 +383,42 @@ function statusLabel(status: string): string {
     default:
       return '待连接';
   }
+}
+
+function PendingCredentialPanel({
+  onEdit,
+  server,
+}: {
+  onEdit(): void;
+  server: Server;
+}) {
+  return (
+    <div className="grid min-h-0 flex-1 place-items-center bg-shell px-8 py-10">
+      <section className="w-full max-w-lg border-y border-hairline py-8">
+        <p className="font-mono text-[9px] tracking-[0.18em] text-accent">
+          AUTHENTICATION / PENDING
+        </p>
+        <h3 className="mt-3 text-[22px] font-semibold tracking-[-0.01em] text-ink">
+          认证方式待配置
+        </h3>
+        <p className="mt-3 max-w-md text-[12px] leading-6 text-muted">
+          {server.user}@{server.host}:{server.port} 尚未配置密码或私钥。
+          Harbor 不会伪造占位凭据，也不会在凭据缺失时尝试连接。
+        </p>
+        <div className="mt-5 border border-hairline bg-paper px-3.5 py-3 font-mono text-[10px] leading-5 text-muted">
+          补充凭据后，Harbor 只会把密码或私钥写入系统凭据库，
+          服务器记录中仍只保存不可逆的凭据引用。
+        </div>
+        <button
+          className="mt-5 inline-flex h-8 items-center gap-1.5 bg-ink px-4 text-[11px] font-medium text-paper hover:bg-accent"
+          onClick={onEdit}
+          type="button"
+        >
+          编辑并补充凭据
+        </button>
+      </section>
+    </div>
+  );
 }
 
 function formatPromptExpiry(value: string): string {

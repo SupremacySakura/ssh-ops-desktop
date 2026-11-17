@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ssh-config-import-apply"
+description = "Enables the ssh_config_import_apply command without any pre-configured scope."
+commands.allow = ["ssh_config_import_apply"]
+
+[[permission]]
+identifier = "deny-ssh-config-import-apply"
+description = "Denies the ssh_config_import_apply command without any pre-configured scope."
+commands.deny = ["ssh_config_import_apply"]

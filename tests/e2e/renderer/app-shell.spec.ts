@@ -36,7 +36,7 @@ test('Command-K opens the command palette and runs an action', async ({ page }) 
   await expect(palette).toBeVisible();
   const search = palette.getByRole('searchbox', { name: '搜索服务器或命令' });
   await expect(search).toBeFocused();
-  await expect(palette.getByText('从 SSH Config 导入')).toHaveCount(0);
+  await expect(palette.getByRole('option', { name: /从 SSH Config 导入/u })).toHaveCount(1);
 
   await search.fill('添加');
   await search.press('Enter');
@@ -144,4 +144,37 @@ test('unknown host keys require explicit trust and a closed session can reconnec
   await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
     'harbor renderer fixture',
   );
+});
+
+test('imports an SSH Config preview and marks the server as pending credentials', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core 已就绪');
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+KeyK' : 'Control+KeyK');
+  await page.getByRole('option', { name: /从 SSH Config 导入/u }).click();
+
+  const dialog = page.getByRole('dialog', { name: '导入 SSH Config' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('imported-prod')).toBeVisible();
+  await expect(dialog.getByText('imported.example.com').first()).toBeVisible();
+  await expect(dialog.getByText('deploy').first()).toBeVisible();
+  await expect(dialog.getByText('2222').first()).toBeVisible();
+  await expect(dialog.getByRole('checkbox', { name: '选择 imported-prod' })).toBeEnabled();
+  await expect(dialog.getByRole('checkbox', { name: '选择 existing' })).toBeDisabled();
+  await expect(dialog.getByRole('checkbox', { name: '选择 imported-copy' })).toBeDisabled();
+  await expect(dialog.getByRole('checkbox', { name: '选择 proxied' })).toBeDisabled();
+  await expect(dialog.getByText('已存在', { exact: true })).toHaveCount(2);
+  await expect(dialog.getByText('同批重复')).toBeVisible();
+  await expect(dialog.getByText('暂不支持', { exact: true })).toBeVisible();
+
+  await dialog.getByRole('button', { name: '导入 1 台服务器' }).click();
+  await expect(dialog.getByText('导入完成')).toBeVisible();
+  await expect(dialog.getByText(/已导入/u)).toContainText('已导入 1 台服务器');
+  await dialog.getByRole('button', { name: '完成' }).click();
+
+  await expect(page.getByRole('button', {
+    name: /^打开服务器 imported-prod/u,
+  })).toBeVisible();
+  await expect(page.getByText('凭据待配置')).toBeVisible();
+  await page.getByRole('button', { name: /^打开服务器 imported-prod/u }).click();
+  await expect(page.getByText(/尚未配置密码或私钥/u)).toBeVisible();
 });

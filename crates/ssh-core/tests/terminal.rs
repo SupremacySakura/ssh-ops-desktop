@@ -334,6 +334,45 @@ async fn close_all_keeps_failed_sessions_and_connection_registration() {
 }
 
 #[tokio::test]
+async fn discard_all_forces_shutdown_cleanup_after_close_failures() {
+    let backend = InMemoryShellBackend::new();
+    let manager = TerminalManager::new(backend.clone());
+    let connection = ConnectionHandle::new(Id::new(), Id::new());
+    register(&manager, &connection).await;
+    let first = manager
+        .open(connection.clone(), PtySize::try_new(80, 24).unwrap())
+        .await
+        .unwrap();
+    let second = manager
+        .open(connection.clone(), PtySize::try_new(80, 24).unwrap())
+        .await
+        .unwrap();
+    let mut events = manager.subscribe();
+    backend.fail_next_closes(1).await;
+    manager.close_all().await.unwrap_err();
+
+    assert_eq!(manager.discard_all().await, 1);
+    assert!(manager.active_session_ids().await.is_empty());
+    assert!(!manager.is_connection_registered(&connection).await);
+    for _ in 0..2 {
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            TerminalEvent::Closed(_)
+        ));
+    }
+    for session in [first, second] {
+        assert_eq!(
+            manager
+                .write(session.id(), b"after-shutdown")
+                .await
+                .unwrap_err()
+                .code(),
+            CoreErrorCode::NotFound
+        );
+    }
+}
+
+#[tokio::test]
 async fn transport_disconnect_can_force_cleanup_after_a_channel_close_failure() {
     let backend = InMemoryShellBackend::new();
     let manager = TerminalManager::new(backend.clone());

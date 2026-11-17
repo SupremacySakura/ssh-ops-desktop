@@ -2,15 +2,15 @@ import { z } from 'zod';
 
 import { IdSchema } from './ids.js';
 
-const RequiredTextSchema = z.string().trim().min(1)
+export const RequiredTextSchema = z.string().trim().min(1)
   .refine((value) => !/[\u0000-\u001f\u007f]/u.test(value), {
     message: 'must not contain control characters',
   });
-const ServerHostSchema = RequiredTextSchema
+export const ServerHostSchema = RequiredTextSchema
   .refine((value) => !value.includes('://') && !/\s/u.test(value), {
     message: 'must be a hostname without a URL scheme or whitespace',
   });
-const ServerUserSchema = RequiredTextSchema.refine((value) => !/\s/u.test(value), {
+export const ServerUserSchema = RequiredTextSchema.refine((value) => !/\s/u.test(value), {
   message: 'must not contain whitespace',
 });
 
@@ -23,7 +23,7 @@ export const ServerSchema = z.object({
   port: z.int().min(1).max(65_535),
   user: ServerUserSchema,
   authType: ServerAuthTypeSchema,
-  secretRef: RequiredTextSchema,
+  secretRef: RequiredTextSchema.nullable(),
   groupId: IdSchema.nullable().optional(),
   favorite: z.boolean(),
   lastConnectedAt: z.int().nonnegative().nullable().optional(),

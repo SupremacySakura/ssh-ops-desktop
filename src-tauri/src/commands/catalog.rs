@@ -88,7 +88,7 @@ where
         .secret_store
         .put(secret_kind(input.auth_type), Id::new(), credential)
         .await?;
-    let record = match input.into_domain(secret_ref.as_str()) {
+    let record = match input.into_domain(Some(secret_ref.as_str())) {
         Ok(record) => record,
         Err(error) => {
             let _ = services.secret_store.delete(&secret_ref).await;
@@ -139,9 +139,8 @@ where
     };
     let secret_ref = replacement_ref
         .as_ref()
-        .map_or(existing.secret_ref.as_str(), |secret_ref| {
-            secret_ref.as_str()
-        });
+        .map(SecretRef::as_str)
+        .or(existing.secret_ref.as_deref());
     let record = match input.into_domain(secret_ref) {
         Ok(record) => record,
         Err(error) => {
@@ -155,8 +154,10 @@ where
     match updated {
         Ok(server) => {
             if replacement_ref.is_some()
-                && let Ok(previous_ref) =
-                    opspilot_secrets::SecretRef::from_persisted(existing.secret_ref.clone())
+                && let Some(previous_ref) = existing
+                    .secret_ref
+                    .clone()
+                    .and_then(|value| SecretRef::from_persisted(value).ok())
             {
                 let _ = services.secret_store.delete(&previous_ref).await;
             }
@@ -177,8 +178,10 @@ where
 {
     let repository = ServerRepository::new(services.database.clone());
     let server = repository.get(id).await?;
-    let secret_ref = SecretRef::from_persisted(server.secret_ref)?;
-    services.secret_store.delete(&secret_ref).await?;
+    if let Some(secret_ref) = server.secret_ref.as_deref() {
+        let secret_ref = SecretRef::from_persisted(secret_ref.to_owned())?;
+        services.secret_store.delete(&secret_ref).await?;
+    }
     repository.delete(id).await
 }
 
@@ -206,7 +209,7 @@ where
         u32::from(existing.port),
         &existing.user,
         existing.auth_type,
-        replacement_ref.as_str(),
+        Some(replacement_ref.as_str()),
         existing.group_id,
         existing.favorite,
     ) {
@@ -219,7 +222,11 @@ where
     let updated = repository.update(id, &record).await;
     match updated {
         Ok(server) => {
-            if let Ok(previous_ref) = SecretRef::from_persisted(existing.secret_ref.clone()) {
+            if let Some(previous_ref) = existing
+                .secret_ref
+                .clone()
+                .and_then(|value| SecretRef::from_persisted(value).ok())
+            {
                 let _ = services.secret_store.delete(&previous_ref).await;
             }
             Ok(server)
@@ -305,7 +312,7 @@ fn core_services(app: &AppHandle) -> CoreServices<KeyringSecretStore> {
 }
 
 impl ServerInput {
-    fn into_domain(self, secret_ref: &str) -> Result<DomainServerInput, CoreError> {
+    fn into_domain(self, secret_ref: Option<&str>) -> Result<DomainServerInput, CoreError> {
         DomainServerInput::try_new(
             &self.name,
             &self.host,
@@ -376,7 +383,7 @@ fn unix_timestamp() -> Result<i64, CoreError> {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use opspilot_domain::{AuthType, CoreErrorCode};
+    use opspilot_domain::{AuthType, CoreErrorCode, ServerInput as DomainServerInput};
     use opspilot_persistence::Database;
     use opspilot_secrets::{MemorySecretStore, SecretKind, SecretRef, SecretStore, SecretValue};
 
@@ -444,7 +451,7 @@ mod tests {
             port: 22,
             user: "deploy".to_owned(),
             auth_type: AuthType::Key,
-            secret_ref: "secret-ref-fixture".to_owned(),
+            secret_ref: Some("secret-ref-fixture".to_owned()),
             group_id: None,
             favorite: false,
             last_connected_at: None,
@@ -453,8 +460,25 @@ mod tests {
         let output = serde_json::to_value(server).expect("server output should serialize");
 
         assert_eq!(output["authType"], "key");
+        assert_eq!(output["secretRef"], "secret-ref-fixture");
         assert!(output.get("auth_type").is_none());
         assert!(output.get("lastConnectedAt").is_none());
+
+        let pending = serde_json::to_value(opspilot_domain::Server {
+            id: opspilot_domain::Id::new(),
+            name: "imported".to_owned(),
+            host: "imported.example.com".to_owned(),
+            port: 22,
+            user: "deploy".to_owned(),
+            auth_type: AuthType::Key,
+            secret_ref: None,
+            group_id: None,
+            favorite: false,
+            last_connected_at: None,
+            created_at: 1_700_000_000,
+        })
+        .expect("pending server output should serialize");
+        assert!(pending["secretRef"].is_null());
     }
 
     #[tokio::test]
@@ -488,8 +512,13 @@ mod tests {
         assert!(created.favorite);
         assert!(created.created_at > 1_700_000_000);
 
-        let stored_ref = SecretRef::from_persisted(created.secret_ref.clone())
-            .expect("persisted secret reference should be valid");
+        let stored_ref = SecretRef::from_persisted(
+            created
+                .secret_ref
+                .clone()
+                .expect("created server should have a credential reference"),
+        )
+        .expect("persisted secret reference should be valid");
         let stored_credential = services
             .secret_store
             .get(&stored_ref)
@@ -503,7 +532,7 @@ mod tests {
                 .fetch_one(services.database.pool())
                 .await
                 .expect("server row should be readable");
-        assert_eq!(persisted_ref, created.secret_ref);
+        assert_eq!(Some(persisted_ref.as_str()), created.secret_ref.as_deref());
         assert_ne!(persisted_ref, CREDENTIAL_FIXTURE);
 
         let listed = list_servers(&services)
@@ -538,8 +567,13 @@ mod tests {
         assert_eq!(updated.name, "prod-web-01-renamed");
         assert!(!updated.favorite);
         assert_eq!(updated.secret_ref, created.secret_ref);
-        let stored_ref = SecretRef::from_persisted(updated.secret_ref.clone())
-            .expect("persisted reference should be valid");
+        let stored_ref = SecretRef::from_persisted(
+            updated
+                .secret_ref
+                .clone()
+                .expect("updated server should retain its credential reference"),
+        )
+        .expect("persisted reference should be valid");
         let stored = services
             .secret_store
             .get(&stored_ref)
@@ -557,8 +591,13 @@ mod tests {
         let created = create_server(&services, server_input("prod-web-01"), credential_input())
             .await
             .expect("server should be created");
-        let previous_ref = SecretRef::from_persisted(created.secret_ref.clone())
-            .expect("persisted reference should be valid");
+        let previous_ref = SecretRef::from_persisted(
+            created
+                .secret_ref
+                .clone()
+                .expect("created server should have a credential reference"),
+        )
+        .expect("persisted reference should be valid");
 
         let updated = update_server(
             &services,
@@ -572,8 +611,13 @@ mod tests {
         .expect("credential should be rotated");
 
         assert_ne!(updated.secret_ref, created.secret_ref);
-        let rotated_ref = SecretRef::from_persisted(updated.secret_ref.clone())
-            .expect("rotated reference should be valid");
+        let rotated_ref = SecretRef::from_persisted(
+            updated
+                .secret_ref
+                .clone()
+                .expect("rotated server should have a credential reference"),
+        )
+        .expect("rotated reference should be valid");
         assert_eq!(
             services
                 .secret_store
@@ -603,8 +647,13 @@ mod tests {
         let created = create_server(&services, server_input("retired"), credential_input())
             .await
             .expect("server should be created");
-        let secret_ref = SecretRef::from_persisted(created.secret_ref.clone())
-            .expect("persisted reference should be valid");
+        let secret_ref = SecretRef::from_persisted(
+            created
+                .secret_ref
+                .clone()
+                .expect("created server should have a credential reference"),
+        )
+        .expect("persisted reference should be valid");
 
         delete_server(&services, created.id)
             .await
@@ -636,8 +685,13 @@ mod tests {
         let created = create_server(&services, server_input("retired"), credential_input())
             .await
             .expect("server should be created");
-        let secret_ref = SecretRef::from_persisted(created.secret_ref.clone())
-            .expect("persisted reference should be valid");
+        let secret_ref = SecretRef::from_persisted(
+            created
+                .secret_ref
+                .clone()
+                .expect("created server should have a credential reference"),
+        )
+        .expect("persisted reference should be valid");
 
         let error = delete_server(&services, created.id)
             .await
@@ -663,8 +717,13 @@ mod tests {
         let created = create_server(&services, server_input("prod-web-01"), credential_input())
             .await
             .expect("server should be created");
-        let previous_ref = SecretRef::from_persisted(created.secret_ref.clone())
-            .expect("persisted reference should be valid");
+        let previous_ref = SecretRef::from_persisted(
+            created
+                .secret_ref
+                .clone()
+                .expect("created server should have a credential reference"),
+        )
+        .expect("persisted reference should be valid");
 
         let updated = set_server_credential(
             &services,
@@ -688,6 +747,101 @@ mod tests {
                 .unwrap_err()
                 .code(),
             CoreErrorCode::SecretUnavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn imported_pending_server_can_be_edited_then_gain_a_credential() {
+        let database = Database::open(":memory:")
+            .await
+            .expect("in-memory database should open");
+        let services = CoreServices::new(database, MemorySecretStore::default());
+        let pending = opspilot_persistence::ServerRepository::new(services.database.clone())
+            .create(
+                &DomainServerInput::try_new(
+                    "imported",
+                    "imported.example.com",
+                    22,
+                    "deploy",
+                    AuthType::Key,
+                    None,
+                    None,
+                    false,
+                )
+                .expect("pending input should be valid"),
+                1_700_000_000,
+            )
+            .await
+            .expect("pending server should be created");
+
+        let edited = update_server(
+            &services,
+            pending.id,
+            ServerInput {
+                name: "imported-renamed".to_owned(),
+                ..server_input("imported")
+            },
+            None,
+        )
+        .await
+        .expect("pending server metadata should be editable");
+        assert_eq!(edited.name, "imported-renamed");
+        assert_eq!(edited.secret_ref, None);
+
+        let configured = set_server_credential(
+            &services,
+            pending.id,
+            ServerCredentialInput {
+                credential: CREDENTIAL_FIXTURE.to_owned(),
+            },
+        )
+        .await
+        .expect("pending server should accept a credential");
+        assert!(configured.secret_ref.is_some());
+
+        delete_server(&services, pending.id)
+            .await
+            .expect("configured imported server should be deletable");
+        assert!(
+            list_servers(&services)
+                .await
+                .expect("servers should be listed")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_pending_server_does_not_touch_the_secret_store() {
+        let database = Database::open(":memory:")
+            .await
+            .expect("in-memory database should open");
+        let services = CoreServices::new(database, FailingDeleteStore::default());
+        let pending = opspilot_persistence::ServerRepository::new(services.database.clone())
+            .create(
+                &DomainServerInput::try_new(
+                    "imported",
+                    "imported.example.com",
+                    22,
+                    "deploy",
+                    AuthType::Key,
+                    None,
+                    None,
+                    false,
+                )
+                .expect("pending input should be valid"),
+                1_700_000_000,
+            )
+            .await
+            .expect("pending server should be created");
+
+        delete_server(&services, pending.id)
+            .await
+            .expect("pending server should be deleted without credential cleanup");
+        assert!(
+            list_servers(&services)
+                .await
+                .expect("servers should be listed")
+                .is_empty()
         );
     }
 
@@ -788,8 +942,13 @@ mod tests {
         let server = create_server(&services, input, credential_input())
             .await
             .expect("grouped server should be created");
-        let secret_ref = SecretRef::from_persisted(server.secret_ref.clone())
-            .expect("persisted reference should be valid");
+        let secret_ref = SecretRef::from_persisted(
+            server
+                .secret_ref
+                .clone()
+                .expect("grouped server should have a credential reference"),
+        )
+        .expect("persisted reference should be valid");
 
         delete_group(&services, group.id)
             .await
@@ -818,8 +977,13 @@ mod tests {
         let created = create_server(&services, server_input("prod-web-01"), credential_input())
             .await
             .expect("server should be created");
-        let original_ref = SecretRef::from_persisted(created.secret_ref.clone())
-            .expect("persisted reference should be valid");
+        let original_ref = SecretRef::from_persisted(
+            created
+                .secret_ref
+                .clone()
+                .expect("created server should have a credential reference"),
+        )
+        .expect("persisted reference should be valid");
         let mut changed = server_input("prod-web-01");
         changed.auth_type = AuthType::Password;
 

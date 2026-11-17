@@ -3157,6 +3157,7 @@ dependencies = [
  "sqlx",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
 ]
 
