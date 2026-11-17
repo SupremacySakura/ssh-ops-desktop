@@ -27,10 +27,21 @@ test('legacy OpsPilot entry points are absent', async ({ page }) => {
   }
 });
 
-test('Command-K focuses catalog search', async ({ page }) => {
+test('Command-K opens the command palette and runs an action', async ({ page }) => {
   await page.goto('/');
-  const search = page.getByRole('searchbox', { name: '搜索服务器' });
-  await expect(search).not.toBeFocused();
+  await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core 已就绪');
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+KeyK' : 'Control+KeyK');
+
+  const palette = page.getByRole('dialog', { name: '命令面板' });
+  await expect(palette).toBeVisible();
+  const search = palette.getByRole('searchbox', { name: '搜索服务器或命令' });
   await expect(search).toBeFocused();
+  await expect(palette.getByText('从 SSH Config 导入')).toHaveCount(0);
+
+  await search.fill('添加');
+  await search.press('Enter');
+  await expect(page.getByRole('dialog', { name: '添加服务器' })).toBeVisible();
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '添加服务器' })).toHaveCount(0);
 });
