@@ -44,17 +44,23 @@ pub struct ScopedDirectoryEntry {
 
 #[async_trait]
 pub trait ScopedSftp: Send + Sync {
-    async fn list_dir(&self, path: &str) -> Result<Vec<ScopedDirectoryEntry>, CoreError>;
-    async fn symlink_metadata(&self, path: &str) -> Result<Option<ScopedMetadata>, CoreError>;
-    async fn read_file(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, CoreError>;
+    async fn list_dir(
+        &self,
+        path: &RemoteDirectoryPath,
+    ) -> Result<Vec<ScopedDirectoryEntry>, CoreError>;
+    async fn symlink_metadata(
+        &self,
+        path: &RemotePath,
+    ) -> Result<Option<ScopedMetadata>, CoreError>;
+    async fn read_file(&self, path: &RemotePath, max_bytes: u64) -> Result<Vec<u8>, CoreError>;
     async fn create_new_file(
         &self,
-        path: &str,
+        path: &RemotePath,
         bytes: &[u8],
         permissions: Option<u32>,
     ) -> Result<(), CoreError>;
-    async fn rename(&self, source: &str, destination: &str) -> Result<(), CoreError>;
-    async fn remove_file(&self, path: &str) -> Result<(), CoreError>;
+    async fn rename(&self, source: &RemotePath, destination: &RemotePath) -> Result<(), CoreError>;
+    async fn remove_file(&self, path: &RemotePath) -> Result<(), CoreError>;
     async fn close(&self) -> Result<(), CoreError>;
 }
 
@@ -128,7 +134,7 @@ impl RemoteFileService {
         let session = self.connector.open_scoped(connection).await?;
         let result = async {
             let mut entries = session
-                .list_dir(directory.as_str())
+                .list_dir(directory)
                 .await?
                 .into_iter()
                 .map(|entry| {
@@ -210,16 +216,14 @@ impl RemoteFileService {
         let session = self.connector.open_scoped(connection).await?;
         let result = async {
             let metadata = session
-                .symlink_metadata(path.as_str())
+                .symlink_metadata(path)
                 .await?
                 .ok_or_else(|| not_found("远程文件不存在"))?;
             require_regular_file(&metadata, "下载")?;
             if metadata.size > MAX_FILE_DOWNLOAD_BYTES {
                 return Err(validation("远程文件超过 16 MiB 下载上限"));
             }
-            let bytes = session
-                .read_file(path.as_str(), MAX_FILE_DOWNLOAD_BYTES)
-                .await?;
+            let bytes = session.read_file(path, MAX_FILE_DOWNLOAD_BYTES).await?;
             if bytes.len() as u64 > MAX_FILE_DOWNLOAD_BYTES {
                 return Err(CoreError::new(
                     CoreErrorCode::Conflict,
@@ -243,7 +247,7 @@ async fn read_with_session(
     path: &RemotePath,
 ) -> Result<RemoteTextFile, CoreError> {
     let metadata = session
-        .symlink_metadata(path.as_str())
+        .symlink_metadata(path)
         .await?
         .ok_or_else(|| not_found("远程文件不存在"))?;
     require_regular_file(&metadata, "在线编辑")?;
@@ -252,9 +256,7 @@ async fn read_with_session(
             "远程文件超过 1 MiB 在线编辑上限，未在编辑器中打开",
         ));
     }
-    let bytes = session
-        .read_file(path.as_str(), MAX_EDITABLE_FILE_BYTES)
-        .await?;
+    let bytes = session.read_file(path, MAX_EDITABLE_FILE_BYTES).await?;
     if bytes.len() as u64 > MAX_EDITABLE_FILE_BYTES {
         return Err(CoreError::new(
             CoreErrorCode::Conflict,
@@ -284,16 +286,13 @@ async fn write_with_session(
     content: &str,
     expected_sha256: &str,
 ) -> Result<RemoteFileWriteResult, CoreError> {
-    let metadata = session
-        .symlink_metadata(path.as_str())
-        .await?
-        .ok_or_else(|| {
-            CoreError::new(
-                CoreErrorCode::Conflict,
-                "远程文件已不存在，草稿未写入",
-                false,
-            )
-        })?;
+    let metadata = session.symlink_metadata(path).await?.ok_or_else(|| {
+        CoreError::new(
+            CoreErrorCode::Conflict,
+            "远程文件已不存在，草稿未写入",
+            false,
+        )
+    })?;
     require_regular_file(&metadata, "在线编辑保存")?;
     if metadata.size > MAX_EDITABLE_FILE_BYTES {
         return Err(CoreError::new(
@@ -303,9 +302,7 @@ async fn write_with_session(
         ));
     }
 
-    let current = session
-        .read_file(path.as_str(), MAX_EDITABLE_FILE_BYTES)
-        .await?;
+    let current = session.read_file(path, MAX_EDITABLE_FILE_BYTES).await?;
     if current.len() as u64 > MAX_EDITABLE_FILE_BYTES {
         return Err(CoreError::new(
             CoreErrorCode::Conflict,
@@ -324,13 +321,26 @@ async fn write_with_session(
     let temp_name = format!(".harbor-edit-{}.tmp", Uuid::new_v4());
     let temp = path.parent_directory().join_resource(&temp_name)?;
     session
-        .create_new_file(temp.as_str(), content.as_bytes(), metadata.permissions)
+        .create_new_file(&temp, content.as_bytes(), metadata.permissions)
         .await?;
 
     let replacement = async {
-        let latest = session
-            .read_file(path.as_str(), MAX_EDITABLE_FILE_BYTES)
-            .await?;
+        let latest_metadata = session.symlink_metadata(path).await?.ok_or_else(|| {
+            CoreError::new(
+                CoreErrorCode::Conflict,
+                "远程文件在提交前已不存在，草稿未写入",
+                false,
+            )
+        })?;
+        require_regular_file(&latest_metadata, "在线编辑保存")?;
+        if latest_metadata.permissions != metadata.permissions {
+            return Err(CoreError::new(
+                CoreErrorCode::Conflict,
+                "远程文件权限在保存期间发生变化，草稿未写入",
+                false,
+            ));
+        }
+        let latest = session.read_file(path, MAX_EDITABLE_FILE_BYTES).await?;
         if latest.len() as u64 > MAX_EDITABLE_FILE_BYTES {
             return Err(CoreError::new(
                 CoreErrorCode::Conflict,
@@ -345,27 +355,34 @@ async fn write_with_session(
                 false,
             ));
         }
-        session.rename(temp.as_str(), path.as_str()).await
+        session.rename(&temp, path).await
     }
     .await;
 
     if let Err(error) = replacement {
-        let _ = session.remove_file(temp.as_str()).await;
+        let _ = session.remove_file(&temp).await;
         return Err(error);
     }
 
-    let modified_at = session
-        .symlink_metadata(path.as_str())
-        .await
-        .ok()
-        .flatten()
+    let final_metadata = session.symlink_metadata(path).await.ok().flatten();
+    let modified_at = final_metadata
+        .as_ref()
         .and_then(|latest| latest.modified_at);
+    let warning = if final_metadata
+        .as_ref()
+        .and_then(|latest| latest.permissions)
+        == metadata.permissions
+    {
+        None
+    } else {
+        Some("文件已保存，但无法确认远程权限保持不变；请检查文件权限。".to_owned())
+    };
     Ok(RemoteFileWriteResult {
         path: path.as_str().to_owned(),
         sha256: sha256(content.as_bytes()),
         size: content.len() as u64,
         modified_at,
-        warning: None,
+        warning,
     })
 }
 
@@ -459,10 +476,13 @@ struct RusshScopedSftp {
 
 #[async_trait]
 impl ScopedSftp for RusshScopedSftp {
-    async fn list_dir(&self, path: &str) -> Result<Vec<ScopedDirectoryEntry>, CoreError> {
+    async fn list_dir(
+        &self,
+        path: &RemoteDirectoryPath,
+    ) -> Result<Vec<ScopedDirectoryEntry>, CoreError> {
         let mut entries = self
             .session
-            .read_dir(path)
+            .read_dir(path.as_str())
             .await
             .map_err(|error| sftp_error("读取远程目录", error))?
             .map(|entry| ScopedDirectoryEntry {
@@ -479,8 +499,11 @@ impl ScopedSftp for RusshScopedSftp {
         Ok(entries)
     }
 
-    async fn symlink_metadata(&self, path: &str) -> Result<Option<ScopedMetadata>, CoreError> {
-        match self.session.symlink_metadata(path).await {
+    async fn symlink_metadata(
+        &self,
+        path: &RemotePath,
+    ) -> Result<Option<ScopedMetadata>, CoreError> {
+        match self.session.symlink_metadata(path.as_str()).await {
             Ok(metadata) => Ok(Some(scoped_metadata(metadata))),
             Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => {
                 Ok(None)
@@ -489,10 +512,10 @@ impl ScopedSftp for RusshScopedSftp {
         }
     }
 
-    async fn read_file(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, CoreError> {
+    async fn read_file(&self, path: &RemotePath, max_bytes: u64) -> Result<Vec<u8>, CoreError> {
         let mut file = self
             .session
-            .open(path)
+            .open(path.as_str())
             .await
             .map_err(|error| sftp_error("打开远程文件", error))?;
         let metadata = file
@@ -532,7 +555,7 @@ impl ScopedSftp for RusshScopedSftp {
 
     async fn create_new_file(
         &self,
-        path: &str,
+        path: &RemotePath,
         bytes: &[u8],
         permissions: Option<u32>,
     ) -> Result<(), CoreError> {
@@ -541,33 +564,39 @@ impl ScopedSftp for RusshScopedSftp {
         let mut file = self
             .session
             .open_with_flags_and_attributes(
-                path,
+                path.as_str(),
                 OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::EXCLUDE,
                 attributes,
             )
             .await
             .map_err(|error| sftp_error("创建远程临时文件", error))?;
-        file.write_all(bytes)
-            .await
-            .map_err(|error| io_error("写入远程临时文件", error))?;
-        file.sync_all()
-            .await
-            .map_err(|error| sftp_error("同步远程临时文件", error))?;
-        file.close()
-            .await
-            .map_err(|error| io_error("关闭远程临时文件", error))
+        if let Err(error) = file.write_all(bytes).await {
+            drop(file);
+            let _ = self.session.remove_file(path.as_str()).await;
+            return Err(io_error("写入远程临时文件", error));
+        }
+        if let Err(error) = file.sync_all().await {
+            drop(file);
+            let _ = self.session.remove_file(path.as_str()).await;
+            return Err(sftp_error("同步远程临时文件", error));
+        }
+        if let Err(error) = file.close().await {
+            let _ = self.session.remove_file(path.as_str()).await;
+            return Err(io_error("关闭远程临时文件", error));
+        }
+        Ok(())
     }
 
-    async fn rename(&self, source: &str, destination: &str) -> Result<(), CoreError> {
+    async fn rename(&self, source: &RemotePath, destination: &RemotePath) -> Result<(), CoreError> {
         self.session
-            .rename(source, destination)
+            .rename(source.as_str(), destination.as_str())
             .await
             .map_err(|error| sftp_error("替换远程文件", error))
     }
 
-    async fn remove_file(&self, path: &str) -> Result<(), CoreError> {
+    async fn remove_file(&self, path: &RemotePath) -> Result<(), CoreError> {
         self.session
-            .remove_file(path)
+            .remove_file(path.as_str())
             .await
             .map_err(|error| sftp_error("清理远程临时文件", error))
     }
@@ -646,10 +675,71 @@ fn sftp_error(context: &str, error: SftpError) -> CoreError {
     }
 }
 
-fn io_error(context: &str, _error: std::io::Error) -> CoreError {
-    CoreError::new(
-        CoreErrorCode::SshConnection,
-        format!("{context}时 SFTP 通道中断，请重新连接"),
-        true,
-    )
+fn io_error(context: &str, error: std::io::Error) -> CoreError {
+    use std::io::ErrorKind;
+
+    match error.kind() {
+        ErrorKind::PermissionDenied => CoreError::new(
+            CoreErrorCode::RemotePermission,
+            format!("{context}失败：没有权限访问该远程路径"),
+            false,
+        ),
+        ErrorKind::NotFound => CoreError::new(
+            CoreErrorCode::NotFound,
+            format!("{context}失败：远程文件不存在"),
+            false,
+        ),
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => CoreError::new(
+            CoreErrorCode::Timeout,
+            format!("{context}超时，请重试"),
+            true,
+        ),
+        ErrorKind::BrokenPipe
+        | ErrorKind::ConnectionReset
+        | ErrorKind::ConnectionAborted
+        | ErrorKind::NotConnected
+        | ErrorKind::UnexpectedEof => CoreError::new(
+            CoreErrorCode::SshConnection,
+            format!("{context}时 SFTP 通道中断，请重新连接"),
+            true,
+        ),
+        _ => CoreError::new(
+            CoreErrorCode::Internal,
+            format!("{context}失败，请稍后重试"),
+            false,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+
+    use opspilot_domain::CoreErrorCode;
+
+    use super::io_error;
+
+    #[test]
+    fn file_io_errors_do_not_all_look_like_a_dropped_connection() {
+        assert_eq!(
+            io_error("读取远程文件", Error::from(ErrorKind::PermissionDenied)).code(),
+            CoreErrorCode::RemotePermission
+        );
+        assert_eq!(
+            io_error("读取远程文件", Error::from(ErrorKind::NotFound)).code(),
+            CoreErrorCode::NotFound
+        );
+        assert_eq!(
+            io_error("读取远程文件", Error::from(ErrorKind::TimedOut)).code(),
+            CoreErrorCode::Timeout
+        );
+        assert_eq!(
+            io_error("读取远程文件", Error::from(ErrorKind::BrokenPipe)).code(),
+            CoreErrorCode::SshConnection
+        );
+        assert_eq!(
+            io_error("读取远程文件", Error::other("remote status failure")).code(),
+            CoreErrorCode::Internal
+        );
+    }
 }

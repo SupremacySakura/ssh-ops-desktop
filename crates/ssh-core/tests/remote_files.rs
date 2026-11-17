@@ -62,6 +62,7 @@ struct FakeState {
     opens: usize,
     closes: usize,
     fail_close: bool,
+    chmod_after_read: Option<(String, Option<u32>)>,
 }
 
 #[derive(Clone, Default)]
@@ -82,6 +83,10 @@ impl FakeConnector {
     async fn fail_close(self) -> Self {
         self.state.lock().await.fail_close = true;
         self
+    }
+
+    async fn chmod_after_read(&self, path: &str, permissions: Option<u32>) {
+        self.state.lock().await.chmod_after_read = Some((path.to_owned(), permissions));
     }
 
     async fn node(&self, path: &str) -> Option<FakeNode> {
@@ -137,7 +142,11 @@ fn entry_name(path: &str) -> &str {
 
 #[async_trait]
 impl ScopedSftp for FakeSession {
-    async fn list_dir(&self, path: &str) -> Result<Vec<ScopedDirectoryEntry>, CoreError> {
+    async fn list_dir(
+        &self,
+        path: &RemoteDirectoryPath,
+    ) -> Result<Vec<ScopedDirectoryEntry>, CoreError> {
+        let path = path.as_str();
         let state = self.state.lock().await;
         if !state.nodes.contains_key(path) {
             return Err(not_found());
@@ -153,7 +162,11 @@ impl ScopedSftp for FakeSession {
             .collect())
     }
 
-    async fn symlink_metadata(&self, path: &str) -> Result<Option<ScopedMetadata>, CoreError> {
+    async fn symlink_metadata(
+        &self,
+        path: &RemotePath,
+    ) -> Result<Option<ScopedMetadata>, CoreError> {
+        let path = path.as_str();
         Ok(self
             .state
             .lock()
@@ -163,15 +176,23 @@ impl ScopedSftp for FakeSession {
             .map(FakeNode::metadata))
     }
 
-    async fn read_file(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, CoreError> {
-        let bytes = self
-            .state
-            .lock()
-            .await
+    async fn read_file(&self, path: &RemotePath, max_bytes: u64) -> Result<Vec<u8>, CoreError> {
+        let path = path.as_str();
+        let mut state = self.state.lock().await;
+        let bytes = state
             .nodes
             .get(path)
             .map(|node| node.bytes.clone())
             .ok_or_else(not_found)?;
+        if let Some((target, permissions)) = state.chmod_after_read.take() {
+            if target == path {
+                if let Some(node) = state.nodes.get_mut(path) {
+                    node.permissions = permissions;
+                }
+            } else {
+                state.chmod_after_read = Some((target, permissions));
+            }
+        }
         if bytes.len() as u64 > max_bytes {
             return Ok(bytes);
         }
@@ -180,10 +201,11 @@ impl ScopedSftp for FakeSession {
 
     async fn create_new_file(
         &self,
-        path: &str,
+        path: &RemotePath,
         bytes: &[u8],
         permissions: Option<u32>,
     ) -> Result<(), CoreError> {
+        let path = path.as_str();
         let mut state = self.state.lock().await;
         if state.nodes.contains_key(path) {
             return Err(CoreError::new(
@@ -204,14 +226,17 @@ impl ScopedSftp for FakeSession {
         Ok(())
     }
 
-    async fn rename(&self, source: &str, destination: &str) -> Result<(), CoreError> {
+    async fn rename(&self, source: &RemotePath, destination: &RemotePath) -> Result<(), CoreError> {
+        let source = source.as_str();
+        let destination = destination.as_str();
         let mut state = self.state.lock().await;
         let node = state.nodes.remove(source).ok_or_else(not_found)?;
         state.nodes.insert(destination.to_owned(), node);
         Ok(())
     }
 
-    async fn remove_file(&self, path: &str) -> Result<(), CoreError> {
+    async fn remove_file(&self, path: &RemotePath) -> Result<(), CoreError> {
+        let path = path.as_str();
         if self.state.lock().await.nodes.remove(path).is_some() {
             Ok(())
         } else {
@@ -390,6 +415,49 @@ async fn write_requires_the_expected_hash_and_preserves_original_permissions() {
         "temporary edit file must be removed before success"
     );
     assert_eq!(connector.closes().await, 2);
+}
+
+#[tokio::test]
+async fn write_conflicts_when_remote_permissions_change_before_commit() {
+    let old = "old\n";
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/etc", FakeNode::directory()),
+        (
+            "/etc/app.conf",
+            FakeNode {
+                permissions: Some(0o644),
+                ..FakeNode::file(old)
+            },
+        ),
+    ])
+    .await;
+    connector
+        .chmod_after_read("/etc/app.conf", Some(0o600))
+        .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let error = service
+        .write(
+            &connection(),
+            &RemotePath::try_new("/etc/app.conf").unwrap(),
+            "new\n".to_owned(),
+            &sha256(old.as_bytes()),
+        )
+        .await
+        .expect_err("permission changes must fail closed");
+
+    assert_eq!(error.code(), CoreErrorCode::Conflict);
+    assert_eq!(
+        connector.node("/etc/app.conf").await.unwrap().permissions,
+        Some(0o600)
+    );
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/etc", "/etc/app.conf"],
+        "temporary edit file must be removed after a failed commit"
+    );
+    assert_eq!(connector.closes().await, 1);
 }
 
 #[tokio::test]

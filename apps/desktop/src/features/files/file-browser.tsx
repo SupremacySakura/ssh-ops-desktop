@@ -287,12 +287,16 @@ export function FileBrowser({
     }
     setOpeningPath(entry.path);
     setFileNotice(null);
+    const requestedConnectionId = connection.connectionId;
     try {
       const document = await core.readFile(connection, remotePath.data);
+      if (connectionIdRef.current !== requestedConnectionId) return;
       setEditorConnection(connection);
       setEditorDocument(document);
     } catch (error) {
-      setFileNotice({ kind: 'error', text: remoteFileErrorMessage(error) });
+      if (connectionIdRef.current === requestedConnectionId) {
+        setFileNotice({ kind: 'error', text: remoteFileErrorMessage(error) });
+      }
     } finally {
       setOpeningPath(null);
     }
@@ -332,8 +336,10 @@ export function FileBrowser({
     }
     setDownloadingPath(entry.path);
     setFileNotice(null);
+    const requestedConnectionId = connection.connectionId;
     try {
       const result = await core.downloadFile(connection, remotePath.data);
+      if (connectionIdRef.current !== requestedConnectionId) return;
       if (result.bytes.length > MAX_FILE_DOWNLOAD_BYTES) {
         throw new Error('Core 返回的下载内容超过 16 MiB 上限');
       }
@@ -355,7 +361,9 @@ export function FileBrowser({
         text: `已开始下载 ${anchor.download}。桌面版的最终保存位置由 WebView 下载策略决定。`,
       });
     } catch (error) {
-      setFileNotice({ kind: 'error', text: remoteFileErrorMessage(error) });
+      if (connectionIdRef.current === requestedConnectionId) {
+        setFileNotice({ kind: 'error', text: remoteFileErrorMessage(error) });
+      }
     } finally {
       setDownloadingPath(null);
     }

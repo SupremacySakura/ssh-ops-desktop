@@ -4,9 +4,12 @@ import '@testing-library/jest-dom/vitest';
 
 import type {
   ConnectionHandle,
+  RemoteDownload,
   RemoteFileEntry,
+  RemoteTextFile,
 } from '@opspilot/contracts';
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -409,6 +412,99 @@ describe('FileBrowser', () => {
         args: [connection, '/app.conf'],
       });
       expect(createObjectURL).toHaveBeenCalledOnce();
+    } finally {
+      if (originalCreate) {
+        Object.defineProperty(URL, 'createObjectURL', originalCreate);
+      } else {
+        Reflect.deleteProperty(URL, 'createObjectURL');
+      }
+      if (originalRevoke) {
+        Object.defineProperty(URL, 'revokeObjectURL', originalRevoke);
+      } else {
+        Reflect.deleteProperty(URL, 'revokeObjectURL');
+      }
+    }
+  });
+
+  it('discards late read and download responses after the connection changes', async () => {
+    let resolveRead!: (value: RemoteTextFile) => void;
+    let resolveDownload!: (value: RemoteDownload) => void;
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [config],
+        },
+        documents: {
+          '/app.conf': {
+            path: '/app.conf',
+            text: 'hello\n',
+            sha256: hash,
+            size: 6,
+            modifiedAt: 1_700_000_100,
+          },
+        },
+      },
+      overrides: {
+        readFile: () => new Promise((resolve) => {
+          resolveRead = resolve;
+        }),
+        downloadFile: () => new Promise((resolve) => {
+          resolveDownload = resolve;
+        }),
+      },
+    });
+    const originalCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const originalRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    const createObjectURL = vi.fn(() => 'blob:stale-download');
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    try {
+      const { rerender } = renderBrowser({ core });
+      await screen.findByRole('table', { name: '目录内容' });
+      fireEvent.doubleClick(screen.getByRole('button', { name: '打开文件 app.conf' }));
+      fireEvent.click(screen.getByRole('button', { name: '下载 app.conf' }));
+
+      const nextConnection: ConnectionHandle = {
+        ...connection,
+        connectionId: '019c62b2-2970-7000-8000-000000000011',
+      };
+      rerender(
+        <FileBrowser
+          active
+          connection={nextConnection}
+          connectionStatus="ready"
+          core={core}
+          jumpRequest={null}
+          onReconnect={vi.fn()}
+        />,
+      );
+      await screen.findByRole('table', { name: '目录内容' });
+
+      await act(async () => {
+        resolveRead({
+          path: '/app.conf',
+          text: 'hello\n',
+          sha256: hash,
+          size: 6,
+          modifiedAt: 1_700_000_100,
+        });
+        resolveDownload({
+          path: '/app.conf',
+          bytes: [104, 101, 108, 108, 111, 10],
+          sha256: hash,
+        });
+      });
+
+      expect(screen.queryByRole('dialog', { name: '编辑 app.conf' }))
+        .not.toBeInTheDocument();
+      expect(createObjectURL).not.toHaveBeenCalled();
     } finally {
       if (originalCreate) {
         Object.defineProperty(URL, 'createObjectURL', originalCreate);

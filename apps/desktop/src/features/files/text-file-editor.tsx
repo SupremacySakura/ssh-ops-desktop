@@ -5,7 +5,7 @@ import type {
 } from '@opspilot/contracts';
 import { MAX_EDIT_WRITE_BYTES } from '@opspilot/contracts';
 import { RotateCw, Save, X } from 'lucide-react';
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 
 import type { CoreClient } from '../../api/core';
 import { CodeEditor } from './code-editor';
@@ -40,6 +40,8 @@ export function TextFileEditor({
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const connectionRef = useRef(connection);
+  connectionRef.current = connection;
   const dirty = draft !== base.text;
   const fileName = base.path.split('/').at(-1) ?? base.path;
   const draftBytes = new TextEncoder().encode(draft).byteLength;
@@ -51,6 +53,7 @@ export function TextFileEditor({
     setError(null);
     setConflict(false);
     setNotice(null);
+    const requestedConnectionId = connection.connectionId;
     try {
       const result = await core.writeFile(
         connection,
@@ -58,6 +61,10 @@ export function TextFileEditor({
         draft,
         base.sha256,
       );
+      if (connectionRef.current.connectionId !== requestedConnectionId) {
+        setError('连接已变化，保存结果未应用到当前编辑器；请重新加载远端内容确认。');
+        return;
+      }
       setBase({
         ...base,
         text: draft,
@@ -72,8 +79,10 @@ export function TextFileEditor({
       );
       onSaved(result);
     } catch (saveError) {
-      setError(remoteFileErrorMessage(saveError));
-      setConflict(errorCode(saveError) === 'CONFLICT');
+      if (connectionRef.current.connectionId === requestedConnectionId) {
+        setError(remoteFileErrorMessage(saveError));
+        setConflict(errorCode(saveError) === 'CONFLICT');
+      }
     } finally {
       setSaving(false);
     }
@@ -91,14 +100,21 @@ export function TextFileEditor({
     setError(null);
     setConflict(false);
     setNotice(null);
+    const requestedConnectionId = connection.connectionId;
     try {
       const latest = await core.readFile(connection, base.path);
+      if (connectionRef.current.connectionId !== requestedConnectionId) {
+        setError('连接已变化，未应用重新加载结果；请重试。');
+        return;
+      }
       setBase(latest);
       setDraft(latest.text);
       setNotice('已重新加载远端内容');
       onReloaded?.(latest);
     } catch (reloadError) {
-      setError(remoteFileErrorMessage(reloadError));
+      if (connectionRef.current.connectionId === requestedConnectionId) {
+        setError(remoteFileErrorMessage(reloadError));
+      }
     } finally {
       setReloading(false);
     }

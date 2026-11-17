@@ -4,9 +4,11 @@ import '@testing-library/jest-dom/vitest';
 
 import type {
   ConnectionHandle,
+  RemoteFileWriteResult,
   RemoteTextFile,
 } from '@opspilot/contracts';
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -184,5 +186,60 @@ describe('TextFileEditor', () => {
       );
     });
     confirm.mockRestore();
+  });
+
+  it('does not apply a save result that arrives after the connection changes', async () => {
+    let resolveWrite!: (value: RemoteFileWriteResult) => void;
+    const core = createFakeCoreClient({
+      files: {
+        documents: {
+          '/app.conf': document,
+        },
+      },
+      overrides: {
+        writeFile: () => new Promise((resolve) => {
+          resolveWrite = resolve;
+        }),
+      },
+    });
+    const onSaved = vi.fn();
+    const { rerender } = render(
+      <TextFileEditor
+        connection={connection}
+        core={core}
+        document={document}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    const editor = screen.getByRole('textbox', { name: '远程文件内容' });
+    fireEvent.change(editor, { target: { value: 'unsaved draft\n' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存到远程' }));
+
+    const nextConnection: ConnectionHandle = {
+      ...connection,
+      connectionId: '019c62b2-2970-7000-8000-000000000011',
+    };
+    rerender(
+      <TextFileEditor
+        connection={nextConnection}
+        core={core}
+        document={document}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    await act(async () => {
+      resolveWrite({
+        path: '/app.conf',
+        sha256: 'bc6f1f5b8d6e02be0c4ef2f7d86d42b8c04c7609fa535e0ee04f22f28412eea1',
+        size: 14,
+        modifiedAt: 1_700_000_200,
+      });
+    });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('连接已变化');
+    expect(editor).toHaveValue('unsaved draft\n');
+    expect(onSaved).not.toHaveBeenCalled();
   });
 });

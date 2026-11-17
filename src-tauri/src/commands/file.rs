@@ -377,4 +377,33 @@ mod tests {
         assert!(value.get("modifiedAt").is_none());
         assert!(value.get("warning").is_none());
     }
+
+    #[test]
+    fn text_and_download_contracts_serialize_with_the_shared_camel_case_shape() {
+        let text = RemoteTextFile {
+            path: "/hello.txt".to_owned(),
+            text: "hello\n".to_owned(),
+            sha256: HASH.to_owned(),
+            size: 6,
+            modified_at: Some(42),
+        };
+        let value = serde_json::to_value(text).unwrap();
+        assert_eq!(value["path"], "/hello.txt");
+        assert_eq!(value["text"], "hello\n");
+        assert_eq!(value["sha256"], HASH);
+        assert_eq!(value["size"], 6);
+        assert_eq!(value["modifiedAt"], 42);
+
+        let download = RemoteFileDownload {
+            path: "/hello.txt".to_owned(),
+            bytes: b"hello\n".to_vec(),
+            sha256: HASH.to_owned(),
+        };
+        let value = serde_json::to_value(download).unwrap();
+        assert_eq!(
+            value["bytes"],
+            serde_json::json!([104, 101, 108, 108, 111, 10])
+        );
+        assert_eq!(value["sha256"], HASH);
+    }
 }

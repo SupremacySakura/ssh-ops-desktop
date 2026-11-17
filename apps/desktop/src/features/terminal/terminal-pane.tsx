@@ -244,8 +244,16 @@ export function TerminalPane({
         <button
           aria-label="跳转到当前终端目录"
           className="inline-flex h-6 items-center gap-1.5 px-2 text-[10px] hover:bg-[#2C2A26] hover:text-paper"
-          onClick={() => onJumpToFiles(activeSession?.cwd ?? null)}
-          title={activeSession?.cwd ?? '终端尚未报告当前目录'}
+          onClick={() => onJumpToFiles(
+            activeSession?.status === 'open' ? activeSession.cwd : null,
+          )}
+          title={
+            !activeSession
+              ? '终端尚未报告当前目录'
+              : activeSession.status === 'open'
+              ? activeSession.cwd ?? '终端尚未报告当前目录'
+              : '终端会话已关闭'
+          }
           type="button"
         >
           <FolderOpen aria-hidden className="size-3" strokeWidth={1.5} />
