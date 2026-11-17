@@ -32,6 +32,7 @@ const terminalServers = [
 let attempts = 0;
 let emitTerminalData: FakeCoreClient['emitTerminalData'] | null = null;
 const terminalSequences = new Map<string, number>();
+const dockerContainerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const core = createFakeCoreClient({
   health: {
     version: 'renderer-fixture',
@@ -42,8 +43,30 @@ const core = createFakeCoreClient({
     || scenario === 'host-key'
     || scenario === 'host-key-changed'
     || scenario === 'files'
+    || scenario === 'docker'
     ? terminalServers
     : [],
+  dockerContainers: scenario === 'docker'
+    ? [{
+        id: dockerContainerId,
+        names: ['web'],
+        image: 'nginx:alpine',
+        state: 'running',
+        status: 'Up 3 hours',
+        ports: ['0.0.0.0:8080->80/tcp'],
+        startedAt: '2026-11-17T12:00:00Z',
+      }]
+    : [],
+  dockerLogs: scenario === 'docker'
+    ? {
+        [dockerContainerId]: {
+          containerId: dockerContainerId,
+          tail: 500,
+          stdout: 'request completed\n',
+          stderr: 'warning from stderr\n',
+        },
+      }
+    : {},
   connectOutcome: scenario === 'host-key' || scenario === 'host-key-changed'
     ? (serverId) => {
         attempts += 1;

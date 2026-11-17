@@ -11,6 +11,7 @@ import {
   CommandHistoryContext,
   createDefaultCommandHistory,
 } from './features/terminal/command-history';
+import { useDockerStore } from './store/docker-store';
 import { useHarborStore } from './store/harbor-store';
 import { useMonitorStore } from './store/monitor-store';
 import {
@@ -36,6 +37,7 @@ export default function App({ core }: AppProps) {
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
+    useDockerStore.getState().setCore(core);
 
     void attachTerminalEvents(core).then((stop) => {
       if (disposed) {
@@ -50,6 +52,7 @@ export default function App({ core }: AppProps) {
       unlisten?.();
       useMonitorStore.getState().reset();
       useTerminalStore.getState().reset();
+      useDockerStore.getState().reset();
     };
   }, [core]);
 

@@ -4,6 +4,8 @@ import {
   type ConnectOutcome,
   type ConnectionHandle,
   type ConnectionStateEvent,
+  type CoreError,
+  type DockerShell,
   type HostKeyChangedPrompt,
   type HostKeyPrompt,
   type Server,
@@ -62,6 +64,10 @@ export interface ServerRuntime {
   nextSessionNumber: number;
 }
 
+export type DockerSessionOpenResult =
+  | { kind: 'opened'; session: TerminalSessionView }
+  | { kind: 'error'; error: CoreError };
+
 interface TerminalStore {
   core: CoreClient | null;
   eventBridgeStatus: 'idle' | 'loading' | 'ready' | 'error';
@@ -82,6 +88,11 @@ interface TerminalStore {
   trustHostKey: (serverId: string) => Promise<void>;
   dismissHostKey: (serverId: string) => void;
   openSession: (serverId: string) => Promise<TerminalSessionView | null>;
+  openDockerSession: (
+    serverId: string,
+    containerId: string,
+    shell: DockerShell,
+  ) => Promise<DockerSessionOpenResult>;
   closeSession: (serverId: string, sessionId: string) => Promise<void>;
   reconnectSession: (serverId: string, sessionId: string) => Promise<void>;
   activateSession: (serverId: string, sessionId: string) => void;
@@ -348,6 +359,77 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         }));
       }
       return null;
+    } finally {
+      if (get().runtimes[serverId]) {
+        updateRuntime(set, serverId, (current) => ({
+          ...current,
+          openingSessions: Math.max(0, current.openingSessions - 1),
+        }));
+      }
+    }
+  },
+  openDockerSession: async (serverId, containerId, shell) => {
+    const core = get().core;
+    const runtime = get().runtimes[serverId];
+    if (!core || !runtime?.connection || runtime.status !== 'ready') {
+      return {
+        kind: 'error',
+        error: sessionError(
+          'SSH_CONNECTION',
+          '服务器离线或 SSH 连接尚未就绪，请重新连接',
+          true,
+        ),
+      };
+    }
+    if (
+      countOpenSessions(runtime) + runtime.openingSessions
+      >= MAX_TERMINAL_SESSIONS
+    ) {
+      return {
+        kind: 'error',
+        error: sessionError(
+          'CONFLICT',
+          `每个服务器最多同时打开 ${MAX_TERMINAL_SESSIONS} 个终端会话`,
+          false,
+        ),
+      };
+    }
+
+    updateRuntime(set, serverId, (current) => ({
+      ...current,
+      openingSessions: current.openingSessions + 1,
+    }));
+    try {
+      const opened = await core.execDockerContainer(
+        runtime.connection,
+        containerId,
+        shell,
+        DEFAULT_COLUMNS,
+        DEFAULT_ROWS,
+      );
+      const current = get().runtimes[serverId];
+      if (
+        !current
+        || current.connectionIdentity !== runtime.connectionIdentity
+        || current.connection?.connectionId !== runtime.connection.connectionId
+        || !sameConnection(opened.connection, runtime.connection)
+      ) {
+        discardPendingTerminalEvents(opened.id);
+        await core.closeTerminal(opened.id).catch(() => undefined);
+        return {
+          kind: 'error',
+          error: sessionError(
+            'CONFLICT',
+            '服务器连接已变化，Docker exec 会话未接入终端',
+            false,
+          ),
+        };
+      }
+      const view = addTerminalSession(set, get, serverId, opened);
+      drainPendingTerminalEvents(set, opened.id);
+      return { kind: 'opened', session: view };
+    } catch (error) {
+      return { kind: 'error', error: coreError(error) };
     } finally {
       if (get().runtimes[serverId]) {
         updateRuntime(set, serverId, (current) => ({
@@ -1244,6 +1326,26 @@ function emptyRuntime(serverId: string): ServerRuntime {
 function coreErrorCode(error: unknown): string | null {
   const parsed = CoreErrorSchema.safeParse(error);
   return parsed.success ? parsed.data.code : null;
+}
+
+function coreError(error: unknown): CoreError {
+  const parsed = CoreErrorSchema.safeParse(error);
+  if (parsed.success) return parsed.data;
+  return sessionError(
+    'INTERNAL',
+    error instanceof Error && error.message.trim().length > 0
+      ? error.message
+      : 'Docker exec 会话创建失败',
+    false,
+  );
+}
+
+function sessionError(
+  code: CoreError['code'],
+  message: string,
+  retryable: boolean,
+): CoreError {
+  return { code, message, retryable };
 }
 
 type SetState = (

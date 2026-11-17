@@ -5,6 +5,11 @@ import {
   ConnectionHandleSchema,
   ConnectionStateEventSchema,
   CoreHealthSchema,
+  DockerActionSchema,
+  DockerContainerIdSchema,
+  DockerContainerListSchema,
+  DockerLogsSchema,
+  DockerShellSchema,
   FileWriteArgsSchema,
   GroupInputSchema,
   GroupSchema,
@@ -29,6 +34,10 @@ import {
   type ConnectionHandle,
   type ConnectionStateEvent,
   type CoreHealth,
+  type DockerAction,
+  type DockerContainerList,
+  type DockerLogs,
+  type DockerShell,
   type Group,
   type GroupInput,
   type MonitorSnapshot,
@@ -94,6 +103,24 @@ export interface CoreClient {
     connection: ConnectionHandle,
     path: RemotePath | string,
   ): Promise<RemoteDownload>;
+  listDockerContainers(connection: ConnectionHandle): Promise<DockerContainerList>;
+  getDockerLogs(
+    connection: ConnectionHandle,
+    containerId: string,
+    tail: number,
+  ): Promise<DockerLogs>;
+  runDockerAction(
+    connection: ConnectionHandle,
+    containerId: string,
+    action: DockerAction,
+  ): Promise<void>;
+  execDockerContainer(
+    connection: ConnectionHandle,
+    containerId: string,
+    shell: DockerShell,
+    columns: number,
+    rows: number,
+  ): Promise<TerminalSession>;
   monitorSnapshot(connection: ConnectionHandle): Promise<MonitorSnapshot>;
   subscribeConnectionState(handler: (event: ConnectionStateEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalData(handler: (event: TerminalDataEvent) => void): Promise<UnlistenFn>;
@@ -199,6 +226,38 @@ export function createTauriCoreClient(): CoreClient {
       await invoke('file_download', {
         connection: ConnectionHandleSchema.parse(connection),
         path: RemotePathSchema.parse(path),
+      }),
+    ),
+    listDockerContainers: async (connection) => DockerContainerListSchema.parse(
+      await invoke('docker_list', { connection }),
+    ),
+    getDockerLogs: async (connection, containerId, tail) => DockerLogsSchema.parse(
+      await invoke('docker_logs', {
+        connection,
+        containerId: DockerContainerIdSchema.parse(containerId),
+        tail: DockerLogsSchema.shape.tail.parse(tail),
+      }),
+    ),
+    runDockerAction: async (connection, containerId, action) => {
+      await invoke('docker_action', {
+        connection,
+        containerId: DockerContainerIdSchema.parse(containerId),
+        action: DockerActionSchema.parse(action),
+      });
+    },
+    execDockerContainer: async (
+      connection,
+      containerId,
+      shell,
+      columns,
+      rows,
+    ) => TerminalSessionSchema.parse(
+      await invoke('docker_exec', {
+        connection,
+        containerId: DockerContainerIdSchema.parse(containerId),
+        shell: DockerShellSchema.parse(shell),
+        columns,
+        rows,
       }),
     ),
     monitorSnapshot: async (connection) => MonitorSnapshotSchema.parse(

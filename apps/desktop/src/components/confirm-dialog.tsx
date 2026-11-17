@@ -3,6 +3,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 
 interface ConfirmDialogProps {
   busy?: boolean;
+  busyLabel?: string;
   cancelLabel?: string;
   confirmLabel: string;
   description: ReactNode;
@@ -14,6 +15,7 @@ interface ConfirmDialogProps {
 
 export function ConfirmDialog({
   busy = false,
+  busyLabel = '处理中…',
   cancelLabel = '取消',
   confirmLabel,
   description,
@@ -99,7 +101,7 @@ export function ConfirmDialog({
             onClick={onConfirm}
             type="button"
           >
-            {busy ? '正在删除…' : confirmLabel}
+            {busy ? busyLabel : confirmLabel}
           </button>
         </footer>
       </section>
