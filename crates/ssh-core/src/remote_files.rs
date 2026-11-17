@@ -18,6 +18,10 @@ pub const MAX_EDITABLE_FILE_BYTES: u64 = 1024 * 1024;
 pub const MAX_EDIT_WRITE_BYTES: u64 = 4 * 1024 * 1024;
 pub const FILE_DOWNLOAD_WARNING_BYTES: u64 = 4 * 1024 * 1024;
 pub const MAX_FILE_DOWNLOAD_BYTES: u64 = 16 * 1024 * 1024;
+pub const FILE_UPLOAD_WARNING_BYTES: u64 = 4 * 1024 * 1024;
+pub const MAX_FILE_UPLOAD_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_UPLOAD_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_UPLOAD_BATCH_FILES: usize = 32;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +40,28 @@ pub struct ScopedMetadata {
     pub permissions: Option<u32>,
 }
 
+#[derive(Clone, Debug)]
+pub struct CreateFileFailure {
+    pub error: CoreError,
+    pub residual: Option<String>,
+}
+
+impl CreateFileFailure {
+    pub fn new(error: CoreError) -> Self {
+        Self {
+            error,
+            residual: None,
+        }
+    }
+
+    pub fn with_residual(error: CoreError, residual: String) -> Self {
+        Self {
+            error,
+            residual: Some(residual),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScopedDirectoryEntry {
     pub name: String,
@@ -48,6 +74,10 @@ pub trait ScopedSftp: Send + Sync {
         &self,
         path: &RemoteDirectoryPath,
     ) -> Result<Vec<ScopedDirectoryEntry>, CoreError>;
+    async fn directory_metadata(
+        &self,
+        path: &RemoteDirectoryPath,
+    ) -> Result<Option<ScopedMetadata>, CoreError>;
     async fn symlink_metadata(
         &self,
         path: &RemotePath,
@@ -58,9 +88,16 @@ pub trait ScopedSftp: Send + Sync {
         path: &RemotePath,
         bytes: &[u8],
         permissions: Option<u32>,
-    ) -> Result<(), CoreError>;
+    ) -> Result<(), CreateFileFailure>;
     async fn rename(&self, source: &RemotePath, destination: &RemotePath) -> Result<(), CoreError>;
+    async fn hardlink(
+        &self,
+        source: &RemotePath,
+        destination: &RemotePath,
+    ) -> Result<bool, CoreError>;
+    async fn create_dir(&self, path: &RemotePath) -> Result<(), CoreError>;
     async fn remove_file(&self, path: &RemotePath) -> Result<(), CoreError>;
+    async fn remove_dir(&self, path: &RemotePath) -> Result<(), CoreError>;
     async fn close(&self) -> Result<(), CoreError>;
 }
 
@@ -114,6 +151,60 @@ pub struct RemoteFileDownload {
     pub path: String,
     pub bytes: Vec<u8>,
     pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteUploadFile {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadBatchStatus {
+    Succeeded,
+    FailedRolledBack,
+    FailedWithResidue,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteUploadOutcome {
+    pub status: UploadBatchStatus,
+    pub committed: Vec<String>,
+    pub residual: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CoreError>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenameStatus {
+    Renamed,
+    Partial,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteRenameResult {
+    pub status: RenameStatus,
+    pub source_path: String,
+    pub target_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CoreError>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteFileMutationResult {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Clone)]
@@ -240,6 +331,484 @@ impl RemoteFileService {
         .await;
         finish_strict(session, result, "关闭远程下载会话失败").await
     }
+
+    pub async fn upload_batch(
+        &self,
+        connection: &ConnectionHandle,
+        directory: &RemoteDirectoryPath,
+        files: &[RemoteUploadFile],
+    ) -> Result<RemoteUploadOutcome, CoreError> {
+        validate_upload_files(directory, files)?;
+        let session = self.connector.open_scoped(connection).await?;
+        let result = upload_with_session(session.as_ref(), directory, files).await;
+        let close_warning = session.close().await.err().map(|_| {
+            "文件上传操作已结束，但 SFTP 会话清理失败；如目录未更新，请刷新确认。".to_owned()
+        });
+        match (result, close_warning) {
+            (Ok(mut outcome), warning) => {
+                append_warning(&mut outcome, warning);
+                Ok(outcome)
+            }
+            (Err(error), _) => Err(error),
+        }
+    }
+
+    pub async fn rename_no_clobber(
+        &self,
+        connection: &ConnectionHandle,
+        source: &RemotePath,
+        target: &RemotePath,
+    ) -> Result<RemoteRenameResult, CoreError> {
+        if source == target {
+            return Err(validation("新名称必须与原名称不同"));
+        }
+        if source.parent_directory() != target.parent_directory() {
+            return Err(validation("重命名只支持同一父目录内的文件"));
+        }
+        let session = self.connector.open_scoped(connection).await?;
+        let result = rename_with_session(session.as_ref(), source, target).await;
+        match result {
+            Ok(mut outcome) => {
+                if session.close().await.is_err() {
+                    append_rename_warning(
+                        &mut outcome,
+                        "重命名已结束，但 SFTP 会话清理失败；请刷新目录确认结果。".to_owned(),
+                    );
+                }
+                Ok(outcome)
+            }
+            Err(error) => {
+                let _ = session.close().await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn create_directory(
+        &self,
+        connection: &ConnectionHandle,
+        path: &RemotePath,
+    ) -> Result<RemoteFileMutationResult, CoreError> {
+        let session = self.connector.open_scoped(connection).await?;
+        let result = create_directory_with_session(session.as_ref(), path).await;
+        match result {
+            Ok(mut outcome) => {
+                if session.close().await.is_err() {
+                    outcome.warning = Some(
+                        "目录已创建，但 SFTP 会话清理失败；如列表未更新，请刷新确认。".to_owned(),
+                    );
+                }
+                Ok(outcome)
+            }
+            Err(error) => {
+                let _ = session.close().await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn delete(
+        &self,
+        connection: &ConnectionHandle,
+        path: &RemotePath,
+    ) -> Result<RemoteFileMutationResult, CoreError> {
+        let session = self.connector.open_scoped(connection).await?;
+        let result = delete_with_session(session.as_ref(), path).await;
+        match result {
+            Ok(mut outcome) => {
+                if session.close().await.is_err() {
+                    outcome.warning = Some(
+                        "远程条目已删除，但 SFTP 会话清理失败；如列表未更新，请刷新确认。"
+                            .to_owned(),
+                    );
+                }
+                Ok(outcome)
+            }
+            Err(error) => {
+                let _ = session.close().await;
+                Err(error)
+            }
+        }
+    }
+}
+
+async fn delete_with_session(
+    session: &dyn ScopedSftp,
+    path: &RemotePath,
+) -> Result<RemoteFileMutationResult, CoreError> {
+    let parent = path.parent_directory();
+    let parent_metadata = session
+        .directory_metadata(&parent)
+        .await?
+        .ok_or_else(|| not_found("要删除条目的父目录不存在"))?;
+    if parent_metadata.kind != RemoteFileKind::Directory {
+        return Err(validation("要删除条目的父路径不是普通目录"));
+    }
+    let metadata = session
+        .symlink_metadata(path)
+        .await?
+        .ok_or_else(|| not_found("要删除的远程条目不存在"))?;
+    match metadata.kind {
+        RemoteFileKind::File | RemoteFileKind::Symlink => {
+            session.remove_file(path).await?;
+        }
+        RemoteFileKind::Directory => {
+            session.remove_dir(path).await?;
+        }
+        RemoteFileKind::Other => {
+            return Err(validation("该路径不是普通文件、符号链接或目录，已拒绝删除"));
+        }
+    }
+    Ok(RemoteFileMutationResult {
+        path: path.as_str().to_owned(),
+        warning: None,
+    })
+}
+
+async fn create_directory_with_session(
+    session: &dyn ScopedSftp,
+    path: &RemotePath,
+) -> Result<RemoteFileMutationResult, CoreError> {
+    let parent = path.parent_directory();
+    let parent_metadata = session
+        .directory_metadata(&parent)
+        .await?
+        .ok_or_else(|| not_found("新建目录的父目录不存在"))?;
+    if parent_metadata.kind != RemoteFileKind::Directory {
+        return Err(validation("新建目录的父路径不是普通目录"));
+    }
+    if session.symlink_metadata(path).await?.is_some() {
+        return Err(CoreError::new(
+            CoreErrorCode::Conflict,
+            format!("目标 {} 已存在，未创建目录", path.as_str()),
+            false,
+        ));
+    }
+    match session.create_dir(path).await {
+        Ok(()) => Ok(RemoteFileMutationResult {
+            path: path.as_str().to_owned(),
+            warning: None,
+        }),
+        Err(error) => {
+            if session.symlink_metadata(path).await?.is_some() {
+                Err(CoreError::new(
+                    CoreErrorCode::Conflict,
+                    format!("目标 {} 已存在，未创建目录", path.as_str()),
+                    false,
+                ))
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+async fn rename_with_session(
+    session: &dyn ScopedSftp,
+    source: &RemotePath,
+    target: &RemotePath,
+) -> Result<RemoteRenameResult, CoreError> {
+    let parent = source.parent_directory();
+    let parent_metadata = session
+        .directory_metadata(&parent)
+        .await?
+        .ok_or_else(|| not_found("重命名源目录不存在"))?;
+    if parent_metadata.kind != RemoteFileKind::Directory {
+        return Err(validation("重命名源目录不是普通目录"));
+    }
+    let source_metadata = session
+        .symlink_metadata(source)
+        .await?
+        .ok_or_else(|| not_found("重命名源文件不存在"))?;
+    match source_metadata.kind {
+        RemoteFileKind::File => {}
+        RemoteFileKind::Directory => {
+            return Err(CoreError::new(
+                CoreErrorCode::CapabilityUnavailable,
+                "当前 SFTP 服务器没有经过验证的原子 no-replace 目录重命名原语，已拒绝操作",
+                false,
+            ));
+        }
+        RemoteFileKind::Symlink => {
+            return Err(validation("重命名源是符号链接，出于安全考虑已拒绝"));
+        }
+        RemoteFileKind::Other => {
+            return Err(validation("重命名源不是普通文件，已拒绝"));
+        }
+    }
+    if session.symlink_metadata(target).await?.is_some() {
+        return Err(CoreError::new(
+            CoreErrorCode::Conflict,
+            format!("目标文件 {} 已存在，未覆盖", target.as_str()),
+            false,
+        ));
+    }
+    match session.hardlink(source, target).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(CoreError::new(
+                CoreErrorCode::CapabilityUnavailable,
+                "SFTP 服务器未启用 hardlink@openssh.com，无法安全无覆盖重命名",
+                false,
+            ));
+        }
+        Err(error) => {
+            if session.symlink_metadata(target).await?.is_some() {
+                return Err(CoreError::new(
+                    CoreErrorCode::Conflict,
+                    format!("目标文件 {} 已存在，未覆盖", target.as_str()),
+                    false,
+                ));
+            }
+            return Err(error);
+        }
+    }
+    match session.remove_file(source).await {
+        Ok(()) => Ok(RemoteRenameResult {
+            status: RenameStatus::Renamed,
+            source_path: source.as_str().to_owned(),
+            target_path: target.as_str().to_owned(),
+            warning: None,
+            error: None,
+        }),
+        Err(error) => Ok(RemoteRenameResult {
+            status: RenameStatus::Partial,
+            source_path: source.as_str().to_owned(),
+            target_path: target.as_str().to_owned(),
+            warning: Some(
+                "目标文件已创建，但源文件删除失败；源与目标当前同时存在，请确认后重试清理源文件。"
+                    .to_owned(),
+            ),
+            error: Some(error),
+        }),
+    }
+}
+
+fn append_rename_warning(outcome: &mut RemoteRenameResult, warning: String) {
+    outcome.warning = Some(match outcome.warning.take() {
+        Some(existing) => format!("{existing} {warning}"),
+        None => warning,
+    });
+}
+
+fn validate_upload_files(
+    directory: &RemoteDirectoryPath,
+    files: &[RemoteUploadFile],
+) -> Result<Vec<RemotePath>, CoreError> {
+    if files.is_empty() {
+        return Err(validation("至少选择一个文件后才能上传"));
+    }
+    if files.len() > MAX_UPLOAD_BATCH_FILES {
+        return Err(validation(format!(
+            "单次最多上传 {MAX_UPLOAD_BATCH_FILES} 个文件"
+        )));
+    }
+    let mut total = 0_u64;
+    let mut names = std::collections::HashSet::new();
+    let mut targets = Vec::with_capacity(files.len());
+    for file in files {
+        let size = file.bytes.len() as u64;
+        if size > MAX_FILE_UPLOAD_BYTES {
+            return Err(validation(format!(
+                "文件 {} 超过 16 MiB 上传上限",
+                file.name
+            )));
+        }
+        total = total
+            .checked_add(size)
+            .ok_or_else(|| validation("上传批次总大小溢出"))?;
+        if total > MAX_UPLOAD_BATCH_BYTES {
+            return Err(validation("上传批次总大小超过 64 MiB 上限"));
+        }
+        if !names.insert(file.name.as_str()) {
+            return Err(validation(format!("上传批次包含重复文件名：{}", file.name)));
+        }
+        targets.push(directory.join_resource(&file.name)?);
+    }
+    Ok(targets)
+}
+
+async fn upload_with_session(
+    session: &dyn ScopedSftp,
+    directory: &RemoteDirectoryPath,
+    files: &[RemoteUploadFile],
+) -> Result<RemoteUploadOutcome, CoreError> {
+    let directory_metadata = session
+        .directory_metadata(directory)
+        .await?
+        .ok_or_else(|| not_found("上传目标目录不存在"))?;
+    if directory_metadata.kind != RemoteFileKind::Directory {
+        return Err(validation("上传目标不是普通目录"));
+    }
+
+    let targets = validate_upload_files(directory, files)?;
+    for target in &targets {
+        if session.symlink_metadata(target).await?.is_some() {
+            return Ok(RemoteUploadOutcome {
+                status: UploadBatchStatus::FailedRolledBack,
+                committed: Vec::new(),
+                residual: Vec::new(),
+                warning: None,
+                error: Some(CoreError::new(
+                    CoreErrorCode::Conflict,
+                    format!("目标文件 {} 已存在，未覆盖", target.as_str()),
+                    false,
+                )),
+            });
+        }
+    }
+
+    let mut staged = Vec::with_capacity(files.len());
+    for (file, target) in files.iter().zip(targets.iter()) {
+        let temp_name = format!(".harbor-upload-{}.part", Uuid::new_v4());
+        let temp = directory.join_resource(&temp_name)?;
+        if let Err(failure) = session.create_new_file(&temp, &file.bytes, None).await {
+            let mut residual = cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
+            if let Some(path) = failure.residual {
+                residual.insert(0, path);
+            }
+            return Ok(RemoteUploadOutcome {
+                status: if residual.is_empty() {
+                    UploadBatchStatus::FailedRolledBack
+                } else {
+                    UploadBatchStatus::FailedWithResidue
+                },
+                committed: Vec::new(),
+                warning: (!residual.is_empty()).then(|| {
+                    format!(
+                        "临时文件清理失败，以下路径可能仍然存在：{}",
+                        residual.join("、")
+                    )
+                }),
+                residual,
+                error: Some(failure.error),
+            });
+        }
+        staged.push((temp, target.clone()));
+    }
+
+    let mut committed = Vec::with_capacity(staged.len());
+    for (temp, target) in &staged {
+        match session.hardlink(temp, target).await {
+            Ok(true) => committed.push(target.clone()),
+            Ok(false) => {
+                return Ok(failed_upload_outcome(
+                    session,
+                    &staged,
+                    &committed,
+                    CoreError::new(
+                        CoreErrorCode::CapabilityUnavailable,
+                        "SFTP 服务器未启用 hardlink@openssh.com，无法安全无覆盖提交上传",
+                        false,
+                    ),
+                )
+                .await);
+            }
+            Err(error) => {
+                let error = if session
+                    .symlink_metadata(target)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    CoreError::new(
+                        CoreErrorCode::Conflict,
+                        format!("目标文件 {} 已存在，未覆盖", target.as_str()),
+                        false,
+                    )
+                } else {
+                    error
+                };
+                return Ok(failed_upload_outcome(session, &staged, &committed, error).await);
+            }
+        }
+    }
+
+    let residual = cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
+    let warning = (!residual.is_empty()).then(|| {
+        format!(
+            "文件已上传，但临时文件清理失败；请稍后手动清理 {}",
+            residual.join("、")
+        )
+    });
+    Ok(RemoteUploadOutcome {
+        status: UploadBatchStatus::Succeeded,
+        committed: committed
+            .into_iter()
+            .map(|path| path.as_str().to_owned())
+            .collect(),
+        residual,
+        warning,
+        error: None,
+    })
+}
+
+async fn failed_upload_outcome(
+    session: &dyn ScopedSftp,
+    staged: &[(RemotePath, RemotePath)],
+    committed: &[RemotePath],
+    error: CoreError,
+) -> RemoteUploadOutcome {
+    let mut remaining_committed = Vec::new();
+    for target in committed.iter().rev() {
+        match session.remove_file(target).await {
+            Ok(()) => {}
+            Err(error) if error.code() == CoreErrorCode::NotFound => {}
+            Err(_) => remaining_committed.push(target.clone()),
+        }
+    }
+    remaining_committed.reverse();
+
+    let mut residual = remaining_committed
+        .iter()
+        .map(|path| path.as_str().to_owned())
+        .collect::<Vec<_>>();
+    residual.extend(cleanup_paths(session, staged.iter().map(|(path, _)| path)).await);
+    let warning = (!residual.is_empty()).then(|| {
+        format!(
+            "回滚未完全完成，以下路径可能仍然存在：{}",
+            residual.join("、")
+        )
+    });
+    RemoteUploadOutcome {
+        status: if residual.is_empty() {
+            UploadBatchStatus::FailedRolledBack
+        } else {
+            UploadBatchStatus::FailedWithResidue
+        },
+        committed: remaining_committed
+            .iter()
+            .map(|path| path.as_str().to_owned())
+            .collect(),
+        residual,
+        warning,
+        error: Some(error),
+    }
+}
+
+async fn cleanup_paths<'a>(
+    session: &dyn ScopedSftp,
+    paths: impl Iterator<Item = &'a RemotePath>,
+) -> Vec<String> {
+    let mut residual = Vec::new();
+    for path in paths {
+        match session.remove_file(path).await {
+            Ok(()) => {}
+            Err(error) if error.code() == CoreErrorCode::NotFound => {}
+            Err(_) => residual.push(path.as_str().to_owned()),
+        }
+    }
+    residual
+}
+
+fn append_warning(outcome: &mut RemoteUploadOutcome, warning: Option<String>) {
+    if let Some(warning) = warning {
+        outcome.warning = Some(match outcome.warning.take() {
+            Some(existing) => format!("{existing} {warning}"),
+            None => warning,
+        });
+    }
 }
 
 async fn read_with_session(
@@ -320,9 +889,23 @@ async fn write_with_session(
 
     let temp_name = format!(".harbor-edit-{}.tmp", Uuid::new_v4());
     let temp = path.parent_directory().join_resource(&temp_name)?;
-    session
+    if let Err(failure) = session
         .create_new_file(&temp, content.as_bytes(), metadata.permissions)
-        .await?;
+        .await
+    {
+        return Err(match failure.residual {
+            Some(residual) => CoreError::new(
+                failure.error.code(),
+                format!(
+                    "{}；临时文件 {} 清理失败，请手动清理",
+                    failure.error.message(),
+                    residual
+                ),
+                failure.error.is_retryable(),
+            ),
+            None => failure.error,
+        });
+    }
 
     let replacement = async {
         let latest_metadata = session.symlink_metadata(path).await?.ok_or_else(|| {
@@ -474,6 +1057,16 @@ struct RusshScopedSftp {
     session: SftpSession,
 }
 
+impl RusshScopedSftp {
+    async fn cleanup_created_file(&self, path: &RemotePath) -> Option<String> {
+        match self.session.remove_file(path.as_str()).await {
+            Ok(()) => None,
+            Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => None,
+            Err(_) => Some(path.as_str().to_owned()),
+        }
+    }
+}
+
 #[async_trait]
 impl ScopedSftp for RusshScopedSftp {
     async fn list_dir(
@@ -497,6 +1090,19 @@ impl ScopedSftp for RusshScopedSftp {
                 .then_with(|| left.name.cmp(&right.name))
         });
         Ok(entries)
+    }
+
+    async fn directory_metadata(
+        &self,
+        path: &RemoteDirectoryPath,
+    ) -> Result<Option<ScopedMetadata>, CoreError> {
+        match self.session.symlink_metadata(path.as_str()).await {
+            Ok(metadata) => Ok(Some(scoped_metadata(metadata))),
+            Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => {
+                Ok(None)
+            }
+            Err(error) => Err(sftp_error("读取远程目录属性", error)),
+        }
     }
 
     async fn symlink_metadata(
@@ -558,7 +1164,7 @@ impl ScopedSftp for RusshScopedSftp {
         path: &RemotePath,
         bytes: &[u8],
         permissions: Option<u32>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<(), CreateFileFailure> {
         let mut attributes = FileAttributes::empty();
         attributes.permissions = permissions.map(|mode| mode & 0o7777);
         let mut file = self
@@ -569,20 +1175,29 @@ impl ScopedSftp for RusshScopedSftp {
                 attributes,
             )
             .await
-            .map_err(|error| sftp_error("创建远程临时文件", error))?;
+            .map_err(|error| CreateFileFailure::new(sftp_error("创建远程临时文件", error)))?;
         if let Err(error) = file.write_all(bytes).await {
             drop(file);
-            let _ = self.session.remove_file(path.as_str()).await;
-            return Err(io_error("写入远程临时文件", error));
+            let error = io_error("写入远程临时文件", error);
+            return Err(match self.cleanup_created_file(path).await {
+                Some(residual) => CreateFileFailure::with_residual(error, residual),
+                None => CreateFileFailure::new(error),
+            });
         }
         if let Err(error) = file.sync_all().await {
             drop(file);
-            let _ = self.session.remove_file(path.as_str()).await;
-            return Err(sftp_error("同步远程临时文件", error));
+            let error = sftp_error("同步远程临时文件", error);
+            return Err(match self.cleanup_created_file(path).await {
+                Some(residual) => CreateFileFailure::with_residual(error, residual),
+                None => CreateFileFailure::new(error),
+            });
         }
         if let Err(error) = file.close().await {
-            let _ = self.session.remove_file(path.as_str()).await;
-            return Err(io_error("关闭远程临时文件", error));
+            let error = io_error("关闭远程临时文件", error);
+            return Err(match self.cleanup_created_file(path).await {
+                Some(residual) => CreateFileFailure::with_residual(error, residual),
+                None => CreateFileFailure::new(error),
+            });
         }
         Ok(())
     }
@@ -594,11 +1209,36 @@ impl ScopedSftp for RusshScopedSftp {
             .map_err(|error| sftp_error("替换远程文件", error))
     }
 
+    async fn hardlink(
+        &self,
+        source: &RemotePath,
+        destination: &RemotePath,
+    ) -> Result<bool, CoreError> {
+        self.session
+            .hardlink(source.as_str(), destination.as_str())
+            .await
+            .map_err(|error| sftp_error("创建远程硬链接", error))
+    }
+
+    async fn create_dir(&self, path: &RemotePath) -> Result<(), CoreError> {
+        self.session
+            .create_dir(path.as_str())
+            .await
+            .map_err(|error| sftp_error("创建远程目录", error))
+    }
+
     async fn remove_file(&self, path: &RemotePath) -> Result<(), CoreError> {
         self.session
             .remove_file(path.as_str())
             .await
-            .map_err(|error| sftp_error("清理远程临时文件", error))
+            .map_err(|error| sftp_error("删除远程文件", error))
+    }
+
+    async fn remove_dir(&self, path: &RemotePath) -> Result<(), CoreError> {
+        self.session
+            .remove_dir(path.as_str())
+            .await
+            .map_err(remove_dir_error)
     }
 
     async fn close(&self) -> Result<(), CoreError> {
@@ -672,6 +1312,17 @@ fn sftp_error(context: &str, error: SftpError) -> CoreError {
             format!("{context}失败，请稍后重试"),
             false,
         ),
+    }
+}
+
+fn remove_dir_error(error: SftpError) -> CoreError {
+    match &error {
+        SftpError::Status(status) if status.status_code == StatusCode::Failure => CoreError::new(
+            CoreErrorCode::Conflict,
+            "目录非空或服务器拒绝删除；Harbor 不会递归删除，请先清空目录",
+            false,
+        ),
+        _ => sftp_error("删除远程目录", error),
     }
 }
 

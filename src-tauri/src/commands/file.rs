@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use opspilot_domain::CoreError;
 use opspilot_ssh_core::{
-    ConnectionHandle, RemoteDirectoryPath, RemoteFileDownload, RemoteFileEntry, RemoteFileService,
-    RemoteFileWriteResult, RemotePath, RemoteTextFile,
+    ConnectionHandle, RemoteDirectoryPath, RemoteFileDownload, RemoteFileEntry,
+    RemoteFileMutationResult, RemoteFileService, RemoteFileWriteResult, RemotePath,
+    RemoteRenameResult, RemoteTextFile, RemoteUploadFile, RemoteUploadOutcome,
 };
 use tauri::{AppHandle, Manager};
 
@@ -32,6 +33,28 @@ pub(crate) trait FileOperations: Send + Sync {
         connection: &ConnectionHandle,
         path: &RemotePath,
     ) -> Result<RemoteFileDownload, CoreError>;
+    async fn upload_batch(
+        &self,
+        connection: &ConnectionHandle,
+        directory: &RemoteDirectoryPath,
+        files: &[RemoteUploadFile],
+    ) -> Result<RemoteUploadOutcome, CoreError>;
+    async fn create_directory(
+        &self,
+        connection: &ConnectionHandle,
+        path: &RemotePath,
+    ) -> Result<RemoteFileMutationResult, CoreError>;
+    async fn rename_no_clobber(
+        &self,
+        connection: &ConnectionHandle,
+        source: &RemotePath,
+        target: &RemotePath,
+    ) -> Result<RemoteRenameResult, CoreError>;
+    async fn delete(
+        &self,
+        connection: &ConnectionHandle,
+        path: &RemotePath,
+    ) -> Result<RemoteFileMutationResult, CoreError>;
 }
 
 #[async_trait]
@@ -69,6 +92,40 @@ impl FileOperations for RemoteFileService {
     ) -> Result<RemoteFileDownload, CoreError> {
         RemoteFileService::download(self, connection, path).await
     }
+
+    async fn upload_batch(
+        &self,
+        connection: &ConnectionHandle,
+        directory: &RemoteDirectoryPath,
+        files: &[RemoteUploadFile],
+    ) -> Result<RemoteUploadOutcome, CoreError> {
+        RemoteFileService::upload_batch(self, connection, directory, files).await
+    }
+
+    async fn create_directory(
+        &self,
+        connection: &ConnectionHandle,
+        path: &RemotePath,
+    ) -> Result<RemoteFileMutationResult, CoreError> {
+        RemoteFileService::create_directory(self, connection, path).await
+    }
+
+    async fn rename_no_clobber(
+        &self,
+        connection: &ConnectionHandle,
+        source: &RemotePath,
+        target: &RemotePath,
+    ) -> Result<RemoteRenameResult, CoreError> {
+        RemoteFileService::rename_no_clobber(self, connection, source, target).await
+    }
+
+    async fn delete(
+        &self,
+        connection: &ConnectionHandle,
+        path: &RemotePath,
+    ) -> Result<RemoteFileMutationResult, CoreError> {
+        RemoteFileService::delete(self, connection, path).await
+    }
 }
 
 pub(super) async fn list_remote_files(
@@ -105,6 +162,40 @@ pub(super) async fn download_remote_file(
     path: &RemotePath,
 ) -> Result<RemoteFileDownload, CoreError> {
     files.download(connection, path).await
+}
+
+pub(super) async fn upload_remote_files(
+    files: &dyn FileOperations,
+    connection: &ConnectionHandle,
+    directory: &RemoteDirectoryPath,
+    uploads: &[RemoteUploadFile],
+) -> Result<RemoteUploadOutcome, CoreError> {
+    files.upload_batch(connection, directory, uploads).await
+}
+
+pub(super) async fn create_remote_directory(
+    files: &dyn FileOperations,
+    connection: &ConnectionHandle,
+    path: &RemotePath,
+) -> Result<RemoteFileMutationResult, CoreError> {
+    files.create_directory(connection, path).await
+}
+
+pub(super) async fn rename_remote_file(
+    files: &dyn FileOperations,
+    connection: &ConnectionHandle,
+    source: &RemotePath,
+    target: &RemotePath,
+) -> Result<RemoteRenameResult, CoreError> {
+    files.rename_no_clobber(connection, source, target).await
+}
+
+pub(super) async fn delete_remote_file(
+    files: &dyn FileOperations,
+    connection: &ConnectionHandle,
+    path: &RemotePath,
+) -> Result<RemoteFileMutationResult, CoreError> {
+    files.delete(connection, path).await
 }
 
 #[tauri::command]
@@ -156,6 +247,60 @@ pub(crate) async fn file_download(
     download_remote_file(services.file_operations.as_ref(), &connection, &path).await
 }
 
+#[tauri::command]
+pub(crate) async fn file_upload(
+    app: AppHandle,
+    connection: ConnectionHandle,
+    directory: RemoteDirectoryPath,
+    files: Vec<RemoteUploadFile>,
+) -> Result<RemoteUploadOutcome, CoreError> {
+    let services = core_services(&app);
+    upload_remote_files(
+        services.file_operations.as_ref(),
+        &connection,
+        &directory,
+        &files,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn file_mkdir(
+    app: AppHandle,
+    connection: ConnectionHandle,
+    path: RemotePath,
+) -> Result<RemoteFileMutationResult, CoreError> {
+    let services = core_services(&app);
+    create_remote_directory(services.file_operations.as_ref(), &connection, &path).await
+}
+
+#[tauri::command]
+pub(crate) async fn file_rename(
+    app: AppHandle,
+    connection: ConnectionHandle,
+    source_path: RemotePath,
+    target_path: RemotePath,
+) -> Result<RemoteRenameResult, CoreError> {
+    let services = core_services(&app);
+    rename_remote_file(
+        services.file_operations.as_ref(),
+        &connection,
+        &source_path,
+        &target_path,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn file_delete(
+    app: AppHandle,
+    connection: ConnectionHandle,
+    path: RemotePath,
+) -> Result<RemoteFileMutationResult, CoreError> {
+    let services = core_services(&app);
+    delete_remote_file(services.file_operations.as_ref(), &connection, &path).await
+}
+
 fn core_services(app: &AppHandle) -> CoreServices {
     app.state::<CoreServices>().inner().clone()
 }
@@ -168,11 +313,13 @@ mod tests {
     use opspilot_domain::{CoreError, CoreErrorCode, Id};
     use opspilot_ssh_core::{
         ConnectionHandle, RemoteDirectoryPath, RemoteFileDownload, RemoteFileEntry, RemoteFileKind,
-        RemoteFileWriteResult, RemotePath, RemoteTextFile,
+        RemoteFileMutationResult, RemoteFileWriteResult, RemotePath, RemoteRenameResult,
+        RemoteTextFile, RemoteUploadFile, RemoteUploadOutcome, RenameStatus, UploadBatchStatus,
     };
 
     use super::{
-        FileOperations, download_remote_file, list_remote_files, read_remote_file,
+        FileOperations, create_remote_directory, delete_remote_file, download_remote_file,
+        list_remote_files, read_remote_file, rename_remote_file, upload_remote_files,
         write_remote_file,
     };
 
@@ -183,6 +330,10 @@ mod tests {
         read: Option<Result<RemoteTextFile, CoreError>>,
         write: Option<Result<RemoteFileWriteResult, CoreError>>,
         download: Option<Result<RemoteFileDownload, CoreError>>,
+        upload: Option<Result<RemoteUploadOutcome, CoreError>>,
+        create_directory: Option<Result<RemoteFileMutationResult, CoreError>>,
+        rename: Option<Result<RemoteRenameResult, CoreError>>,
+        delete: Option<Result<RemoteFileMutationResult, CoreError>>,
     }
 
     impl FakeFiles {
@@ -242,6 +393,64 @@ mod tests {
                 .unwrap()
                 .push(format!("download:{}", path.as_str()));
             self.download.clone().expect("configured download")
+        }
+
+        async fn upload_batch(
+            &self,
+            _connection: &ConnectionHandle,
+            directory: &RemoteDirectoryPath,
+            files: &[RemoteUploadFile],
+        ) -> Result<RemoteUploadOutcome, CoreError> {
+            self.calls.lock().unwrap().push(format!(
+                "upload:{}:{}",
+                directory.as_str(),
+                files
+                    .iter()
+                    .map(|file| format!("{}:{}", file.name, file.bytes.len()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+            self.upload.clone().expect("configured upload")
+        }
+
+        async fn create_directory(
+            &self,
+            _connection: &ConnectionHandle,
+            path: &RemotePath,
+        ) -> Result<RemoteFileMutationResult, CoreError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("mkdir:{}", path.as_str()));
+            self.create_directory
+                .clone()
+                .expect("configured create_directory")
+        }
+
+        async fn rename_no_clobber(
+            &self,
+            _connection: &ConnectionHandle,
+            source: &RemotePath,
+            target: &RemotePath,
+        ) -> Result<RemoteRenameResult, CoreError> {
+            self.calls.lock().unwrap().push(format!(
+                "rename:{}:{}",
+                source.as_str(),
+                target.as_str()
+            ));
+            self.rename.clone().expect("configured rename")
+        }
+
+        async fn delete(
+            &self,
+            _connection: &ConnectionHandle,
+            path: &RemotePath,
+        ) -> Result<RemoteFileMutationResult, CoreError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("delete:{}", path.as_str()));
+            self.delete.clone().expect("configured delete")
         }
     }
 
@@ -349,6 +558,103 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(error.code(), CoreErrorCode::Conflict);
+    }
+
+    #[tokio::test]
+    async fn upload_helper_passes_the_batch_and_returns_typed_residue() {
+        let files = FakeFiles {
+            upload: Some(Ok(RemoteUploadOutcome {
+                status: UploadBatchStatus::FailedWithResidue,
+                committed: vec!["/docs/one.txt".to_owned()],
+                residual: vec!["/docs/one.txt".to_owned()],
+                warning: Some("回滚未完全完成".to_owned()),
+                error: Some(CoreError::new(
+                    CoreErrorCode::Conflict,
+                    "目标文件已存在",
+                    false,
+                )),
+            })),
+            ..FakeFiles::default()
+        };
+        let batch = vec![RemoteUploadFile {
+            name: "one.txt".to_owned(),
+            bytes: b"one".to_vec(),
+        }];
+
+        let outcome = upload_remote_files(
+            &files,
+            &connection(),
+            &RemoteDirectoryPath::try_new("/docs").unwrap(),
+            &batch,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.status, UploadBatchStatus::FailedWithResidue);
+        assert_eq!(outcome.residual, vec!["/docs/one.txt"]);
+        assert_eq!(files.calls(), vec!["upload:/docs:one.txt:3".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn mutation_helpers_forward_validated_paths_and_typed_results() {
+        let files = FakeFiles {
+            create_directory: Some(Ok(RemoteFileMutationResult {
+                path: "/docs/new".to_owned(),
+                warning: None,
+            })),
+            rename: Some(Ok(RemoteRenameResult {
+                status: RenameStatus::Partial,
+                source_path: "/docs/old.txt".to_owned(),
+                target_path: "/docs/new.txt".to_owned(),
+                warning: Some("源文件未删除".to_owned()),
+                error: Some(CoreError::new(
+                    CoreErrorCode::Internal,
+                    "unlink failed",
+                    true,
+                )),
+            })),
+            delete: Some(Ok(RemoteFileMutationResult {
+                path: "/docs/old.txt".to_owned(),
+                warning: None,
+            })),
+            ..FakeFiles::default()
+        };
+        let connection = connection();
+
+        let created = create_remote_directory(
+            &files,
+            &connection,
+            &RemotePath::try_new("/docs/new").unwrap(),
+        )
+        .await
+        .unwrap();
+        let renamed = rename_remote_file(
+            &files,
+            &connection,
+            &RemotePath::try_new("/docs/old.txt").unwrap(),
+            &RemotePath::try_new("/docs/new.txt").unwrap(),
+        )
+        .await
+        .unwrap();
+        let deleted = delete_remote_file(
+            &files,
+            &connection,
+            &RemotePath::try_new("/docs/old.txt").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(created.path, "/docs/new");
+        assert_eq!(renamed.status, RenameStatus::Partial);
+        assert_eq!(deleted.path, "/docs/old.txt");
+        assert_eq!(
+            files.calls(),
+            vec![
+                "mkdir:/docs/new".to_owned(),
+                "rename:/docs/old.txt:/docs/new.txt".to_owned(),
+                "delete:/docs/old.txt".to_owned(),
+            ]
+        );
     }
 
     #[test]

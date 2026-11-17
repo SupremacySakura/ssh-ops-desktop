@@ -338,6 +338,95 @@ describe('Tauri CoreClient file contract', () => {
     }]);
     await expect(client.listFiles(connection, '/srv/app')).rejects.toThrow();
   });
+
+  it('invokes upload, mkdir, rename, and delete with validated mutation arguments', async () => {
+    const client = createTauriCoreClient();
+    const uploadOutcome = {
+      status: 'failed_with_residue',
+      committed: ['/srv/app/one.txt'],
+      residual: ['/srv/app/one.txt'],
+      warning: '回滚未完全完成',
+      error: {
+        code: 'CONFLICT',
+        message: '目标文件已存在',
+        retryable: false,
+      },
+    } as const;
+    const mutation = {
+      path: '/srv/app/new-folder',
+      warning: '会话清理失败',
+    } as const;
+    const rename = {
+      status: 'partial',
+      sourcePath: '/srv/app/old.txt',
+      targetPath: '/srv/app/new.txt',
+      warning: '源文件未删除',
+      error: {
+        code: 'INTERNAL',
+        message: '源文件删除失败',
+        retryable: true,
+      },
+    } as const;
+    invokeMock
+      .mockResolvedValueOnce(uploadOutcome)
+      .mockResolvedValueOnce(mutation)
+      .mockResolvedValueOnce(rename)
+      .mockResolvedValueOnce({ path: '/srv/app/old.txt' });
+
+    await expect(client.uploadFiles(
+      connection,
+      '//srv/./app/',
+      [{ name: 'one.txt', bytes: [1, 2, 3] }],
+    )).resolves.toEqual(uploadOutcome);
+    await expect(client.createDirectory(
+      connection,
+      '//srv/./app/new-folder',
+    )).resolves.toEqual(mutation);
+    await expect(client.renameFile(
+      connection,
+      '//srv/./app/old.txt',
+      '/srv/app/new.txt',
+    )).resolves.toEqual(rename);
+    await expect(client.deleteFile(
+      connection,
+      '/srv/app/old.txt',
+    )).resolves.toEqual({ path: '/srv/app/old.txt' });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'file_upload', {
+      connection,
+      directory: '/srv/app',
+      files: [{ name: 'one.txt', bytes: [1, 2, 3] }],
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'file_mkdir', {
+      connection,
+      path: '/srv/app/new-folder',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, 'file_rename', {
+      connection,
+      sourcePath: '/srv/app/old.txt',
+      targetPath: '/srv/app/new.txt',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, 'file_delete', {
+      connection,
+      path: '/srv/app/old.txt',
+    });
+  });
+
+  it('fails closed before invoke for unsafe or inconsistent mutations', async () => {
+    const client = createTauriCoreClient();
+
+    await expect(client.uploadFiles(connection, '/srv/app', [
+      { name: '../escape', bytes: [1] },
+    ])).rejects.toThrow();
+    await expect(client.createDirectory(connection, '/')).rejects.toThrow();
+    await expect(client.renameFile(
+      connection,
+      '/srv/app/one.txt',
+      '/srv/other/two.txt',
+    )).rejects.toThrow();
+    await expect(client.deleteFile(connection, '/srv/../etc/passwd')).rejects.toThrow();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('Tauri CoreClient Docker contract', () => {

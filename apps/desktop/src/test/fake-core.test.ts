@@ -240,3 +240,119 @@ describe('FakeCoreClient Docker parity', () => {
     )).rejects.toMatchObject({ code: 'DOCKER_CONTAINER_NOT_FOUND' });
   });
 });
+
+describe('FakeCoreClient file mutation parity', () => {
+  it('uploads, creates directories, renames files, and deletes entries in memory', async () => {
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [fileEntry],
+        },
+      },
+    });
+
+    const uploaded = await core.uploadFiles(connection, '/', [
+      { name: 'one.txt', bytes: [111, 110, 101] },
+      { name: 'two.txt', bytes: [116, 119, 111] },
+    ]);
+    expect(uploaded).toMatchObject({
+      status: 'succeeded',
+      committed: ['/one.txt', '/two.txt'],
+      residual: [],
+    });
+
+    await expect(core.createDirectory(connection, '/new-folder')).resolves.toEqual({
+      path: '/new-folder',
+    });
+    const renamed = await core.renameFile(
+      connection,
+      '/one.txt',
+      '/renamed.txt',
+    );
+    expect(renamed).toEqual({
+      status: 'renamed',
+      sourcePath: '/one.txt',
+      targetPath: '/renamed.txt',
+    });
+    await expect(core.deleteFile(connection, '/two.txt')).resolves.toEqual({
+      path: '/two.txt',
+    });
+
+    const entries = await core.listFiles(connection, '/');
+    expect(entries.map((entry) => entry.name)).toEqual([
+      'new-folder',
+      'app.conf',
+      'renamed.txt',
+    ]);
+  });
+
+  it('rejects an existing upload target without overwriting it', async () => {
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [fileEntry],
+        },
+      },
+    });
+
+    const outcome = await core.uploadFiles(connection, '/', [
+      { name: 'app.conf', bytes: [114, 101, 112, 108, 97, 99, 101, 109, 101, 110, 116] },
+    ]);
+
+    expect(outcome).toMatchObject({
+      status: 'failed_rolled_back',
+      committed: [],
+      residual: [],
+      error: { code: 'CONFLICT' },
+    });
+    await expect(core.listFiles(connection, '/')).resolves.toEqual([fileEntry]);
+  });
+
+  it('injects unsupported hardlinks, a kth commit failure, and rollback residue', async () => {
+    const unsupported = createFakeCoreClient({
+      files: { entriesByDirectory: { '/': [] } },
+      fileFaults: { hardlinkUnsupported: true },
+    });
+    await expect(unsupported.uploadFiles(connection, '/', [
+      { name: 'one.txt', bytes: [1] },
+    ])).resolves.toMatchObject({
+      status: 'failed_rolled_back',
+      committed: [],
+      residual: [],
+      error: { code: 'CAPABILITY_UNAVAILABLE' },
+    });
+
+    const rolledBack = createFakeCoreClient({
+      files: { entriesByDirectory: { '/': [] } },
+      fileFaults: { failCommitAt: 2 },
+    });
+    await expect(rolledBack.uploadFiles(connection, '/', [
+      { name: 'one.txt', bytes: [1] },
+      { name: 'two.txt', bytes: [2] },
+      { name: 'three.txt', bytes: [3] },
+    ])).resolves.toMatchObject({
+      status: 'failed_rolled_back',
+      committed: [],
+      residual: [],
+      error: { code: 'CONFLICT' },
+    });
+    await expect(rolledBack.listFiles(connection, '/')).resolves.toEqual([]);
+
+    const residue = createFakeCoreClient({
+      files: { entriesByDirectory: { '/': [] } },
+      fileFaults: { failCommitAt: 2, failRollback: true },
+    });
+    await expect(residue.uploadFiles(connection, '/', [
+      { name: 'one.txt', bytes: [1] },
+      { name: 'two.txt', bytes: [2] },
+    ])).resolves.toMatchObject({
+      status: 'failed_with_residue',
+      committed: ['/one.txt'],
+      residual: ['/one.txt'],
+      error: { code: 'CONFLICT' },
+    });
+    await expect(residue.listFiles(connection, '/')).resolves.toMatchObject([
+      { name: 'one.txt' },
+    ]);
+  });
+});

@@ -518,4 +518,175 @@ describe('FileBrowser', () => {
       }
     }
   });
+
+  it('uploads selected files after a batch review and refreshes the directory', async () => {
+    const core = readyCore();
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.change(screen.getByLabelText('选择上传文件'), {
+      target: {
+        files: [
+          new File(['one'], 'one.txt'),
+          new File(['two'], 'two.txt'),
+        ],
+      },
+    });
+
+    const dialog = await screen.findByRole('dialog', { name: '上传文件到 /' });
+    expect(within(dialog).getByText('one.txt')).toBeVisible();
+    expect(within(dialog).getByText('two.txt')).toBeVisible();
+    expect(within(dialog).getByText('2 个文件 · 6 B')).toBeVisible();
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认上传' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('已上传 2 个文件');
+    expect(await screen.findByRole('button', { name: '打开文件 one.txt' })).toBeVisible();
+    expect(core.calls).toContainEqual(expect.objectContaining({
+      method: 'uploadFiles',
+      args: [
+        connection,
+        '/',
+        [
+          { name: 'one.txt', bytes: [111, 110, 101] },
+          { name: 'two.txt', bytes: [116, 119, 111] },
+        ],
+      ],
+    }));
+  });
+
+  it('keeps a retry action and the selected files after an upload conflict rollback', async () => {
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [config],
+        },
+      },
+    });
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.change(screen.getByLabelText('选择上传文件'), {
+      target: { files: [new File(['replacement'], 'app.conf')] },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: '确认上传' }));
+
+    const dialog = await screen.findByRole('dialog', { name: '上传文件到 /' });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('已存在');
+    expect(within(dialog).getByText(/已回滚/)).toBeVisible();
+    expect(within(dialog).getByRole('button', { name: '重试上传' })).toBeVisible();
+    expect(within(dialog).getByText('app.conf')).toBeVisible();
+  });
+
+  it('rejects duplicate basenames before uploading a batch', async () => {
+    const core = readyCore();
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.change(screen.getByLabelText('选择上传文件'), {
+      target: {
+        files: [
+          new File(['one'], 'same.txt'),
+          new File(['two'], 'same.txt'),
+        ],
+      },
+    });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('重复文件名 same.txt');
+    expect(screen.queryByRole('dialog', { name: '上传文件到 /' })).not.toBeInTheDocument();
+    expect(core.calls.some((call) => call.method === 'uploadFiles')).toBe(false);
+  });
+
+  it('shows residual upload paths without pretending rollback completed', async () => {
+    const core = createFakeCoreClient({
+      files: { entriesByDirectory: { '/': [] } },
+      fileFaults: { failCommitAt: 2, failRollback: true },
+    });
+    renderBrowser({ core });
+    await screen.findByRole('heading', { name: '目录为空' });
+
+    fireEvent.change(screen.getByLabelText('选择上传文件'), {
+      target: {
+        files: [
+          new File(['one'], 'one.txt'),
+          new File(['two'], 'two.txt'),
+        ],
+      },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: '确认上传' }));
+
+    const dialog = await screen.findByRole('dialog', { name: '上传文件到 /' });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('回滚未完全完成');
+    expect(within(dialog).getByText('/one.txt')).toBeVisible();
+    expect(within(dialog).queryByRole('button', { name: '重试上传' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '刷新目录' })).toBeVisible();
+  });
+
+  it('creates folders and confirms deletion with cancel focused', async () => {
+    const core = readyCore();
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.click(screen.getByRole('button', { name: '新建文件夹' }));
+    const mkdir = await screen.findByRole('dialog', { name: '新建文件夹' });
+    fireEvent.change(within(mkdir).getByLabelText('文件夹名称'), {
+      target: { value: 'release' },
+    });
+    fireEvent.click(within(mkdir).getByRole('button', { name: '创建文件夹' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('已创建 /release');
+    expect(await screen.findByRole('button', { name: '打开目录 release' })).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 app.conf' }));
+    const confirm = await screen.findByRole('alertdialog', { name: '删除文件' });
+    expect(within(confirm).getByRole('button', { name: '取消' })).toHaveFocus();
+    fireEvent.click(within(confirm).getByRole('button', { name: '确认删除' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('已删除 /app.conf');
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: '打开文件 app.conf' }))
+        .not.toBeInTheDocument();
+    });
+  });
+
+  it('surfaces partial rename and offers an explicit source cleanup confirmation', async () => {
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [config],
+        },
+      },
+      fileFaults: { failRenameUnlink: true },
+    });
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.click(screen.getByRole('button', { name: '重命名 app.conf' }));
+    const rename = await screen.findByRole('dialog', { name: '重命名 app.conf' });
+    fireEvent.change(within(rename).getByLabelText('新名称'), {
+      target: { value: 'next.conf' },
+    });
+    fireEvent.click(within(rename).getByRole('button', { name: '确认重命名' }));
+
+    expect(await within(rename).findByRole('alert')).toHaveTextContent('源文件删除失败');
+    expect(within(rename).getByText('/next.conf')).toBeVisible();
+    expect(await screen.findByRole('button', { name: '打开文件 next.conf' })).toBeVisible();
+    fireEvent.click(within(rename).getByRole('button', { name: '删除源文件…' }));
+
+    const cleanup = await screen.findByRole('alertdialog', { name: '删除文件' });
+    expect(within(cleanup).getByText('/app.conf')).toBeVisible();
+    expect(within(cleanup).getByRole('button', { name: '取消' })).toHaveFocus();
+  });
+
+  it('rejects renaming a file to its current name before calling the core', async () => {
+    const core = readyCore();
+    renderBrowser({ core });
+    await screen.findByRole('table', { name: '目录内容' });
+
+    fireEvent.click(screen.getByRole('button', { name: '重命名 app.conf' }));
+    const rename = await screen.findByRole('dialog', { name: '重命名 app.conf' });
+    fireEvent.click(within(rename).getByRole('button', { name: '确认重命名' }));
+
+    expect(await within(rename).findByRole('alert')).toHaveTextContent(
+      '新名称必须与原名称不同',
+    );
+    expect(core.calls.some((call) => call.method === 'renameFile')).toBe(false);
+  });
 });

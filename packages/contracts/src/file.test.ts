@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  FileDeleteArgsSchema,
+  FileMkdirArgsSchema,
+  FileRenameArgsSchema,
+  FileUploadArgsSchema,
+  MAX_UPLOAD_BATCH_FILES,
   MAX_EDITABLE_FILE_BYTES,
   RemoteDirectoryPathSchema,
   RemoteDownloadSchema,
   RemoteFileEntrySchema,
+  RemoteFileMutationResultSchema,
+  RemoteRenameResultSchema,
   RemoteFileWriteResultSchema,
+  RemoteUploadOutcomeSchema,
   RemotePathSchema,
   RemoteTextFileSchema,
 } from './file.js';
@@ -102,5 +110,133 @@ describe('download contract', () => {
       ...download,
       bytes: [256],
     }).success).toBe(false);
+  });
+});
+
+describe('file mutation contracts', () => {
+  it('normalizes upload directories and rejects unsafe or duplicate basenames', () => {
+    expect(FileUploadArgsSchema.parse({
+      directory: '//docs/./releases//',
+      files: [{ name: 'one.txt', bytes: [1, 2, 3] }],
+    })).toEqual({
+      directory: '/docs/releases',
+      files: [{ name: 'one.txt', bytes: [1, 2, 3] }],
+    });
+
+    expect(FileUploadArgsSchema.safeParse({
+      directory: '/docs',
+      files: [],
+    }).success).toBe(false);
+    expect(FileUploadArgsSchema.safeParse({
+      directory: '/docs',
+      files: [{ name: '../escape', bytes: [1] }],
+    }).success).toBe(false);
+    expect(FileUploadArgsSchema.safeParse({
+      directory: '/docs',
+      files: [
+        { name: 'same.txt', bytes: [1] },
+        { name: 'same.txt', bytes: [2] },
+      ],
+    }).success).toBe(false);
+    expect(FileUploadArgsSchema.safeParse({
+      directory: '/docs',
+      files: Array.from(
+        { length: MAX_UPLOAD_BATCH_FILES + 1 },
+        (_, index) => ({ name: `file-${index}.txt`, bytes: [index] }),
+      ),
+    }).success).toBe(false);
+  });
+
+  it('requires rollback outcomes to state committed and residual paths honestly', () => {
+    const error = {
+      code: 'CONFLICT',
+      message: '目标文件已存在，未覆盖',
+      retryable: false,
+    } as const;
+    expect(RemoteUploadOutcomeSchema.parse({
+      status: 'succeeded',
+      committed: ['/docs/one.txt'],
+      residual: [],
+    })).toEqual({
+      status: 'succeeded',
+      committed: ['/docs/one.txt'],
+      residual: [],
+    });
+    expect(RemoteUploadOutcomeSchema.parse({
+      status: 'failed_with_residue',
+      committed: ['/docs/one.txt'],
+      residual: ['/docs/one.txt'],
+      warning: '回滚未完全完成',
+      error,
+    })).toMatchObject({
+      status: 'failed_with_residue',
+      committed: ['/docs/one.txt'],
+      residual: ['/docs/one.txt'],
+    });
+
+    expect(RemoteUploadOutcomeSchema.safeParse({
+      status: 'failed_rolled_back',
+      committed: ['/docs/one.txt'],
+      residual: [],
+      error,
+    }).success).toBe(false);
+    expect(RemoteUploadOutcomeSchema.safeParse({
+      status: 'failed_with_residue',
+      committed: [],
+      residual: [],
+      error,
+    }).success).toBe(false);
+    expect(RemoteUploadOutcomeSchema.safeParse({
+      status: 'failed_rolled_back',
+      committed: [],
+      residual: [],
+    }).success).toBe(false);
+  });
+
+  it('validates rename partial results and simple mutation arguments', () => {
+    const error = {
+      code: 'INTERNAL',
+      message: '源文件删除失败',
+      retryable: true,
+    } as const;
+    expect(RemoteRenameResultSchema.parse({
+      status: 'partial',
+      sourcePath: '/docs/source.txt',
+      targetPath: '/docs/target.txt',
+      warning: '源与目标当前同时存在',
+      error,
+    })).toMatchObject({ status: 'partial' });
+    expect(RemoteRenameResultSchema.safeParse({
+      status: 'partial',
+      sourcePath: '/docs/source.txt',
+      targetPath: '/docs/target.txt',
+    }).success).toBe(false);
+    expect(RemoteRenameResultSchema.safeParse({
+      status: 'renamed',
+      sourcePath: '/docs/source.txt',
+      targetPath: '/docs/target.txt',
+      error,
+    }).success).toBe(false);
+
+    expect(FileMkdirArgsSchema.parse({ path: '//docs/./new//' })).toEqual({
+      path: '/docs/new',
+    });
+    expect(FileRenameArgsSchema.parse({
+      sourcePath: '/docs/old.txt',
+      targetPath: '//docs/./new.txt',
+    })).toEqual({
+      sourcePath: '/docs/old.txt',
+      targetPath: '/docs/new.txt',
+    });
+    expect(FileDeleteArgsSchema.parse({ path: '/docs/old.txt' })).toEqual({
+      path: '/docs/old.txt',
+    });
+    expect(RemoteFileMutationResultSchema.parse({
+      path: '/docs/new',
+      warning: '会话清理失败',
+    })).toEqual({
+      path: '/docs/new',
+      warning: '会话清理失败',
+    });
   });
 });

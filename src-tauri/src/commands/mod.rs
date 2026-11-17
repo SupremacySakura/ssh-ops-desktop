@@ -32,7 +32,10 @@ pub(crate) use catalog::{
 };
 pub(crate) use connection::{connection_connect, connection_disconnect, connection_trust_host_key};
 pub(crate) use docker::{docker_action, docker_exec, docker_list, docker_logs};
-pub(crate) use file::{file_download, file_list, file_read, file_write};
+pub(crate) use file::{
+    file_delete, file_download, file_list, file_mkdir, file_read, file_rename, file_upload,
+    file_write,
+};
 pub(crate) use health::core_health;
 pub(crate) use monitor::monitor_snapshot;
 pub(crate) use ssh_config_import::{ssh_config_import_apply, ssh_config_import_preview};

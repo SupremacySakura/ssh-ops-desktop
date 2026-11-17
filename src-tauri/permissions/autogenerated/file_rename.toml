@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-file-rename"
+description = "Enables the file_rename command without any pre-configured scope."
+commands.allow = ["file_rename"]
+
+[[permission]]
+identifier = "deny-file-rename"
+description = "Denies the file_rename command without any pre-configured scope."
+commands.deny = ["file_rename"]

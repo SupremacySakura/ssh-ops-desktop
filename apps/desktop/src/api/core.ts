@@ -10,6 +10,10 @@ import {
   DockerContainerListSchema,
   DockerLogsSchema,
   DockerShellSchema,
+  FileDeleteArgsSchema,
+  FileMkdirArgsSchema,
+  FileRenameArgsSchema,
+  FileUploadArgsSchema,
   FileWriteArgsSchema,
   GroupInputSchema,
   GroupSchema,
@@ -17,9 +21,12 @@ import {
   RemoteDirectoryPathSchema,
   RemoteDownloadSchema,
   RemoteFileListSchema,
+  RemoteFileMutationResultSchema,
+  RemoteRenameResultSchema,
   RemoteFileWriteResultSchema,
   RemotePathSchema,
   RemoteTextFileSchema,
+  RemoteUploadOutcomeSchema,
   ServerCredentialInputSchema,
   ServerInputSchema,
   ServerSchema,
@@ -38,15 +45,20 @@ import {
   type DockerContainerList,
   type DockerLogs,
   type DockerShell,
+  type FileUploadArgs,
   type Group,
   type GroupInput,
   type MonitorSnapshot,
   type RemoteDownload,
   type RemoteDirectoryPath,
   type RemoteFileEntry,
+  type RemoteFileMutationResult,
+  type RemoteRenameResult,
   type RemoteFileWriteResult,
   type RemotePath,
   type RemoteTextFile,
+  type RemoteUploadFile,
+  type RemoteUploadOutcome,
   type Server,
   type ServerCredentialInput,
   type ServerInput,
@@ -103,6 +115,24 @@ export interface CoreClient {
     connection: ConnectionHandle,
     path: RemotePath | string,
   ): Promise<RemoteDownload>;
+  uploadFiles(
+    connection: ConnectionHandle,
+    directory: RemoteDirectoryPath | string,
+    files: RemoteUploadFile[],
+  ): Promise<RemoteUploadOutcome>;
+  createDirectory(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+  ): Promise<RemoteFileMutationResult>;
+  renameFile(
+    connection: ConnectionHandle,
+    sourcePath: RemotePath | string,
+    targetPath: RemotePath | string,
+  ): Promise<RemoteRenameResult>;
+  deleteFile(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+  ): Promise<RemoteFileMutationResult>;
   listDockerContainers(connection: ConnectionHandle): Promise<DockerContainerList>;
   getDockerLogs(
     connection: ConnectionHandle,
@@ -228,6 +258,42 @@ export function createTauriCoreClient(): CoreClient {
         path: RemotePathSchema.parse(path),
       }),
     ),
+    uploadFiles: async (connection, directory, files) => {
+      const args: FileUploadArgs = FileUploadArgsSchema.parse({ directory, files });
+      return RemoteUploadOutcomeSchema.parse(
+        await invoke('file_upload', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
+    createDirectory: async (connection, path) => {
+      const args = FileMkdirArgsSchema.parse({ path });
+      return RemoteFileMutationResultSchema.parse(
+        await invoke('file_mkdir', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
+    renameFile: async (connection, sourcePath, targetPath) => {
+      const args = FileRenameArgsSchema.parse({ sourcePath, targetPath });
+      return RemoteRenameResultSchema.parse(
+        await invoke('file_rename', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
+    deleteFile: async (connection, path) => {
+      const args = FileDeleteArgsSchema.parse({ path });
+      return RemoteFileMutationResultSchema.parse(
+        await invoke('file_delete', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
     listDockerContainers: async (connection) => DockerContainerListSchema.parse(
       await invoke('docker_list', { connection }),
     ),
