@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -194,6 +195,30 @@ impl SshConfigImporter {
         }
         parser.finish_current();
 
+        let alias_declarations = parser.alias_declarations.clone();
+        for (entry, line) in parser
+            .entries
+            .iter_mut()
+            .zip(parser.entry_lines.iter().copied())
+        {
+            if alias_declarations
+                .get(&entry.alias)
+                .copied()
+                .unwrap_or_default()
+                < 2
+            {
+                continue;
+            }
+            entry.importable = false;
+            entry.warnings.push(SshConfigWarning {
+                line,
+                message: format!(
+                    "Host {} 在多个配置块中重复定义；OpenSSH 会叠加匹配规则，为避免丢失代理或目标语义，该别名已停用导入。",
+                    entry.alias
+                ),
+            });
+        }
+
         if !parser.saw_host_declaration {
             return Err(validation("SSH Config 格式异常：未发现有效的 Host 条目"));
         }
@@ -294,6 +319,8 @@ pub fn read_ssh_config(path: &Path) -> Result<SshConfigFile, CoreError> {
 #[derive(Debug, Default)]
 struct Parser {
     entries: Vec<SshConfigEntry>,
+    entry_lines: Vec<usize>,
+    alias_declarations: HashMap<String, usize>,
     warnings: Vec<SshConfigWarning>,
     global_blockers: Vec<SshConfigWarning>,
     current: Option<HostBlock>,
@@ -334,6 +361,17 @@ impl HostBlock {
             invalid: true,
         }
     }
+
+    fn note_unsupported(&mut self, line: usize, directive: &str) {
+        let directive_name = canonical_directive(directive);
+        if !self
+            .unsupported
+            .iter()
+            .any(|(_, name)| name.eq_ignore_ascii_case(&directive_name))
+        {
+            self.unsupported.push((line, directive_name));
+        }
+    }
 }
 
 impl Parser {
@@ -368,13 +406,15 @@ impl Parser {
                 self.current = Some(HostBlock::invalid(line));
             }
             Some("match") => {
-                self.finish_current();
-                self.inside_match = true;
+                self.start_match(line);
                 self.warning(line, "Match 行引号未闭合，其后的条件配置已忽略。");
             }
             Some(directive) => {
                 if let Some(current) = &mut self.current {
                     current.invalid = true;
+                    if directive_affects_import(directive) {
+                        current.note_unsupported(line, directive);
+                    }
                     current.warnings.push(SshConfigWarning {
                         line,
                         message: format!(
@@ -431,6 +471,9 @@ impl Parser {
                 }
             }
         }
+        for alias in &block_aliases {
+            *self.alias_declarations.entry(alias.clone()).or_default() += 1;
+        }
         self.current = Some(HostBlock {
             declaration_line: line,
             aliases: block_aliases,
@@ -478,6 +521,7 @@ impl Parser {
                 }
                 if values.len() != 1 {
                     current.invalid = true;
+                    current.note_unsupported(line, directive);
                     current.warnings.push(SshConfigWarning {
                         line,
                         message: "HostName 必须是一个主机名，该 Host 已跳过。".to_owned(),
@@ -496,6 +540,7 @@ impl Parser {
                 }
                 if values.len() != 1 || !valid_username(&values[0]) {
                     current.invalid = true;
+                    current.note_unsupported(line, directive);
                     current.warnings.push(SshConfigWarning {
                         line,
                         message: "User 无效，该 Host 已跳过。".to_owned(),
@@ -520,6 +565,7 @@ impl Parser {
                     current.port = Some(port);
                 } else {
                     current.invalid = true;
+                    current.note_unsupported(line, directive);
                     current.warnings.push(SshConfigWarning {
                         line,
                         message: "端口必须在 1–65535 之间，该 Host 已跳过。".to_owned(),
@@ -537,7 +583,15 @@ impl Parser {
                     });
                     return;
                 }
-                current.identity_file = Some(values.join(" "));
+                let identity_file = values.join(" ");
+                if identity_file.trim().is_empty() || identity_file.chars().any(char::is_control) {
+                    current.warnings.push(SshConfigWarning {
+                        line,
+                        message: "IdentityFile 路径为空或包含控制字符；私钥不会被复制。".to_owned(),
+                    });
+                    return;
+                }
+                current.identity_file = Some(identity_file);
                 if values.len() > 1 {
                     current.warnings.push(SshConfigWarning {
                         line,
@@ -666,6 +720,7 @@ impl Parser {
                 trusted_host_key: false,
                 private_key_copied: false,
             });
+            self.entry_lines.push(block.declaration_line);
         }
     }
 }
@@ -679,6 +734,8 @@ fn leading_directive(line: &str) -> Option<&str> {
 }
 
 fn tokenize_line(line: &str) -> Option<Vec<String>> {
+    let normalized = normalize_keyword_separator(line);
+    let line = normalized.as_str();
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quote = None;
@@ -735,6 +792,42 @@ fn tokenize_line(line: &str) -> Option<Vec<String>> {
         tokens.push(current);
     }
     Some(tokens)
+}
+
+fn normalize_keyword_separator(line: &str) -> String {
+    let trimmed_start = line.trim_start();
+    if trimmed_start.is_empty() || trimmed_start.starts_with('#') {
+        return line.to_owned();
+    }
+
+    let keyword_start = line.len() - trimmed_start.len();
+    let keyword_end = trimmed_start
+        .char_indices()
+        .find_map(|(offset, character)| {
+            (character.is_whitespace() || character == '=').then_some(keyword_start + offset)
+        })
+        .unwrap_or(line.len());
+    if keyword_end == keyword_start {
+        return line.to_owned();
+    }
+
+    let mut separator = keyword_end;
+    if !line[separator..].starts_with('=') {
+        let Some((offset, character)) = line[separator..]
+            .char_indices()
+            .find(|(_, character)| !character.is_whitespace())
+        else {
+            return line.to_owned();
+        };
+        if character != '=' {
+            return line.to_owned();
+        }
+        separator += offset;
+    }
+
+    let mut normalized = line.to_owned();
+    normalized.replace_range(separator..separator + 1, " ");
+    normalized
 }
 
 fn normalized_import_host(value: &str) -> Result<String, ()> {
