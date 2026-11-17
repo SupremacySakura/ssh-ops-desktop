@@ -330,4 +330,36 @@ describe('Monitoring sampler', () => {
     await vi.advanceTimersByTimeAsync(MONITOR_SAMPLE_INTERVAL_MS * 3);
     expect(calls).toBe(stoppedAt);
   });
+
+  it('clears partial failures when the connection goes offline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-17T12:00:00.000Z'));
+    const partial: MonitorSnapshot = {
+      timestamp: new Date(Date.now()).toISOString(),
+      cpuPercent: 12,
+      topProcesses: [],
+      unavailable: ['memory'],
+    };
+    const core = createFakeCoreClient({
+      overrides: {
+        monitorSnapshot: vi.fn(() => Promise.resolve(partial)),
+      },
+    });
+
+    useMonitorStore.getState().startSampling(core, connection);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useMonitorStore.getState().states[connection.serverId]?.unavailable)
+      .toEqual(['memory']);
+
+    useMonitorStore.getState().stopSampling(
+      connection.serverId,
+      connection.connectionId,
+      'offline',
+    );
+    expect(useMonitorStore.getState().states[connection.serverId]).toMatchObject({
+      phase: 'offline',
+      latest: null,
+      unavailable: [],
+    });
+  });
 });

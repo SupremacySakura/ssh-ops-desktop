@@ -385,6 +385,7 @@ where
                     usage
                 }
                 Some(Err(_)) | None => {
+                    *previous = None;
                     unavailable.push(MonitorUnavailable::Cpu);
                     None
                 }
@@ -557,5 +558,20 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&current));
         assert!(ids.contains(&newer));
+    }
+
+    #[tokio::test]
+    async fn cpu_state_evicts_the_oldest_entry_at_capacity() {
+        let store = CpuSampleStore::new(Duration::from_secs(60), 2);
+        let first = Id::new();
+        let second = Id::new();
+        let third = Id::new();
+        store.acquire(first).await;
+        store.acquire(second).await;
+        store.acquire(third).await;
+
+        let ids = store.tracked_connection_ids().await;
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&third));
     }
 }
