@@ -203,6 +203,7 @@ describe('file mutation contracts', () => {
       status: 'partial',
       sourcePath: '/docs/source.txt',
       targetPath: '/docs/target.txt',
+      targetCreated: false,
       warning: '源与目标当前同时存在',
       error,
     })).toMatchObject({ status: 'partial' });
@@ -210,12 +211,20 @@ describe('file mutation contracts', () => {
       status: 'partial',
       sourcePath: '/docs/source.txt',
       targetPath: '/docs/target.txt',
+      targetCreated: false,
     }).success).toBe(false);
     expect(RemoteRenameResultSchema.safeParse({
       status: 'renamed',
       sourcePath: '/docs/source.txt',
       targetPath: '/docs/target.txt',
+      targetCreated: true,
       error,
+    }).success).toBe(false);
+    expect(RemoteRenameResultSchema.safeParse({
+      status: 'renamed',
+      sourcePath: '/docs/source.txt',
+      targetPath: '/docs/target.txt',
+      targetCreated: false,
     }).success).toBe(false);
 
     expect(FileMkdirArgsSchema.parse({ path: '//docs/./new//' })).toEqual({

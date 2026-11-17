@@ -273,6 +273,7 @@ describe('FakeCoreClient file mutation parity', () => {
       status: 'renamed',
       sourcePath: '/one.txt',
       targetPath: '/renamed.txt',
+      targetCreated: true,
     });
     await expect(core.deleteFile(connection, '/two.txt')).resolves.toEqual({
       path: '/two.txt',
@@ -354,5 +355,41 @@ describe('FakeCoreClient file mutation parity', () => {
     await expect(residue.listFiles(connection, '/')).resolves.toMatchObject([
       { name: 'one.txt' },
     ]);
+  });
+
+  it('refuses to delete a directory that only contains empty subdirectories', async () => {
+    const directory: RemoteFileEntry = {
+      name: 'dir',
+      path: '/dir',
+      kind: 'directory',
+      size: 0,
+      permissions: 0o755,
+    };
+    const child: RemoteFileEntry = {
+      name: 'sub',
+      path: '/dir/sub',
+      kind: 'directory',
+      size: 0,
+      permissions: 0o755,
+    };
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [directory],
+          '/dir': [child],
+          '/dir/sub': [],
+        },
+      },
+    });
+
+    await expect(core.deleteFile(connection, '/dir')).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+    await expect(core.deleteFile(connection, '/dir/sub')).resolves.toEqual({
+      path: '/dir/sub',
+    });
+    await expect(core.deleteFile(connection, '/dir')).resolves.toEqual({
+      path: '/dir',
+    });
   });
 });

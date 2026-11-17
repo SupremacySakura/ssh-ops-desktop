@@ -288,6 +288,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
 
       {confirmingDelete ? (
         <ConfirmDialog
+          active={active}
           busy={catalogBusy || deleting}
           busyLabel="正在删除…"
           confirmLabel="确认删除"

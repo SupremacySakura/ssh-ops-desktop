@@ -20,8 +20,9 @@ pub const FILE_DOWNLOAD_WARNING_BYTES: u64 = 4 * 1024 * 1024;
 pub const MAX_FILE_DOWNLOAD_BYTES: u64 = 16 * 1024 * 1024;
 pub const FILE_UPLOAD_WARNING_BYTES: u64 = 4 * 1024 * 1024;
 pub const MAX_FILE_UPLOAD_BYTES: u64 = 16 * 1024 * 1024;
-pub const MAX_UPLOAD_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_UPLOAD_BATCH_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_UPLOAD_BATCH_FILES: usize = 32;
+const UPLOAD_TEMP_NAME_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -193,6 +194,7 @@ pub struct RemoteRenameResult {
     pub status: RenameStatus,
     pub source_path: String,
     pub target_path: String,
+    pub target_created: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -224,6 +226,13 @@ impl RemoteFileService {
     ) -> Result<Vec<RemoteFileEntry>, CoreError> {
         let session = self.connector.open_scoped(connection).await?;
         let result = async {
+            let metadata = session
+                .directory_metadata(directory)
+                .await?
+                .ok_or_else(|| not_found("远程目录不存在"))?;
+            if metadata.kind != RemoteFileKind::Directory {
+                return Err(validation("远程路径不是普通目录"));
+            }
             let mut entries = session
                 .list_dir(directory)
                 .await?
@@ -290,9 +299,13 @@ impl RemoteFileService {
             Ok(mut written) => match session.close().await {
                 Ok(()) => Ok(written),
                 Err(_) => {
-                    written.warning = Some(
-                        "文件已保存，但 SFTP 会话清理失败；如列表未更新，请刷新确认。".to_owned(),
-                    );
+                    written.warning = Some(match written.warning.take() {
+                        Some(existing) => format!(
+                            "{existing} 文件已保存，但 SFTP 会话清理失败；如列表未更新，请刷新确认。"
+                        ),
+                        None => "文件已保存，但 SFTP 会话清理失败；如列表未更新，请刷新确认。"
+                            .to_owned(),
+                    });
                     Ok(written)
                 }
             },
@@ -552,22 +565,49 @@ async fn rename_with_session(
                 false,
             ));
         }
-        Err(error) => {
-            if session.symlink_metadata(target).await?.is_some() {
-                return Err(CoreError::new(
-                    CoreErrorCode::Conflict,
-                    format!("目标文件 {} 已存在，未覆盖", target.as_str()),
-                    false,
-                ));
+        Err(error) => match session.symlink_metadata(target).await {
+            Ok(None) => return Err(error),
+            Ok(Some(_)) => {
+                return Ok(RemoteRenameResult {
+                        status: RenameStatus::Partial,
+                        source_path: source.as_str().to_owned(),
+                        target_path: target.as_str().to_owned(),
+                        target_created: false,
+                        warning: Some(
+                            "目标文件已存在，但无法确认是否由本次重命名创建；源文件未删除，请刷新目录核对。"
+                                .to_owned(),
+                        ),
+                        error: Some(error),
+                    });
             }
-            return Err(error);
-        }
+            Err(_) => {
+                return Ok(RemoteRenameResult {
+                    status: RenameStatus::Partial,
+                    source_path: source.as_str().to_owned(),
+                    target_path: target.as_str().to_owned(),
+                    target_created: false,
+                    warning: Some(
+                        "无法确认目标文件是否已创建；源文件未删除，请刷新目录核对。".to_owned(),
+                    ),
+                    error: Some(error),
+                });
+            }
+        },
     }
     match session.remove_file(source).await {
         Ok(()) => Ok(RemoteRenameResult {
             status: RenameStatus::Renamed,
             source_path: source.as_str().to_owned(),
             target_path: target.as_str().to_owned(),
+            target_created: true,
+            warning: None,
+            error: None,
+        }),
+        Err(error) if error.code() == CoreErrorCode::NotFound => Ok(RemoteRenameResult {
+            status: RenameStatus::Renamed,
+            source_path: source.as_str().to_owned(),
+            target_path: target.as_str().to_owned(),
+            target_created: true,
             warning: None,
             error: None,
         }),
@@ -575,8 +615,9 @@ async fn rename_with_session(
             status: RenameStatus::Partial,
             source_path: source.as_str().to_owned(),
             target_path: target.as_str().to_owned(),
+            target_created: true,
             warning: Some(
-                "目标文件已创建，但源文件删除失败；源与目标当前同时存在，请确认后重试清理源文件。"
+                "目标文件已创建，但源文件删除失败或结果未知；请刷新目录核对后重试清理源文件。"
                     .to_owned(),
             ),
             error: Some(error),
@@ -618,7 +659,7 @@ fn validate_upload_files(
             .checked_add(size)
             .ok_or_else(|| validation("上传批次总大小溢出"))?;
         if total > MAX_UPLOAD_BATCH_BYTES {
-            return Err(validation("上传批次总大小超过 64 MiB 上限"));
+            return Err(validation("上传批次总大小超过 16 MiB 上限"));
         }
         if !names.insert(file.name.as_str()) {
             return Err(validation(format!("上传批次包含重复文件名：{}", file.name)));
@@ -660,31 +701,32 @@ async fn upload_with_session(
 
     let mut staged = Vec::with_capacity(files.len());
     for (file, target) in files.iter().zip(targets.iter()) {
-        let temp_name = format!(".harbor-upload-{}.part", Uuid::new_v4());
-        let temp = directory.join_resource(&temp_name)?;
-        if let Err(failure) = session.create_new_file(&temp, &file.bytes, None).await {
-            let mut residual = cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
-            if let Some(path) = failure.residual {
-                residual.insert(0, path);
+        match stage_upload_file(session, directory, &file.bytes).await {
+            Ok(temp) => staged.push((temp, target.clone())),
+            Err(failure) => {
+                let mut residual =
+                    cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
+                if let Some(path) = failure.residual {
+                    residual.insert(0, path);
+                }
+                return Ok(RemoteUploadOutcome {
+                    status: if residual.is_empty() {
+                        UploadBatchStatus::FailedRolledBack
+                    } else {
+                        UploadBatchStatus::FailedWithResidue
+                    },
+                    committed: Vec::new(),
+                    warning: (!residual.is_empty()).then(|| {
+                        format!(
+                            "临时文件清理失败或可能残留，以下路径可能仍然存在：{}",
+                            residual.join("、")
+                        )
+                    }),
+                    residual,
+                    error: Some(failure.error),
+                });
             }
-            return Ok(RemoteUploadOutcome {
-                status: if residual.is_empty() {
-                    UploadBatchStatus::FailedRolledBack
-                } else {
-                    UploadBatchStatus::FailedWithResidue
-                },
-                committed: Vec::new(),
-                warning: (!residual.is_empty()).then(|| {
-                    format!(
-                        "临时文件清理失败，以下路径可能仍然存在：{}",
-                        residual.join("、")
-                    )
-                }),
-                residual,
-                error: Some(failure.error),
-            });
         }
-        staged.push((temp, target.clone()));
     }
 
     let mut committed = Vec::with_capacity(staged.len());
@@ -701,26 +743,23 @@ async fn upload_with_session(
                         "SFTP 服务器未启用 hardlink@openssh.com，无法安全无覆盖提交上传",
                         false,
                     ),
+                    None,
                 )
                 .await);
             }
             Err(error) => {
-                let error = if session
-                    .symlink_metadata(target)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some()
-                {
-                    CoreError::new(
-                        CoreErrorCode::Conflict,
-                        format!("目标文件 {} 已存在，未覆盖", target.as_str()),
-                        false,
-                    )
-                } else {
-                    error
+                let ambiguous_target = match session.symlink_metadata(target).await {
+                    Ok(None) => None,
+                    Ok(Some(_)) | Err(_) => Some(target.clone()),
                 };
-                return Ok(failed_upload_outcome(session, &staged, &committed, error).await);
+                return Ok(failed_upload_outcome(
+                    session,
+                    &staged,
+                    &committed,
+                    error,
+                    ambiguous_target.as_ref(),
+                )
+                .await);
             }
         }
     }
@@ -749,6 +788,7 @@ async fn failed_upload_outcome(
     staged: &[(RemotePath, RemotePath)],
     committed: &[RemotePath],
     error: CoreError,
+    ambiguous_target: Option<&RemotePath>,
 ) -> RemoteUploadOutcome {
     let mut remaining_committed = Vec::new();
     for target in committed.iter().rev() {
@@ -760,16 +800,33 @@ async fn failed_upload_outcome(
     }
     remaining_committed.reverse();
 
+    let rollback_failed = !remaining_committed.is_empty();
     let mut residual = remaining_committed
         .iter()
         .map(|path| path.as_str().to_owned())
         .collect::<Vec<_>>();
-    residual.extend(cleanup_paths(session, staged.iter().map(|(path, _)| path)).await);
+    if let Some(target) = ambiguous_target {
+        let target = target.as_str().to_owned();
+        if !residual.contains(&target) {
+            residual.push(target);
+        }
+    }
+    let temp_residual = cleanup_paths(session, staged.iter().map(|(path, _)| path)).await;
+    let temp_cleanup_failed = !temp_residual.is_empty();
+    residual.extend(temp_residual);
     let warning = (!residual.is_empty()).then(|| {
-        format!(
-            "回滚未完全完成，以下路径可能仍然存在：{}",
-            residual.join("、")
-        )
+        let mut parts: Vec<String> = Vec::new();
+        if ambiguous_target.is_some() {
+            parts.push("目标提交状态未知，未尝试删除可能已创建的目标。".to_owned());
+        }
+        if rollback_failed {
+            parts.push("已提交目标回滚未完全完成。".to_owned());
+        }
+        if temp_cleanup_failed {
+            parts.push("临时文件清理失败。".to_owned());
+        }
+        parts.push(format!("以下路径可能仍然存在：{}", residual.join("、")));
+        parts.join(" ")
     });
     RemoteUploadOutcome {
         status: if residual.is_empty() {
@@ -785,6 +842,31 @@ async fn failed_upload_outcome(
         warning,
         error: Some(error),
     }
+}
+
+async fn stage_upload_file(
+    session: &dyn ScopedSftp,
+    directory: &RemoteDirectoryPath,
+    bytes: &[u8],
+) -> Result<RemotePath, CreateFileFailure> {
+    let mut last_collision = None;
+    for _ in 0..UPLOAD_TEMP_NAME_ATTEMPTS {
+        let temp_name = format!(".harbor-upload-{}.part", Uuid::new_v4());
+        let temp = directory
+            .join_resource(&temp_name)
+            .map_err(CreateFileFailure::new)?;
+        match session.create_new_file(&temp, bytes, None).await {
+            Ok(()) => return Ok(temp),
+            Err(failure)
+                if failure.residual.is_none()
+                    && failure.error.code() == CoreErrorCode::Conflict =>
+            {
+                last_collision = Some(failure);
+            }
+            Err(failure) => return Err(failure),
+        }
+    }
+    Err(last_collision.expect("at least one upload staging attempt"))
 }
 
 async fn cleanup_paths<'a>(
@@ -897,7 +979,7 @@ async fn write_with_session(
             Some(residual) => CoreError::new(
                 failure.error.code(),
                 format!(
-                    "{}；临时文件 {} 清理失败，请手动清理",
+                    "{}；临时文件 {} 可能残留或清理失败，请手动清理",
                     failure.error.message(),
                     residual
                 ),
@@ -943,7 +1025,19 @@ async fn write_with_session(
     .await;
 
     if let Err(error) = replacement {
-        let _ = session.remove_file(&temp).await;
+        if let Err(cleanup_error) = session.remove_file(&temp).await
+            && cleanup_error.code() != CoreErrorCode::NotFound
+        {
+            return Err(CoreError::new(
+                error.code(),
+                format!(
+                    "{}；临时文件 {} 清理失败，请手动清理",
+                    error.message(),
+                    temp.as_str()
+                ),
+                error.is_retryable(),
+            ));
+        }
         return Err(error);
     }
 
@@ -1124,6 +1218,14 @@ impl ScopedSftp for RusshScopedSftp {
             .open(path.as_str())
             .await
             .map_err(|error| sftp_error("打开远程文件", error))?;
+        let path_metadata = self
+            .session
+            .symlink_metadata(path.as_str())
+            .await
+            .map_err(|error| sftp_error("读取远程文件属性", error))?;
+        if !path_metadata.is_regular() || path_metadata.is_symlink() {
+            return Err(validation("只能读取普通远程文件"));
+        }
         let metadata = file
             .metadata()
             .await
@@ -1167,7 +1269,7 @@ impl ScopedSftp for RusshScopedSftp {
     ) -> Result<(), CreateFileFailure> {
         let mut attributes = FileAttributes::empty();
         attributes.permissions = permissions.map(|mode| mode & 0o7777);
-        let mut file = self
+        let mut file = match self
             .session
             .open_with_flags_and_attributes(
                 path.as_str(),
@@ -1175,7 +1277,25 @@ impl ScopedSftp for RusshScopedSftp {
                 attributes,
             )
             .await
-            .map_err(|error| CreateFileFailure::new(sftp_error("创建远程临时文件", error)))?;
+        {
+            Ok(file) => file,
+            Err(error) => {
+                let error = sftp_error("创建远程临时文件", error);
+                if error.code() == CoreErrorCode::Conflict {
+                    return Err(CreateFileFailure::new(error));
+                }
+                return Err(match self.session.symlink_metadata(path.as_str()).await {
+                    Err(SftpError::Status(status))
+                        if status.status_code == StatusCode::NoSuchFile =>
+                    {
+                        CreateFileFailure::new(error)
+                    }
+                    Ok(_) | Err(_) => {
+                        CreateFileFailure::with_residual(error, path.as_str().to_owned())
+                    }
+                });
+            }
+        };
         if let Err(error) = file.write_all(bytes).await {
             drop(file);
             let error = io_error("写入远程临时文件", error);

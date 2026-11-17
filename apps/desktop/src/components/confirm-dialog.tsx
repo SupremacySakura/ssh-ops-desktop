@@ -1,11 +1,15 @@
 import { AlertTriangle, X } from 'lucide-react';
 import { useEffect, useRef, type ReactNode } from 'react';
 
+import { useDialogFocusTrap } from './use-dialog-focus-trap';
+
 interface ConfirmDialogProps {
+  active?: boolean;
   busy?: boolean;
   busyLabel?: string;
   cancelLabel?: string;
   confirmLabel: string;
+  confirmDisabled?: boolean;
   description: ReactNode;
   error?: string | null;
   onCancel: () => void;
@@ -14,10 +18,12 @@ interface ConfirmDialogProps {
 }
 
 export function ConfirmDialog({
+  active = true,
   busy = false,
   busyLabel = '处理中…',
   cancelLabel = '取消',
   confirmLabel,
+  confirmDisabled = false,
   description,
   error,
   onCancel,
@@ -25,32 +31,33 @@ export function ConfirmDialog({
   title,
 }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+
+  useDialogFocusTrap(sectionRef, {
+    active,
+    canEscape: !busy,
+    onEscape: onCancel,
+  });
 
   useEffect(() => {
-    cancelRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !busy) onCancel();
-    }
-
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [busy, onCancel]);
+    if (active) cancelRef.current?.focus();
+  }, [active]);
 
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-ink/40 p-6"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) onCancel();
+        if (event.target === event.currentTarget && !busy && active) onCancel();
       }}
     >
       <section
+        aria-busy={busy}
         aria-labelledby="confirm-dialog-title"
         aria-modal="true"
         className="w-[440px] border border-ink bg-shell"
+        ref={sectionRef}
         role="alertdialog"
+        tabIndex={-1}
       >
         <header className="flex items-start gap-3 border-b border-hairline px-5 py-4">
           <span className="mt-0.5 grid size-8 shrink-0 place-items-center border border-danger text-danger">
@@ -97,7 +104,7 @@ export function ConfirmDialog({
           </button>
           <button
             className="h-8 bg-danger px-4 text-[11px] font-medium text-paper disabled:opacity-40"
-            disabled={busy}
+            disabled={busy || confirmDisabled}
             onClick={onConfirm}
             type="button"
           >

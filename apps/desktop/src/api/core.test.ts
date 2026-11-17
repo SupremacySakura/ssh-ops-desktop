@@ -360,6 +360,7 @@ describe('Tauri CoreClient file contract', () => {
       status: 'partial',
       sourcePath: '/srv/app/old.txt',
       targetPath: '/srv/app/new.txt',
+      targetCreated: true,
       warning: '源文件未删除',
       error: {
         code: 'INTERNAL',

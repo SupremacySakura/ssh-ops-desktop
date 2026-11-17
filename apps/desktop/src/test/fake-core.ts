@@ -538,13 +538,17 @@ export function createFakeCoreClient({
           status: 'renamed',
           sourcePath: args.sourcePath,
           targetPath: args.targetPath,
+          targetCreated: true,
         };
       }
+      copyRecordKey(documents, args.sourcePath, args.targetPath);
+      copyRecordKey(downloads, args.sourcePath, args.targetPath);
       return {
         status: 'partial',
         sourcePath: args.sourcePath,
         targetPath: args.targetPath,
-        warning: '目标文件已创建，但源文件删除失败；请确认后重试清理源文件。',
+        targetCreated: true,
+        warning: '目标文件已创建，但源文件删除失败或结果未知；请刷新目录核对后重试清理源文件。',
         error: fakeCoreError('INTERNAL', '源文件删除失败', true),
       } satisfies RemoteRenameResult;
     },
@@ -555,10 +559,14 @@ export function createFakeCoreClient({
       if (!entry) {
         throw fakeError('NOT_FOUND', '要删除的远程条目不存在');
       }
+      if (entry.kind === 'other') {
+        throw fakeError('VALIDATION', '该路径不是普通文件、符号链接或目录，已拒绝删除');
+      }
       if (entry.kind === 'directory') {
-        const hasChildren = Object.entries(entriesByDirectory).some(([path, entries]) => (
-          remoteParent(path) === args.path && entries.length > 0
-        ));
+        const hasChildren = (entriesByDirectory[args.path] ?? []).length > 0
+          || Object.keys(entriesByDirectory).some(
+            (path) => path !== args.path && path.startsWith(`${args.path}/`),
+          );
         if (hasChildren) {
           throw fakeError(
             'CONFLICT',
@@ -966,6 +974,16 @@ function moveRecordKey<T>(
   const value = record[source];
   if (value === undefined) return;
   delete record[source];
+  record[target] = value;
+}
+
+function copyRecordKey<T>(
+  record: Record<string, T>,
+  source: string,
+  target: string,
+): void {
+  const value = record[source];
+  if (value === undefined) return;
   record[target] = value;
 }
 

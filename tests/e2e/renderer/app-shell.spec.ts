@@ -67,7 +67,7 @@ test('file browser opens Monaco in a renderer with a frozen Object prototype', a
   expect(pageErrors).toEqual([]);
 });
 
-test('file browser uploads, creates, renames, and deletes without overwriting', async ({
+test('file browser uploads, creates, renames, deletes, and rejects overwrite', async ({
   page,
 }) => {
   const pageErrors: string[] = [];
@@ -92,6 +92,20 @@ test('file browser uploads, creates, renames, and deletes without overwriting', 
   await upload.getByRole('button', { name: '确认上传' }).click();
   await expect(page.getByText(/已上传 1 个文件/u)).toBeVisible();
   await expect(page.getByRole('button', { name: '打开文件 notes.txt' })).toBeVisible();
+
+  await page.getByLabel('选择上传文件').setInputFiles({
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('replacement\n'),
+  });
+  const conflict = page.getByRole('dialog', { name: '上传文件到 /' });
+  await conflict.getByRole('button', { name: '确认上传' }).click();
+  await expect(conflict.getByRole('alert')).toContainText('已存在');
+  await expect(
+    conflict.getByRole('button', { name: '关闭', exact: true }),
+  ).toBeVisible();
+  await conflict.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(page.getByRole('row', { name: /notes\.txt/u })).toContainText('14 B');
 
   await page.getByRole('button', { name: '新建文件夹' }).click();
   const mkdir = page.getByRole('dialog', { name: '新建文件夹' });

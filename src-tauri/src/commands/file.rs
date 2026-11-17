@@ -606,6 +606,7 @@ mod tests {
                 status: RenameStatus::Partial,
                 source_path: "/docs/old.txt".to_owned(),
                 target_path: "/docs/new.txt".to_owned(),
+                target_created: true,
                 warning: Some("源文件未删除".to_owned()),
                 error: Some(CoreError::new(
                     CoreErrorCode::Internal,

@@ -8,7 +8,7 @@ export const FILE_DOWNLOAD_WARNING_BYTES = 4 * 1024 * 1024;
 export const MAX_FILE_DOWNLOAD_BYTES = 16 * 1024 * 1024;
 export const FILE_UPLOAD_WARNING_BYTES = 4 * 1024 * 1024;
 export const MAX_FILE_UPLOAD_BYTES = 16 * 1024 * 1024;
-export const MAX_UPLOAD_BATCH_BYTES = 64 * 1024 * 1024;
+export const MAX_UPLOAD_BATCH_BYTES = 16 * 1024 * 1024;
 export const MAX_UPLOAD_BATCH_FILES = 32;
 
 const CONTROL_CHARACTERS = /\p{Cc}/u;
@@ -135,7 +135,7 @@ export const FileUploadArgsSchema = z.object({
   if (total > MAX_UPLOAD_BATCH_BYTES) {
     context.addIssue({
       code: 'custom',
-      message: '上传批次总大小超过 64 MiB 上限',
+      message: '上传批次总大小超过 16 MiB 上限',
       path: ['files'],
     });
   }
@@ -220,6 +220,7 @@ export const RemoteRenameResultSchema = z.object({
   status: RenameStatusSchema,
   sourcePath: RemotePathSchema,
   targetPath: RemotePathSchema,
+  targetCreated: z.boolean(),
   warning: z.string().trim().min(1).optional(),
   error: CoreErrorSchema.optional(),
 }).strict().superRefine((outcome, context) => {
@@ -249,6 +250,13 @@ export const RemoteRenameResultSchema = z.object({
       code: 'custom',
       message: '成功的重命名不能携带错误',
       path: ['error'],
+    });
+  }
+  if (outcome.status === 'renamed' && !outcome.targetCreated) {
+    context.addIssue({
+      code: 'custom',
+      message: '成功的重命名必须确认目标已创建',
+      path: ['targetCreated'],
     });
   }
 });

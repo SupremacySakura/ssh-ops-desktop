@@ -274,6 +274,7 @@ export function DockerPane({ active, onExecOpened, server }: DockerPaneProps) {
 
       {confirmation ? (
         <ConfirmDialog
+          active={active}
           busy={actionBusy?.containerId === confirmation.container.id
             && actionBusy.action === confirmation.action}
           busyLabel={busyLabel}

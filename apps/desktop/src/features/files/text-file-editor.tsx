@@ -8,6 +8,7 @@ import { RotateCw, Save, X } from 'lucide-react';
 import { useId, useRef, useState } from 'react';
 
 import type { CoreClient } from '../../api/core';
+import { useDialogFocusTrap } from '../../components/use-dialog-focus-trap';
 import { CodeEditor } from './code-editor';
 import {
   formatFileSize,
@@ -16,6 +17,7 @@ import {
 } from './file-browser-utils';
 
 interface TextFileEditorProps {
+  active?: boolean;
   connection: ConnectionHandle;
   core: CoreClient;
   document: RemoteTextFile;
@@ -25,6 +27,7 @@ interface TextFileEditorProps {
 }
 
 export function TextFileEditor({
+  active = true,
   connection,
   core,
   document,
@@ -33,6 +36,7 @@ export function TextFileEditor({
   onSaved,
 }: TextFileEditorProps) {
   const titleId = useId();
+  const sectionRef = useRef<HTMLElement>(null);
   const [base, setBase] = useState(document);
   const [draft, setDraft] = useState(document.text);
   const [saving, setSaving] = useState(false);
@@ -46,6 +50,11 @@ export function TextFileEditor({
   const fileName = base.path.split('/').at(-1) ?? base.path;
   const draftBytes = new TextEncoder().encode(draft).byteLength;
   const tooLarge = draftBytes > MAX_EDIT_WRITE_BYTES;
+
+  useDialogFocusTrap(sectionRef, {
+    active,
+    onEscape: close,
+  });
 
   async function save() {
     if (saving || reloading || tooLarge) return;
@@ -136,7 +145,9 @@ export function TextFileEditor({
         aria-labelledby={titleId}
         aria-modal="true"
         className="flex h-[min(760px,calc(100dvh-48px))] w-[min(980px,calc(100vw-48px))] flex-col border border-ink bg-shell"
+        ref={sectionRef}
         role="dialog"
+        tabIndex={-1}
       >
         <header className="flex shrink-0 items-start gap-4 border-b border-hairline px-5 py-4">
           <div className="min-w-0 flex-1">

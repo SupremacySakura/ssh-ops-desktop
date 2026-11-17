@@ -4,6 +4,7 @@ import type {
   RemoteFileWriteResult,
   RemoteRenameResult,
   RemoteTextFile,
+  RemoteUploadFile,
   RemoteUploadOutcome,
 } from '@opspilot/contracts';
 import {
@@ -41,6 +42,7 @@ import type { ChangeEvent, ReactNode } from 'react';
 
 import type { CoreClient } from '../../api/core';
 import { ConfirmDialog } from '../../components/confirm-dialog';
+import { useDialogFocusTrap } from '../../components/use-dialog-focus-trap';
 import {
   breadcrumbItems,
   downloadBlocked,
@@ -82,6 +84,14 @@ interface FileNotice {
   text: string;
 }
 
+interface OperationNotice {
+  id: number;
+  kind: 'error' | 'info' | 'warning';
+  text: string;
+  residual: string[];
+  refreshDirectory?: string;
+}
+
 export function FileBrowser({
   active,
   connection,
@@ -105,10 +115,13 @@ export function FileBrowser({
   const [editorDocument, setEditorDocument] = useState<RemoteTextFile | null>(null);
   const [editorConnection, setEditorConnection] = useState<ConnectionHandle | null>(null);
   const [uploadFiles, setUploadFiles] = useState<File[] | null>(null);
+  const [uploadDirectory, setUploadDirectory] = useState<string | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadErrorRetryable, setUploadErrorRetryable] = useState(false);
   const [uploadOutcome, setUploadOutcome] = useState<RemoteUploadOutcome | null>(null);
   const [mkdirOpen, setMkdirOpen] = useState(false);
+  const [mkdirDirectory, setMkdirDirectory] = useState<string | null>(null);
   const [mkdirName, setMkdirName] = useState('');
   const [mkdirBusy, setMkdirBusy] = useState(false);
   const [mkdirError, setMkdirError] = useState<string | null>(null);
@@ -118,8 +131,16 @@ export function FileBrowser({
   const [renameError, setRenameError] = useState<string | null>(null);
   const [renameOutcome, setRenameOutcome] = useState<RemoteRenameResult | null>(null);
   const [deleteEntry, setDeleteEntry] = useState<RemoteFileEntry | null>(null);
+  const [deleteWarning, setDeleteWarning] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [operationNotices, setOperationNotices] = useState<OperationNotice[]>([]);
+  const [pendingNoticeRefresh, setPendingNoticeRefresh] = useState<{
+    id: number;
+    directory: string;
+  } | null>(null);
+  const noticeSequence = useRef(0);
+  const uploadResidueNoticeId = useRef<number | null>(null);
   const loadedKey = useRef<string | null>(null);
   const appliedJumpNonce = useRef<number | null>(null);
   const treeLoaded = useRef<Set<string>>(new Set());
@@ -128,6 +149,7 @@ export function FileBrowser({
   const connectionId = connection?.connectionId ?? null;
   const connectionIdRef = useRef(connectionId);
   connectionIdRef.current = connectionId;
+  const canWrite = connectionStatus === 'ready' && connection !== null;
 
   useEffect(() => {
     setPath('/');
@@ -138,22 +160,6 @@ export function FileBrowser({
     setExpanded(new Set(['/']));
     setSelectedPath(null);
     setFileNotice(null);
-    setUploadFiles(null);
-    setUploadBusy(false);
-    setUploadError(null);
-    setUploadOutcome(null);
-    setMkdirOpen(false);
-    setMkdirName('');
-    setMkdirBusy(false);
-    setMkdirError(null);
-    setRenameEntry(null);
-    setRenameName('');
-    setRenameBusy(false);
-    setRenameError(null);
-    setRenameOutcome(null);
-    setDeleteEntry(null);
-    setDeleteBusy(false);
-    setDeleteError(null);
     if (connection) setEditorConnection(connection);
     loadedKey.current = null;
     treeLoaded.current.clear();
@@ -419,12 +425,44 @@ export function FileBrowser({
     setRetryToken((token) => token + 1);
   }
 
-  function refreshAfterMutation() {
+  function refreshAfterMutation(
+    directory = path,
+    selected: string | null = null,
+  ) {
+    const parsed = RemoteDirectoryPathSchema.safeParse(directory);
+    if (parsed.success) {
+      setPath(parsed.data);
+      setListState('loading');
+    }
+    setSelectedPath(selected);
     loadedKey.current = null;
     treeLoaded.current.clear();
     treeRequests.current.clear();
     setRetryToken((token) => token + 1);
   }
+
+  function pushOperationNotice(notice: Omit<OperationNotice, 'id'>) {
+    noticeSequence.current += 1;
+    setOperationNotices((current) => [
+      ...current,
+      { ...notice, id: noticeSequence.current },
+    ]);
+    return noticeSequence.current;
+  }
+
+  useEffect(() => {
+    if (!pendingNoticeRefresh) return;
+    if (listState === 'error') {
+      setPendingNoticeRefresh(null);
+      return;
+    }
+    if (listState === 'ready' && path === pendingNoticeRefresh.directory) {
+      setOperationNotices((current) => (
+        current.filter((notice) => notice.id !== pendingNoticeRefresh.id)
+      ));
+      setPendingNoticeRefresh(null);
+    }
+  }, [listState, path, pendingNoticeRefresh]);
 
   function selectUploadFiles(event: ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(event.currentTarget.files ?? []);
@@ -433,7 +471,7 @@ export function FileBrowser({
     if (uploadBatchBlocked(selected.map((file) => file.size))) {
       setFileNotice({
         kind: 'error',
-        text: '上传批次超过限制：单文件最多 16 MiB，整批最多 64 MiB 且不超过 32 个文件。',
+        text: '上传批次超过限制：单文件最多 16 MiB，整批最多 16 MiB 且不超过 32 个文件。',
       });
       return;
     }
@@ -460,47 +498,88 @@ export function FileBrowser({
       });
       return;
     }
+    const directory = path;
     setUploadFiles(selected);
+    setUploadDirectory(directory);
     setUploadBusy(false);
     setUploadError(null);
+    setUploadErrorRetryable(false);
     setUploadOutcome(null);
+    uploadResidueNoticeId.current = null;
   }
 
   function closeUploadDialog() {
     if (uploadBusy) return;
     setUploadFiles(null);
+    setUploadDirectory(null);
     setUploadError(null);
+    setUploadErrorRetryable(false);
     setUploadOutcome(null);
   }
 
   async function submitUpload() {
-    if (!connection || !uploadFiles || uploadBusy) return;
+    const selectedFiles = uploadFiles;
+    const directory = uploadDirectory;
+    if (!connection || !selectedFiles || !directory || uploadBusy) return;
+    const parsedDirectory = RemoteDirectoryPathSchema.safeParse(directory);
+    if (!parsedDirectory.success) {
+      setUploadError('上传目标目录无效，请重新选择文件。');
+      return;
+    }
     const requestedConnectionId = connection.connectionId;
-    const count = uploadFiles.length;
+    const count = selectedFiles.length;
     setUploadBusy(true);
     setUploadError(null);
+    setUploadErrorRetryable(false);
     setUploadOutcome(null);
     try {
-      const payload = await Promise.all(uploadFiles.map(async (file) => ({
-        name: file.name,
-        bytes: await readFileBytes(file),
-      })));
-      if (connectionIdRef.current !== requestedConnectionId) return;
-      const outcome = await core.uploadFiles(connection, path, payload);
-      if (connectionIdRef.current !== requestedConnectionId) return;
+      const payload: RemoteUploadFile[] = [];
+      for (const file of selectedFiles) {
+        payload.push({
+          name: file.name,
+          bytes: await readFileBytes(file),
+        });
+        if (connectionIdRef.current !== requestedConnectionId) {
+          setUploadError('连接已变化，上传尚未开始；请确认目标目录后重试。');
+          setUploadErrorRetryable(true);
+          return;
+        }
+      }
+      const outcome = await core.uploadFiles(
+        connection,
+        parsedDirectory.data,
+        payload,
+      );
+      const stale = connectionIdRef.current !== requestedConnectionId;
       if (outcome.status === 'succeeded') {
         setUploadFiles(null);
-        refreshAfterMutation();
-        setFileNotice({
-          kind: 'info',
-          text: [
-            `已上传 ${count} 个文件到 ${path}。`,
-            outcome.warning,
-            outcome.residual.length > 0
-              ? `残留临时路径：${outcome.residual.join('、')}`
-              : null,
-          ].filter(Boolean).join(' '),
-        });
+        setUploadDirectory(null);
+        if (stale) {
+          pushOperationNotice({
+            kind: outcome.residual.length > 0 ? 'warning' : 'info',
+            text: [
+              `上一连接已完成 ${count} 个文件的上传到 ${directory}。`,
+              outcome.warning,
+              outcome.residual.length > 0
+                ? '临时文件或提交残留仍可能存在，请手动核对。'
+                : null,
+            ].filter(Boolean).join(' '),
+            residual: outcome.residual,
+            refreshDirectory: directory,
+          });
+        } else {
+          refreshAfterMutation(directory);
+          setFileNotice({
+            kind: 'info',
+            text: [
+              `已上传 ${count} 个文件到 ${directory}。`,
+              outcome.warning,
+              outcome.residual.length > 0
+                ? `残留临时路径：${outcome.residual.join('、')}`
+                : null,
+            ].filter(Boolean).join(' '),
+          });
+        }
         return;
       }
       setUploadOutcome(outcome);
@@ -508,24 +587,76 @@ export function FileBrowser({
         ? remoteFileErrorMessage(outcome.error)
         : '上传失败';
       if (outcome.status === 'failed_with_residue') {
+        setUploadErrorRetryable(false);
         setUploadError(
-          `${reason}；${outcome.warning ?? '部分文件未回滚，请刷新目录核对。'}`,
+          `${reason}；${outcome.warning ?? '部分文件未回滚，请刷新目录核对。'}`
+            + (stale ? ' 连接已变化，重连后可刷新目录。' : ''),
         );
+        uploadResidueNoticeId.current = pushOperationNotice({
+          kind: 'error',
+          text: [
+            stale
+              ? `上一连接上传失败，回滚未完全完成：${reason}`
+              : `上传失败，回滚未完全完成：${reason}`,
+            outcome.warning,
+          ].filter(Boolean).join(' '),
+          residual: outcome.residual,
+          refreshDirectory: directory,
+        });
       } else {
-        setUploadError(`${reason}；本次已提交文件已回滚，可重试。`);
+        const retryable = outcome.error?.retryable === true;
+        setUploadErrorRetryable(retryable);
+        setUploadError(
+          `${reason}；本次已提交文件已回滚。`
+            + (retryable
+              ? '可重试。'
+              : '该错误不可重试，请关闭后检查目标。')
+            + (outcome.warning ? ` ${outcome.warning}` : '')
+            + (stale
+              ? retryable
+                ? ' 连接已变化，重连后可重试。'
+                : ' 连接已变化，请重连后刷新核对。'
+              : ''),
+        );
+        if (stale) {
+          pushOperationNotice({
+            kind: retryable ? 'warning' : 'error',
+            text: [
+              `上一连接上传失败，已回滚：${reason}`,
+              outcome.warning,
+            ].filter(Boolean).join(' '),
+            residual: [],
+            refreshDirectory: directory,
+          });
+        }
       }
     } catch (error) {
-      if (connectionIdRef.current === requestedConnectionId) {
-        setUploadError(remoteFileErrorMessage(error));
+      const stale = connectionIdRef.current !== requestedConnectionId;
+      const retryable = isRetryableError(error);
+      setUploadErrorRetryable(retryable);
+      setUploadError(
+        remoteFileErrorMessage(error)
+          + (stale
+            ? retryable
+              ? '；连接已变化，重连后可重试。'
+              : '；连接已变化，请重连后刷新核对。'
+            : ''),
+      );
+      if (stale) {
+        pushOperationNotice({
+          kind: 'error',
+          text: `上一连接上传失败：${remoteFileErrorMessage(error)}`,
+          residual: [],
+          refreshDirectory: directory,
+        });
       }
     } finally {
-      if (connectionIdRef.current === requestedConnectionId) {
-        setUploadBusy(false);
-      }
+      setUploadBusy(false);
     }
   }
 
   function openMkdirDialog() {
+    setMkdirDirectory(path);
     setMkdirName('');
     setMkdirError(null);
     setMkdirOpen(true);
@@ -534,12 +665,14 @@ export function FileBrowser({
   function closeMkdirDialog() {
     if (mkdirBusy) return;
     setMkdirOpen(false);
+    setMkdirDirectory(null);
     setMkdirError(null);
   }
 
   async function submitMkdir() {
-    if (!connection || mkdirBusy) return;
-    const target = joinRemoteResource(path, mkdirName);
+    const directory = mkdirDirectory;
+    if (!connection || !directory || mkdirBusy) return;
+    const target = joinRemoteResource(directory, mkdirName);
     if (!target) {
       setMkdirError('文件夹名称必须是安全的 basename，不能包含 / 或控制字符。');
       return;
@@ -549,24 +682,46 @@ export function FileBrowser({
     setMkdirError(null);
     try {
       const result = await core.createDirectory(connection, target);
-      if (connectionIdRef.current !== requestedConnectionId) return;
       setMkdirOpen(false);
+      setMkdirDirectory(null);
       setMkdirName('');
-      refreshAfterMutation();
-      setFileNotice({
-        kind: 'info',
-        text: result.warning
-          ? `已创建 ${result.path}。${result.warning}`
-          : `已创建 ${result.path}`,
-      });
+      if (connectionIdRef.current !== requestedConnectionId) {
+        pushOperationNotice({
+          kind: 'info',
+          text: [
+            `上一连接已创建 ${result.path}。`,
+            result.warning,
+          ].filter(Boolean).join(' '),
+          residual: [],
+          refreshDirectory: directory,
+        });
+      } else {
+        refreshAfterMutation(directory);
+        setFileNotice({
+          kind: 'info',
+          text: result.warning
+            ? `已创建 ${result.path}。${result.warning}`
+            : `已创建 ${result.path}`,
+        });
+      }
     } catch (error) {
-      if (connectionIdRef.current === requestedConnectionId) {
-        setMkdirError(remoteFileErrorMessage(error));
+      const stale = connectionIdRef.current !== requestedConnectionId;
+      setMkdirError(
+        remoteFileErrorMessage(error)
+          + (stale
+            ? '；连接已变化，重连后可重试。'
+            : ''),
+      );
+      if (stale) {
+        pushOperationNotice({
+          kind: 'error',
+          text: `上一连接新建目录失败：${remoteFileErrorMessage(error)}`,
+          residual: [],
+          refreshDirectory: directory,
+        });
       }
     } finally {
-      if (connectionIdRef.current === requestedConnectionId) {
-        setMkdirBusy(false);
-      }
+      setMkdirBusy(false);
     }
   }
 
@@ -585,22 +740,23 @@ export function FileBrowser({
   }
 
   async function submitRename() {
-    if (!connection || !renameEntry || renameBusy) return;
-    if (renameEntry.kind === 'directory') {
+    const entry = renameEntry;
+    if (!connection || !entry || renameBusy) return;
+    if (entry.kind === 'directory') {
       setRenameError(
         '当前 SFTP 服务器没有经过验证的原子 no-replace 目录重命名原语，已拒绝操作。',
       );
       return;
     }
-    const parent = renameEntry.path.includes('/')
-      ? renameEntry.path.slice(0, renameEntry.path.lastIndexOf('/')) || '/'
+    const parent = entry.path.includes('/')
+      ? entry.path.slice(0, entry.path.lastIndexOf('/')) || '/'
       : '/';
     const target = joinRemoteResource(parent, renameName);
     if (!target) {
       setRenameError('新名称必须是安全的 basename，不能包含 / 或控制字符。');
       return;
     }
-    if (target === renameEntry.path) {
+    if (target === entry.path) {
       setRenameError('新名称必须与原名称不同。');
       return;
     }
@@ -609,42 +765,88 @@ export function FileBrowser({
     setRenameError(null);
     setRenameOutcome(null);
     try {
-      const result = await core.renameFile(connection, renameEntry.path, target);
-      if (connectionIdRef.current !== requestedConnectionId) return;
+      const result = await core.renameFile(connection, entry.path, target);
+      const stale = connectionIdRef.current !== requestedConnectionId;
       if (result.status === 'partial') {
         setRenameOutcome(result);
         setRenameError(
           result.warning
-          ?? '目标文件已创建，但源文件未删除；请确认后重试清理源文件。',
+          ?? '目标文件已创建，但源文件可能仍然存在；请确认后重试清理源文件。',
         );
-        refreshAfterMutation();
+        if (!result.targetCreated) {
+          pushOperationNotice({
+            kind: 'warning',
+            text: [
+              `${stale ? '上一连接' : ''}重命名 ${result.sourcePath} 的结果不确定：`,
+              result.warning,
+              '未提供删除源文件操作，请刷新目录核对后再处理。',
+            ].filter(Boolean).join(' '),
+            residual: [result.sourcePath],
+            refreshDirectory: parent,
+          });
+        } else if (stale) {
+          pushOperationNotice({
+            kind: 'warning',
+            text: [
+              `上一连接已将 ${result.sourcePath} 重命名为 ${result.targetPath}，但源文件可能仍然存在。`,
+              result.warning,
+              '重连后可刷新目录并清理源文件。',
+            ].filter(Boolean).join(' '),
+            residual: [result.sourcePath],
+            refreshDirectory: parent,
+          });
+        } else {
+          refreshAfterMutation(parent);
+        }
         return;
       }
       setRenameEntry(null);
       setRenameError(null);
       setRenameOutcome(null);
-      setSelectedPath(result.targetPath);
-      refreshAfterMutation();
-      setFileNotice({
-        kind: 'info',
-        text: result.warning
-          ? `已将 ${result.sourcePath} 重命名为 ${result.targetPath}。${result.warning}`
-          : `已将 ${result.sourcePath} 重命名为 ${result.targetPath}`,
-      });
+      if (stale) {
+        pushOperationNotice({
+          kind: 'info',
+          text: [
+            `上一连接已将 ${result.sourcePath} 重命名为 ${result.targetPath}。`,
+            result.warning,
+          ].filter(Boolean).join(' '),
+          residual: [],
+          refreshDirectory: parent,
+        });
+      } else {
+        refreshAfterMutation(parent, result.targetPath);
+        setFileNotice({
+          kind: 'info',
+          text: result.warning
+            ? `已将 ${result.sourcePath} 重命名为 ${result.targetPath}。${result.warning}`
+            : `已将 ${result.sourcePath} 重命名为 ${result.targetPath}`,
+        });
+      }
     } catch (error) {
-      if (connectionIdRef.current === requestedConnectionId) {
-        setRenameError(remoteFileErrorMessage(error));
+      const stale = connectionIdRef.current !== requestedConnectionId;
+      setRenameError(
+        remoteFileErrorMessage(error)
+          + (stale
+            ? '；连接已变化，重连后可重试。'
+            : ''),
+      );
+      if (stale) {
+        pushOperationNotice({
+          kind: 'error',
+          text: `上一连接重命名失败：${remoteFileErrorMessage(error)}`,
+          residual: [],
+          refreshDirectory: parent,
+        });
       }
     } finally {
-      if (connectionIdRef.current === requestedConnectionId) {
-        setRenameBusy(false);
-      }
+      setRenameBusy(false);
     }
   }
 
   function startRenameCleanup() {
-    if (!renameEntry || !renameOutcome) return;
+    if (!renameEntry || !renameOutcome?.targetCreated) return;
     setDeleteEntry(renameEntry);
+    setDeleteWarning(renameOutcome.warning ?? null);
     setDeleteError(null);
     setRenameEntry(null);
     setRenameError(null);
@@ -653,42 +855,79 @@ export function FileBrowser({
 
   function requestDelete(entry: RemoteFileEntry) {
     setDeleteEntry(entry);
+    setDeleteWarning(null);
     setDeleteError(null);
   }
 
   function closeDeleteDialog() {
     if (deleteBusy) return;
     setDeleteEntry(null);
+    setDeleteWarning(null);
     setDeleteError(null);
   }
 
   async function submitDelete() {
-    if (!connection || !deleteEntry || deleteBusy) return;
-    const requestedConnectionId = connection.connectionId;
     const entry = deleteEntry;
+    if (!connection || !entry || deleteBusy) return;
+    const requestedConnectionId = connection.connectionId;
+    const parent = entry.path.includes('/')
+      ? entry.path.slice(0, entry.path.lastIndexOf('/')) || '/'
+      : '/';
     setDeleteBusy(true);
     setDeleteError(null);
     try {
       const result = await core.deleteFile(connection, entry.path);
-      if (connectionIdRef.current !== requestedConnectionId) return;
       setDeleteEntry(null);
-      if (selectedPath === entry.path) setSelectedPath(null);
-      refreshAfterMutation();
-      setFileNotice({
-        kind: 'info',
-        text: result.warning
-          ? `已删除 ${result.path}。${result.warning}`
-          : `已删除 ${result.path}`,
-      });
+      setDeleteWarning(null);
+      if (connectionIdRef.current !== requestedConnectionId) {
+        pushOperationNotice({
+          kind: 'info',
+          text: [
+            `上一连接已删除 ${result.path}。`,
+            result.warning,
+          ].filter(Boolean).join(' '),
+          residual: [],
+          refreshDirectory: parent,
+        });
+      } else {
+        refreshAfterMutation(parent);
+        setFileNotice({
+          kind: 'info',
+          text: result.warning
+            ? `已删除 ${result.path}。${result.warning}`
+            : `已删除 ${result.path}`,
+        });
+      }
     } catch (error) {
-      if (connectionIdRef.current === requestedConnectionId) {
-        setDeleteError(remoteFileErrorMessage(error));
+      const stale = connectionIdRef.current !== requestedConnectionId;
+      setDeleteError(
+        remoteFileErrorMessage(error)
+          + (stale
+            ? '；连接已变化，重连后可重试。'
+            : ''),
+      );
+      if (stale) {
+        pushOperationNotice({
+          kind: 'error',
+          text: `上一连接删除失败：${remoteFileErrorMessage(error)}`,
+          residual: [],
+          refreshDirectory: parent,
+        });
       }
     } finally {
-      if (connectionIdRef.current === requestedConnectionId) {
-        setDeleteBusy(false);
-      }
+      setDeleteBusy(false);
     }
+  }
+
+  function dismissOperationNotice(id: number) {
+    setOperationNotices((current) => current.filter((notice) => notice.id !== id));
+  }
+
+  function refreshOperationNotice(id: number) {
+    const notice = operationNotices.find((candidate) => candidate.id === id);
+    if (!notice?.refreshDirectory || !canWrite) return;
+    setPendingNoticeRefresh({ id, directory: notice.refreshDirectory });
+    refreshAfterMutation(notice.refreshDirectory);
   }
 
   function applySaved(result: RemoteFileWriteResult) {
@@ -718,6 +957,9 @@ export function FileBrowser({
   const offline = connectionStatus === 'closed'
     || (connectionStatus === 'ready' && connection === null);
   const connecting = connectionStatus === 'connecting';
+  const modalOpen = Boolean(
+    uploadFiles || mkdirOpen || renameEntry || deleteEntry || editorDocument,
+  );
   const editorModal = editorDocument && editorConnection ? (
     <Suspense
       fallback={(
@@ -729,6 +971,7 @@ export function FileBrowser({
       )}
     >
       <TextFileEditor
+        active={active}
         connection={editorConnection}
         core={core}
         document={editorDocument}
@@ -745,10 +988,28 @@ export function FileBrowser({
   const uploadTotal = uploadSizes.reduce((total, size) => total + size, 0);
   const uploadWarning = uploadFiles !== null
     && uploadBatchNeedsConfirmation(uploadSizes);
+  const uploadTarget = uploadDirectory ?? path;
+  const uploadFailureRetryable = uploadOutcome?.status === 'failed_rolled_back'
+    ? uploadOutcome.error?.retryable === true
+    : uploadError !== null
+      ? uploadErrorRetryable
+      : null;
+  const operationBanners = operationNotices.length > 0
+    ? operationNotices.map((notice) => (
+      <OperationNoticeBanner
+        canRefresh={canWrite}
+        key={notice.id}
+        notice={notice}
+        onDismiss={() => dismissOperationNotice(notice.id)}
+        onRefresh={() => refreshOperationNotice(notice.id)}
+      />
+    ))
+    : null;
   const actionDialogs = (
     <>
       {uploadFiles ? (
         <FileDialog
+          active={active}
           busy={uploadBusy}
           footer={(
             <>
@@ -762,25 +1023,48 @@ export function FileBrowser({
               </button>
               {uploadOutcome?.status === 'failed_with_residue' ? (
                 <button
-                  className="h-8 bg-ink px-4 text-[11px] font-medium text-paper"
+                  className="h-8 bg-ink px-4 text-[11px] font-medium text-paper disabled:opacity-40"
+                  disabled={!canWrite}
                   onClick={() => {
-                    refreshAfterMutation();
-                    closeUploadDialog();
+                    if (uploadResidueNoticeId.current !== null) {
+                      setPendingNoticeRefresh({
+                        id: uploadResidueNoticeId.current,
+                        directory: uploadTarget,
+                      });
+                    }
+                    refreshAfterMutation(uploadTarget);
+                    setUploadFiles(null);
+                    setUploadDirectory(null);
+                    setUploadError(null);
+                    setUploadErrorRetryable(false);
+                    setUploadOutcome(null);
                   }}
                   type="button"
                 >
-                  刷新目录
+                  {canWrite ? '刷新目录' : '重连后刷新'}
+                </button>
+              ) : uploadFailureRetryable === false ? (
+                <button
+                  className="h-8 bg-ink px-4 text-[11px] font-medium text-paper"
+                  onClick={closeUploadDialog}
+                  type="button"
+                >
+                  关闭
                 </button>
               ) : (
                 <button
                   className="h-8 bg-ink px-4 text-[11px] font-medium text-paper disabled:opacity-40"
-                  disabled={uploadBusy}
+                  disabled={uploadBusy || !canWrite}
                   onClick={() => void submitUpload()}
                   type="button"
                 >
                   {uploadBusy
                     ? '上传中…'
-                    : uploadOutcome?.status === 'failed_rolled_back'
+                    : !canWrite
+                      ? uploadFailureRetryable === null
+                        ? '重连后上传'
+                        : '重连后可重试'
+                      : uploadFailureRetryable !== null
                       ? '重试上传'
                       : '确认上传'}
                 </button>
@@ -788,7 +1072,7 @@ export function FileBrowser({
             </>
           )}
           onCancel={closeUploadDialog}
-          title={`上传文件到 ${path}`}
+          title={`上传文件到 ${uploadTarget}`}
         >
           <ul
             aria-label="待上传文件"
@@ -809,7 +1093,7 @@ export function FileBrowser({
           </p>
           {uploadWarning ? (
             <p className="mt-3 border-l-2 border-warning pl-2 text-[10px] leading-5 text-warning">
-              批次包含大文件（超过 4 MiB）。上传会占用较多内存与 IPC，请确认网络稳定后再继续。
+              单文件或批次总计超过 4 MiB。上传会占用较多内存与 IPC，请确认网络稳定后再继续。
             </p>
           ) : null}
           <p className="mt-3 text-[10px] leading-5 text-muted">
@@ -835,6 +1119,7 @@ export function FileBrowser({
 
       {mkdirOpen ? (
         <FileDialog
+          active={active}
           busy={mkdirBusy}
           footer={(
             <>
@@ -848,11 +1133,15 @@ export function FileBrowser({
               </button>
               <button
                 className="h-8 bg-ink px-4 text-[11px] font-medium text-paper disabled:opacity-40"
-                disabled={mkdirBusy}
+                disabled={mkdirBusy || !canWrite}
                 onClick={() => void submitMkdir()}
                 type="button"
               >
-                {mkdirBusy ? '创建中…' : '创建文件夹'}
+                {mkdirBusy
+                  ? '创建中…'
+                  : !canWrite
+                    ? '重连后创建'
+                    : '创建文件夹'}
               </button>
             </>
           )}
@@ -873,7 +1162,7 @@ export function FileBrowser({
             value={mkdirName}
           />
           <p className="mt-2 text-[10px] leading-5 text-muted">
-            将在 {path} 下创建单层目录；不会自动创建缺失的父目录。
+            将在 {mkdirDirectory ?? path} 下创建单层目录；不会自动创建缺失的父目录。
           </p>
           {mkdirError ? (
             <p className="mt-3 text-[11px] leading-5 text-danger" role="alert">
@@ -885,6 +1174,7 @@ export function FileBrowser({
 
       {renameEntry ? (
         <FileDialog
+          active={active}
           busy={renameBusy}
           footer={renameOutcome?.status === 'partial' ? (
             <>
@@ -895,13 +1185,32 @@ export function FileBrowser({
               >
                 关闭
               </button>
-              <button
-                className="h-8 bg-danger px-4 text-[11px] font-medium text-paper"
-                onClick={startRenameCleanup}
-                type="button"
-              >
-                删除源文件…
-              </button>
+              {renameOutcome.targetCreated ? (
+                <button
+                  className="h-8 bg-danger px-4 text-[11px] font-medium text-paper disabled:opacity-40"
+                  disabled={!canWrite}
+                  onClick={startRenameCleanup}
+                  type="button"
+                >
+                  {canWrite ? '删除源文件…' : '重连后清理'}
+                </button>
+              ) : (
+                <button
+                  className="h-8 bg-ink px-4 text-[11px] font-medium text-paper disabled:opacity-40"
+                  disabled={!canWrite}
+                  onClick={() => {
+                    const sourcePath = renameOutcome.sourcePath;
+                    const parent = sourcePath.includes('/')
+                      ? sourcePath.slice(0, sourcePath.lastIndexOf('/')) || '/'
+                      : '/';
+                    refreshAfterMutation(parent);
+                    closeRenameDialog();
+                  }}
+                  type="button"
+                >
+                  {canWrite ? '刷新目录核对' : '重连后刷新'}
+                </button>
+              )}
             </>
           ) : (
             <>
@@ -915,11 +1224,19 @@ export function FileBrowser({
               </button>
               <button
                 className="h-8 bg-ink px-4 text-[11px] font-medium text-paper disabled:opacity-40"
-                disabled={renameBusy || renameEntry.kind === 'directory'}
+                disabled={
+                  renameBusy
+                  || renameEntry.kind === 'directory'
+                  || !canWrite
+                }
                 onClick={() => void submitRename()}
                 type="button"
               >
-                {renameBusy ? '重命名中…' : '确认重命名'}
+                {renameBusy
+                  ? '重命名中…'
+                  : !canWrite
+                    ? '重连后重命名'
+                    : '确认重命名'}
               </button>
             </>
           )}
@@ -951,11 +1268,16 @@ export function FileBrowser({
           {renameOutcome?.status === 'partial' ? (
             <div className="mt-3 border-y border-hairline py-2">
               <p className="font-mono text-[9px] tracking-[0.12em] text-muted">
-                已创建目标
+                {renameOutcome.targetCreated ? '已创建目标' : '目标状态未确认'}
               </p>
               <p className="mt-1 break-all font-mono text-[10px] text-ink">
                 {renameOutcome.targetPath}
               </p>
+              {!renameOutcome.targetCreated ? (
+                <p className="mt-2 text-[10px] leading-5 text-warning">
+                  无法确认目标是否由本次操作创建，已禁用源文件删除。请刷新目录核对。
+                </p>
+              ) : null}
             </div>
           ) : null}
           {renameError ? (
@@ -968,9 +1290,11 @@ export function FileBrowser({
 
       {deleteEntry ? (
         <ConfirmDialog
+          active={active}
           busy={deleteBusy}
           busyLabel="正在删除…"
           confirmLabel="确认删除"
+          confirmDisabled={!canWrite}
           description={(
             <>
               将删除{' '}
@@ -980,9 +1304,17 @@ export function FileBrowser({
                 : deleteEntry.kind === 'symlink'
                   ? '。只会删除符号链接本身，不会跟随或删除目标。'
                   : '。此操作无法撤销。'}
+              {deleteWarning ? (
+                <>
+                  <br />
+                  <span className="mt-2 block text-[10px] leading-5 text-warning">
+                    本次清理来源：{deleteWarning}
+                  </span>
+                </>
+              ) : null}
             </>
           )}
-          error={deleteError}
+          error={deleteError ?? (!canWrite ? '连接已断开，重连后可重试删除。' : null)}
           onCancel={closeDeleteDialog}
           onConfirm={() => void submitDelete()}
           title={deleteEntry.kind === 'directory' ? '删除目录' : '删除文件'}
@@ -994,13 +1326,19 @@ export function FileBrowser({
   if (offline) {
     return (
       <>
-        <FileStatePanel
-          actionLabel="重新连接服务器"
-          description="文件浏览需要一条可用的 SFTP 通道。连接恢复后会从根目录重新读取；编辑器中的草稿不会被关闭。"
-          icon={<ServerOff aria-hidden className="size-5" strokeWidth={1.5} />}
-          onAction={onReconnect}
-          title="服务器连接已断开"
-        />
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          inert={modalOpen}
+        >
+          {operationBanners}
+          <FileStatePanel
+            actionLabel="重新连接服务器"
+            description="文件浏览需要一条可用的 SFTP 通道。连接恢复后会从根目录重新读取；编辑器中的草稿不会被关闭。"
+            icon={<ServerOff aria-hidden className="size-5" strokeWidth={1.5} />}
+            onAction={onReconnect}
+            title="服务器连接已断开"
+          />
+        </div>
         {editorModal}
         {actionDialogs}
       </>
@@ -1010,11 +1348,18 @@ export function FileBrowser({
   if (connecting) {
     return (
       <>
-        <FileStatePanel
-          description="SSH 连接建立后，文件视图才会按需打开 SFTP 会话。"
-          icon={<RefreshCw aria-hidden className="size-5 animate-pulse" strokeWidth={1.5} />}
-          title="正在建立 SSH 连接"
-        />
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          inert={modalOpen}
+        >
+          {operationBanners}
+          <FileStatePanel
+            description="SSH 连接建立后，文件视图才会按需打开 SFTP 会话。"
+            eyebrow="FILE VIEW / CONNECTING"
+            icon={<RefreshCw aria-hidden className="size-5 animate-pulse" strokeWidth={1.5} />}
+            title="正在建立 SSH 连接"
+          />
+        </div>
         {editorModal}
         {actionDialogs}
       </>
@@ -1023,6 +1368,11 @@ export function FileBrowser({
 
   return (
     <>
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        inert={modalOpen}
+      >
+      {operationBanners}
       <div className="flex min-h-0 flex-1">
       <aside className="flex w-[232px] shrink-0 flex-col border-r border-hairline bg-shell">
         <div className="flex h-10 shrink-0 items-center justify-between border-b border-hairline px-3">
@@ -1081,6 +1431,7 @@ export function FileBrowser({
             multiple
             onChange={selectUploadFiles}
             ref={uploadInputRef}
+            tabIndex={-1}
             type="file"
           />
           <button
@@ -1188,10 +1539,10 @@ export function FileBrowser({
                 </p>
                 <button
                   className="mt-4 h-8 border border-hairline bg-paper px-3 text-[11px] font-medium text-ink hover:border-ink"
-                  onClick={retry}
+                  onClick={openMkdirDialog}
                   type="button"
                 >
-                  重新读取
+                  新建文件夹
                 </button>
               </div>
             </div>
@@ -1305,19 +1656,81 @@ export function FileBrowser({
       </section>
 
       </div>
+      </div>
       {editorModal}
       {actionDialogs}
     </>
   );
 }
 
+function OperationNoticeBanner({
+  canRefresh,
+  notice,
+  onDismiss,
+  onRefresh,
+}: {
+  canRefresh: boolean;
+  notice: OperationNotice;
+  onDismiss(): void;
+  onRefresh(): void;
+}) {
+  const tone = notice.kind === 'error'
+    ? 'border-danger/40 bg-[#F4E9E5] text-danger'
+    : notice.kind === 'warning'
+      ? 'border-warning/40 bg-[#F4EDE0] text-warning'
+      : 'border-success/30 bg-[#EDF2EC] text-success';
+  return (
+    <section
+      className={`shrink-0 border-b px-4 py-2 ${tone}`}
+      role={notice.kind === 'info' ? 'status' : 'alert'}
+    >
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="font-mono text-[9px] tracking-[0.14em]">
+            PREVIOUS CONNECTION / WRITE RESULT
+          </p>
+          <p className="mt-1 text-[10px] leading-5">{notice.text}</p>
+          {notice.residual.length > 0 ? (
+            <ul className="m-0 mt-1 list-none p-0 font-mono text-[10px] leading-5 text-ink">
+              {notice.residual.map((path) => (
+                <li className="break-all" key={path}>{path}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {notice.refreshDirectory ? (
+            <button
+              className="h-7 border border-current px-2 text-[10px] font-medium hover:bg-paper disabled:opacity-40"
+              disabled={!canRefresh}
+              onClick={onRefresh}
+              type="button"
+            >
+              {canRefresh ? '刷新目录' : '重连后刷新'}
+            </button>
+          ) : null}
+          <button
+            className="h-7 border border-current px-2 text-[10px] font-medium hover:bg-paper"
+            onClick={onDismiss}
+            type="button"
+          >
+            关闭
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function FileDialog({
+  active,
   busy,
   children,
   footer,
   onCancel,
   title,
 }: {
+  active: boolean;
   busy: boolean;
   children: ReactNode;
   footer: ReactNode;
@@ -1327,29 +1740,21 @@ function FileDialog({
   const titleId = useId();
   const sectionRef = useRef<HTMLElement>(null);
 
-  useEffect(() => {
-    const section = sectionRef.current;
-    if (!section) return;
-    if (!section.contains(document.activeElement)) section.focus();
-  }, []);
-
-  useEffect(() => {
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !busy) onCancel();
-    }
-
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [busy, onCancel]);
+  useDialogFocusTrap(sectionRef, {
+    active,
+    canEscape: !busy,
+    onEscape: onCancel,
+  });
 
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-ink/40 p-6"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) onCancel();
+        if (event.target === event.currentTarget && !busy && active) onCancel();
       }}
     >
       <section
+        aria-busy={busy}
         aria-labelledby={titleId}
         aria-modal="true"
         className="w-[460px] border border-ink bg-shell outline-none"
@@ -1498,12 +1903,14 @@ function FileKindIcon({ entry }: { entry: RemoteFileEntry }) {
 function FileStatePanel({
   actionLabel,
   description,
+  eyebrow = 'FILE VIEW / OFFLINE',
   icon,
   onAction,
   title,
 }: {
   actionLabel?: string;
   description: string;
+  eyebrow?: string;
   icon: ReactNode;
   onAction?(): void;
   title: string;
@@ -1515,7 +1922,7 @@ function FileStatePanel({
           {icon}
         </span>
         <p className="mt-4 font-mono text-[9px] tracking-[0.16em] text-muted">
-          FILE VIEW / OFFLINE
+          {eyebrow}
         </p>
         <h3 className="mt-2 text-[20px] font-semibold tracking-[-0.01em] text-ink">
           {title}
@@ -1541,6 +1948,13 @@ function joinDirectory(parent: string, name: string): string | null {
     parent === '/' ? `/${name}` : `${parent}/${name}`,
   );
   return parsed.success ? parsed.data : null;
+}
+
+function isRetryableError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'retryable' in error
+    && error.retryable === true;
 }
 
 async function readFileBytes(file: File): Promise<number[]> {
