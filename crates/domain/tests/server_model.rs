@@ -1,4 +1,4 @@
-use opspilot_domain::{AuthType, CoreErrorCode, Id, ServerGroup, ServerInput, ServerPort};
+use opspilot_domain::{AuthType, CoreErrorCode, Id, Server, ServerGroup, ServerInput, ServerPort};
 
 #[test]
 fn server_input_normalizes_harbor_identity_fields() {
@@ -9,7 +9,7 @@ fn server_input_normalizes_harbor_identity_fields() {
         2222,
         " deploy ",
         AuthType::Key,
-        " secret-ref-fixture-001 ",
+        Some(" secret-ref-fixture-001 "),
         Some(group_id),
         true,
     )
@@ -20,7 +20,7 @@ fn server_input_normalizes_harbor_identity_fields() {
     assert_eq!(input.port().get(), 2222);
     assert_eq!(input.user(), "deploy");
     assert_eq!(input.auth_type(), AuthType::Key);
-    assert_eq!(input.secret_ref(), "secret-ref-fixture-001");
+    assert_eq!(input.secret_ref(), Some("secret-ref-fixture-001"));
     assert_eq!(input.group_id(), Some(group_id));
     assert!(input.favorite());
 }
@@ -38,7 +38,7 @@ fn server_input_rejects_values_outside_the_v2_contract() {
             22,
             user,
             AuthType::Password,
-            secret_ref,
+            Some(secret_ref),
             None,
             false,
         )
@@ -52,6 +52,44 @@ fn server_input_rejects_values_outside_the_v2_contract() {
             CoreErrorCode::Validation
         );
     }
+}
+
+#[test]
+fn imported_servers_can_explicitly_wait_for_a_credential() {
+    let pending = ServerInput::try_new(
+        "imported",
+        "imported.example.com",
+        22,
+        "deploy",
+        AuthType::Key,
+        None,
+        None,
+        false,
+    )
+    .expect("an imported server without a credential should be valid");
+
+    assert_eq!(pending.secret_ref(), None);
+
+    let server = Server {
+        id: Id::new(),
+        name: "imported".to_owned(),
+        host: "imported.example.com".to_owned(),
+        port: 22,
+        user: "deploy".to_owned(),
+        auth_type: AuthType::Key,
+        secret_ref: None,
+        group_id: None,
+        favorite: false,
+        last_connected_at: None,
+        created_at: 1_700_000_000,
+    };
+    let error = server
+        .require_secret_ref()
+        .expect_err("an imported server must not connect before its credential is configured");
+
+    assert_eq!(error.code(), CoreErrorCode::SecretUnavailable);
+    assert!(!error.is_retryable());
+    assert!(error.message().contains("凭据尚未配置"));
 }
 
 #[test]

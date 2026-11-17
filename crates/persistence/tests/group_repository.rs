@@ -70,7 +70,7 @@ async fn deleting_a_group_moves_its_servers_to_ungrouped() {
         22,
         "deploy",
         AuthType::Key,
-        "secret-ref-fixture",
+        Some("secret-ref-fixture"),
         Some(group.id),
         false,
     )
