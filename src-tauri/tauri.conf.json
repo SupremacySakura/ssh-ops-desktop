@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpsPilot",
+  "productName": "Harbor",
   "version": "0.1.0",
-  "identifier": "com.opspilot.desktop",
+  "identifier": "com.harbor.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,11 +13,11 @@
     "windows": [
       {
         "label": "main",
-        "title": "OpsPilot",
-        "width": 1200,
-        "height": 800,
-        "minWidth": 960,
-        "minHeight": 640
+        "title": "Harbor",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 700
       }
     ],
     "security": {
@@ -26,8 +26,6 @@
     }
   },
   "bundle": {
-    "active": false,
-    "externalBin": ["binaries/opspilot-agent-node"],
-    "resources": ["resources/agent-runtime/**/*"]
+    "active": false
   }
 }

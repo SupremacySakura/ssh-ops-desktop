@@ -1,6 +1,5 @@
-use opspilot_domain::{AuthType, ServerEnvironment, ServerInput};
 use opspilot_domain::{CoreErrorCode, Id};
-use opspilot_persistence::{Database, ServerRepository};
+use opspilot_persistence::Database;
 use opspilot_secrets::{MemorySecretStore, SecretKind, SecretStore, SecretValue};
 use opspilot_ssh_core::{AuthRequest, ConnectionRequest, HostEndpoint, RusshConnectionManager};
 use std::{sync::Arc, time::Duration};
@@ -37,23 +36,18 @@ async fn connection_request_validates_identity_without_resolving_secrets_in_webv
 #[tokio::test]
 async fn manager_can_trust_a_pending_host_key_without_round_tripping_key_bytes_through_ui() {
     let database = Database::open(":memory:").await.unwrap();
-    let server = ServerRepository::new(database.clone())
-        .create(
-            ServerInput::try_new(
-                "Test",
-                "example.com",
-                22,
-                "deploy",
-                ServerEnvironment::Development,
-                AuthType::SshAgent,
-                None,
-                vec![],
-            )
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    let endpoint = HostEndpoint::try_new(server.id, "example.com", 22).unwrap();
+    let server_id = Id::new();
+    sqlx::query(
+        "INSERT INTO servers (
+            id, name, host, port, user, auth_type, secret_ref, created_at
+         ) VALUES (?, 'Test', 'example.com', 22, 'deploy', 'key', 'secret-ref',
+                   strftime('%s', 'now'))",
+    )
+    .bind(server_id.to_string())
+    .execute(database.pool())
+    .await
+    .unwrap();
+    let endpoint = HostEndpoint::try_new(server_id, "example.com", 22).unwrap();
     let store = Arc::new(MemorySecretStore::default());
     let manager = RusshConnectionManager::new(database, store, Duration::from_secs(60));
     let prompt = manager

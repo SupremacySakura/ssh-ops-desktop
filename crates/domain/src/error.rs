@@ -20,11 +20,6 @@ pub enum CoreErrorCode {
     RemotePermission,
     RemoteCommand,
     RemoteParse,
-    ApprovalRequired,
-    ApprovalMismatch,
-    ToolScopeViolation,
-    ModelUnavailable,
-    SidecarUnavailable,
     Internal,
 }
 
@@ -45,11 +40,6 @@ impl fmt::Display for CoreErrorCode {
             Self::RemotePermission => "REMOTE_PERMISSION",
             Self::RemoteCommand => "REMOTE_COMMAND",
             Self::RemoteParse => "REMOTE_PARSE",
-            Self::ApprovalRequired => "APPROVAL_REQUIRED",
-            Self::ApprovalMismatch => "APPROVAL_MISMATCH",
-            Self::ToolScopeViolation => "TOOL_SCOPE_VIOLATION",
-            Self::ModelUnavailable => "MODEL_UNAVAILABLE",
-            Self::SidecarUnavailable => "SIDECAR_UNAVAILABLE",
             Self::Internal => "INTERNAL",
         };
 

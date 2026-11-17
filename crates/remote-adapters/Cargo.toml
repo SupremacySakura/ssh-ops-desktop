@@ -10,7 +10,6 @@ chrono.workspace = true
 opspilot-domain = { path = "../domain" }
 opspilot-secrets = { path = "../secrets" }
 opspilot-ssh-core = { path = "../ssh-core" }
-opspilot-task-engine = { path = "../task-engine" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
