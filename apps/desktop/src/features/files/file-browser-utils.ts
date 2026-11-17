@@ -1,6 +1,11 @@
 import {
   FILE_DOWNLOAD_WARNING_BYTES,
+  FILE_UPLOAD_WARNING_BYTES,
   MAX_FILE_DOWNLOAD_BYTES,
+  MAX_FILE_UPLOAD_BYTES,
+  MAX_UPLOAD_BATCH_BYTES,
+  MAX_UPLOAD_BATCH_FILES,
+  RemotePathSchema,
 } from '@opspilot/contracts';
 
 export interface BreadcrumbItem {
@@ -109,6 +114,34 @@ export function downloadBlocked(size: number): boolean {
 
 export function downloadName(path: string): string {
   return path.split('/').at(-1) || 'download';
+}
+
+export function joinRemoteResource(parent: string, name: string): string | null {
+  if (
+    name.length === 0
+    || name === '.'
+    || name === '..'
+    || name.includes('/')
+    || /\p{Cc}/u.test(name)
+  ) {
+    return null;
+  }
+  const parsed = RemotePathSchema.safeParse(
+    parent === '/' ? `/${name}` : `${parent}/${name}`,
+  );
+  return parsed.success ? parsed.data : null;
+}
+
+export function uploadBatchNeedsConfirmation(sizes: number[]): boolean {
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  return sizes.some((size) => size > FILE_UPLOAD_WARNING_BYTES)
+    || total > FILE_UPLOAD_WARNING_BYTES;
+}
+
+export function uploadBatchBlocked(sizes: number[]): boolean {
+  if (sizes.length === 0 || sizes.length > MAX_UPLOAD_BATCH_FILES) return true;
+  if (sizes.some((size) => size > MAX_FILE_UPLOAD_BYTES)) return true;
+  return sizes.reduce((sum, size) => sum + size, 0) > MAX_UPLOAD_BATCH_BYTES;
 }
 
 export function languageForPath(path: string): string {

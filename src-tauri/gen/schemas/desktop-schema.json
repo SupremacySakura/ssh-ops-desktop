@@ -225,6 +225,12 @@
           "markdownDescription": "Enables the docker_logs command without any pre-configured scope."
         },
         {
+          "description": "Enables the file_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-file-delete",
+          "markdownDescription": "Enables the file_delete command without any pre-configured scope."
+        },
+        {
           "description": "Enables the file_download command without any pre-configured scope.",
           "type": "string",
           "const": "allow-file-download",
@@ -237,10 +243,28 @@
           "markdownDescription": "Enables the file_list command without any pre-configured scope."
         },
         {
+          "description": "Enables the file_mkdir command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-file-mkdir",
+          "markdownDescription": "Enables the file_mkdir command without any pre-configured scope."
+        },
+        {
           "description": "Enables the file_read command without any pre-configured scope.",
           "type": "string",
           "const": "allow-file-read",
           "markdownDescription": "Enables the file_read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the file_rename command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-file-rename",
+          "markdownDescription": "Enables the file_rename command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the file_upload command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-file-upload",
+          "markdownDescription": "Enables the file_upload command without any pre-configured scope."
         },
         {
           "description": "Enables the file_write command without any pre-configured scope.",
@@ -393,6 +417,12 @@
           "markdownDescription": "Denies the docker_logs command without any pre-configured scope."
         },
         {
+          "description": "Denies the file_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-file-delete",
+          "markdownDescription": "Denies the file_delete command without any pre-configured scope."
+        },
+        {
           "description": "Denies the file_download command without any pre-configured scope.",
           "type": "string",
           "const": "deny-file-download",
@@ -405,10 +435,28 @@
           "markdownDescription": "Denies the file_list command without any pre-configured scope."
         },
         {
+          "description": "Denies the file_mkdir command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-file-mkdir",
+          "markdownDescription": "Denies the file_mkdir command without any pre-configured scope."
+        },
+        {
           "description": "Denies the file_read command without any pre-configured scope.",
           "type": "string",
           "const": "deny-file-read",
           "markdownDescription": "Denies the file_read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the file_rename command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-file-rename",
+          "markdownDescription": "Denies the file_rename command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the file_upload command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-file-upload",
+          "markdownDescription": "Denies the file_upload command without any pre-configured scope."
         },
         {
           "description": "Denies the file_write command without any pre-configured scope.",

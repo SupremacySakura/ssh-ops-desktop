@@ -8,7 +8,10 @@ import {
   formatFileModifiedAt,
   formatFileSize,
   formatPermissions,
+  joinRemoteResource,
   languageForPath,
+  uploadBatchBlocked,
+  uploadBatchNeedsConfirmation,
 } from './file-browser-utils';
 
 describe('file browser path and formatting helpers', () => {
@@ -47,5 +50,22 @@ describe('file browser path and formatting helpers', () => {
     expect(languageForPath('/srv/app/config.yaml')).toBe('yaml');
     expect(languageForPath('/srv/app/Dockerfile')).toBe('dockerfile');
     expect(languageForPath('/srv/app/unknown.harbor')).toBe('plaintext');
+  });
+
+  it('joins safe remote basenames without allowing traversal', () => {
+    expect(joinRemoteResource('/', 'app.conf')).toBe('/app.conf');
+    expect(joinRemoteResource('/srv/app', 'app.conf')).toBe('/srv/app/app.conf');
+    for (const name of ['', '.', '..', 'nested/file', 'bad\nname']) {
+      expect(joinRemoteResource('/srv/app', name)).toBeNull();
+    }
+  });
+
+  it('warns and blocks large or oversized upload batches', () => {
+    expect(uploadBatchNeedsConfirmation([4 * 1024 * 1024])).toBe(false);
+    expect(uploadBatchNeedsConfirmation([4 * 1024 * 1024 + 1])).toBe(true);
+    expect(uploadBatchBlocked([16 * 1024 * 1024])).toBe(false);
+    expect(uploadBatchBlocked([16 * 1024 * 1024 + 1])).toBe(true);
+    expect(uploadBatchBlocked([32 * 1024 * 1024, 33 * 1024 * 1024])).toBe(true);
+    expect(uploadBatchBlocked(Array.from({ length: 33 }, () => 1))).toBe(true);
   });
 });

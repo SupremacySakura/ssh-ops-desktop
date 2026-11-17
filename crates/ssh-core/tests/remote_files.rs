@@ -1,12 +1,17 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use opspilot_domain::{CoreError, CoreErrorCode, Id};
 use opspilot_ssh_core::{
     ConnectionHandle, MAX_EDITABLE_FILE_BYTES, MAX_FILE_DOWNLOAD_BYTES, RemoteDirectoryPath,
-    RemoteFileKind, RemoteFileService, RemotePath, ScopedDirectoryEntry, ScopedMetadata,
-    ScopedSftp, SftpConnector,
+    RemoteFileKind, RemoteFileMutationResult, RemoteFileService, RemotePath, RemoteRenameResult,
+    RemoteUploadFile, RemoteUploadOutcome, RenameStatus, ScopedDirectoryEntry, ScopedMetadata,
+    ScopedSftp, SftpConnector, UploadBatchStatus,
 };
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
@@ -62,6 +67,11 @@ struct FakeState {
     opens: usize,
     closes: usize,
     fail_close: bool,
+    hardlink_unsupported: bool,
+    hardlink_fail_at: Option<usize>,
+    hardlink_attempts: usize,
+    fail_remove_paths: HashSet<String>,
+    fail_remove_contains: Option<String>,
     chmod_after_read: Option<(String, Option<u32>)>,
 }
 
@@ -83,6 +93,27 @@ impl FakeConnector {
     async fn fail_close(self) -> Self {
         self.state.lock().await.fail_close = true;
         self
+    }
+
+    async fn hardlink_unsupported(self) -> Self {
+        self.state.lock().await.hardlink_unsupported = true;
+        self
+    }
+
+    async fn fail_hardlink_at(&self, attempt: usize) {
+        self.state.lock().await.hardlink_fail_at = Some(attempt);
+    }
+
+    async fn fail_remove(&self, path: &str) {
+        self.state
+            .lock()
+            .await
+            .fail_remove_paths
+            .insert(path.to_owned());
+    }
+
+    async fn fail_remove_containing(&self, fragment: &str) {
+        self.state.lock().await.fail_remove_contains = Some(fragment.to_owned());
     }
 
     async fn chmod_after_read(&self, path: &str, permissions: Option<u32>) {
@@ -162,6 +193,20 @@ impl ScopedSftp for FakeSession {
             .collect())
     }
 
+    async fn directory_metadata(
+        &self,
+        path: &RemoteDirectoryPath,
+    ) -> Result<Option<ScopedMetadata>, CoreError> {
+        Ok(self
+            .state
+            .lock()
+            .await
+            .nodes
+            .get(path.as_str())
+            .filter(|node| node.kind == RemoteFileKind::Directory)
+            .map(FakeNode::metadata))
+    }
+
     async fn symlink_metadata(
         &self,
         path: &RemotePath,
@@ -235,9 +280,94 @@ impl ScopedSftp for FakeSession {
         Ok(())
     }
 
+    async fn hardlink(
+        &self,
+        source: &RemotePath,
+        destination: &RemotePath,
+    ) -> Result<bool, CoreError> {
+        let source = source.as_str();
+        let destination = destination.as_str();
+        let mut state = self.state.lock().await;
+        state.hardlink_attempts += 1;
+        if state.hardlink_unsupported {
+            return Ok(false);
+        }
+        if state.hardlink_fail_at == Some(state.hardlink_attempts) {
+            return Err(CoreError::new(
+                CoreErrorCode::Conflict,
+                "injected hardlink failure",
+                false,
+            ));
+        }
+        let node = state.nodes.get(source).cloned().ok_or_else(not_found)?;
+        if state.nodes.contains_key(destination) {
+            return Err(CoreError::new(
+                CoreErrorCode::Conflict,
+                "target exists",
+                false,
+            ));
+        }
+        state.nodes.insert(destination.to_owned(), node);
+        Ok(true)
+    }
+
+    async fn create_dir(&self, path: &RemotePath) -> Result<(), CoreError> {
+        let path = path.as_str();
+        let mut state = self.state.lock().await;
+        if state.nodes.contains_key(path) {
+            return Err(CoreError::new(
+                CoreErrorCode::Conflict,
+                "target exists",
+                false,
+            ));
+        }
+        state.nodes.insert(path.to_owned(), FakeNode::directory());
+        Ok(())
+    }
+
     async fn remove_file(&self, path: &RemotePath) -> Result<(), CoreError> {
         let path = path.as_str();
-        if self.state.lock().await.nodes.remove(path).is_some() {
+        let mut state = self.state.lock().await;
+        if state.fail_remove_paths.contains(path) {
+            return Err(CoreError::new(
+                CoreErrorCode::Internal,
+                "injected remove failure",
+                true,
+            ));
+        }
+        if state
+            .fail_remove_contains
+            .as_deref()
+            .is_some_and(|fragment| path.contains(fragment))
+        {
+            return Err(CoreError::new(
+                CoreErrorCode::Internal,
+                "injected temp cleanup failure",
+                true,
+            ));
+        }
+        if state.nodes.remove(path).is_some() {
+            Ok(())
+        } else {
+            Err(not_found())
+        }
+    }
+
+    async fn remove_dir(&self, path: &RemotePath) -> Result<(), CoreError> {
+        let path = path.as_str();
+        let mut state = self.state.lock().await;
+        if state
+            .nodes
+            .keys()
+            .any(|candidate| parent(candidate) == Some(path))
+        {
+            return Err(CoreError::new(
+                CoreErrorCode::Conflict,
+                "directory is not empty",
+                false,
+            ));
+        }
+        if state.nodes.remove(path).is_some() {
             Ok(())
         } else {
             Err(not_found())
@@ -584,4 +714,493 @@ async fn read_close_failure_is_reported_instead_of_returning_stale_success() {
         .await
         .expect_err("read must not hide session cleanup failure");
     assert_eq!(error.code(), CoreErrorCode::SshConnection);
+}
+
+#[tokio::test]
+async fn upload_stages_then_commits_all_files_without_overwriting() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .upload_batch(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/docs").unwrap(),
+            &[
+                RemoteUploadFile {
+                    name: "one.txt".to_owned(),
+                    bytes: b"one".to_vec(),
+                },
+                RemoteUploadFile {
+                    name: "two.txt".to_owned(),
+                    bytes: b"two".to_vec(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.committed, vec!["/docs/one.txt", "/docs/two.txt"]);
+    assert!(outcome.residual.is_empty());
+    assert!(outcome.error.is_none());
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/one.txt", "/docs/two.txt"]
+    );
+    assert_eq!(connector.closes().await, 1);
+}
+
+#[tokio::test]
+async fn upload_rejects_a_conflict_without_staging_or_overwriting() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/one.txt", FakeNode::file("original")),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .upload_batch(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/docs").unwrap(),
+            &[RemoteUploadFile {
+                name: "one.txt".to_owned(),
+                bytes: b"replacement".to_vec(),
+            }],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, UploadBatchStatus::FailedRolledBack);
+    assert!(outcome.committed.is_empty());
+    assert!(outcome.residual.is_empty());
+    assert_eq!(outcome.error.unwrap().code(), CoreErrorCode::Conflict);
+    assert_eq!(
+        connector.node("/docs/one.txt").await.unwrap().bytes,
+        b"original"
+    );
+    assert_eq!(connector.paths().await, vec!["/", "/docs", "/docs/one.txt"]);
+}
+
+#[tokio::test]
+async fn upload_rolls_back_committed_targets_when_a_later_commit_fails() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+    ])
+    .await;
+    connector.fail_hardlink_at(2).await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .upload_batch(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/docs").unwrap(),
+            &[
+                RemoteUploadFile {
+                    name: "one.txt".to_owned(),
+                    bytes: b"one".to_vec(),
+                },
+                RemoteUploadFile {
+                    name: "two.txt".to_owned(),
+                    bytes: b"two".to_vec(),
+                },
+                RemoteUploadFile {
+                    name: "three.txt".to_owned(),
+                    bytes: b"three".to_vec(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, UploadBatchStatus::FailedRolledBack);
+    assert!(outcome.committed.is_empty());
+    assert!(outcome.residual.is_empty());
+    assert_eq!(outcome.error.unwrap().code(), CoreErrorCode::Conflict);
+    assert_eq!(connector.paths().await, vec!["/", "/docs"]);
+    assert_eq!(connector.closes().await, 1);
+}
+
+#[tokio::test]
+async fn upload_reports_residue_when_rollback_removal_fails() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+    ])
+    .await;
+    connector.fail_hardlink_at(2).await;
+    connector.fail_remove("/docs/one.txt").await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .upload_batch(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/docs").unwrap(),
+            &[
+                RemoteUploadFile {
+                    name: "one.txt".to_owned(),
+                    bytes: b"one".to_vec(),
+                },
+                RemoteUploadFile {
+                    name: "two.txt".to_owned(),
+                    bytes: b"two".to_vec(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, UploadBatchStatus::FailedWithResidue);
+    assert_eq!(outcome.committed, vec!["/docs/one.txt"]);
+    assert_eq!(outcome.residual, vec!["/docs/one.txt"]);
+    assert!(
+        outcome
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("回滚未完全"))
+    );
+    assert_eq!(outcome.error.unwrap().code(), CoreErrorCode::Conflict);
+    assert_eq!(connector.paths().await, vec!["/", "/docs", "/docs/one.txt"]);
+}
+
+#[tokio::test]
+async fn upload_fails_closed_when_the_server_lacks_hardlink_support() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+    ])
+    .await
+    .hardlink_unsupported()
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .upload_batch(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/docs").unwrap(),
+            &[RemoteUploadFile {
+                name: "one.txt".to_owned(),
+                bytes: b"one".to_vec(),
+            }],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, UploadBatchStatus::FailedRolledBack);
+    assert_eq!(
+        outcome.error.unwrap().code(),
+        CoreErrorCode::CapabilityUnavailable
+    );
+    assert_eq!(connector.paths().await, vec!["/", "/docs"]);
+}
+
+#[tokio::test]
+async fn file_rename_creates_the_target_without_overwriting_then_removes_the_source() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/source.txt", FakeNode::file("content")),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/source.txt").unwrap(),
+            &RemotePath::try_new("/docs/target.txt").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, opspilot_ssh_core::RenameStatus::Renamed);
+    assert_eq!(outcome.source_path, "/docs/source.txt");
+    assert_eq!(outcome.target_path, "/docs/target.txt");
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/target.txt"]
+    );
+    assert_eq!(
+        connector.node("/docs/target.txt").await.unwrap().bytes,
+        b"content"
+    );
+    assert_eq!(connector.closes().await, 1);
+}
+
+#[tokio::test]
+async fn file_rename_reports_partial_when_source_unlink_fails() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/source.txt", FakeNode::file("content")),
+    ])
+    .await;
+    connector.fail_remove("/docs/source.txt").await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/source.txt").unwrap(),
+            &RemotePath::try_new("/docs/target.txt").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, opspilot_ssh_core::RenameStatus::Partial);
+    assert!(
+        outcome
+            .warning
+            .as_deref()
+            .is_some_and(|warning| { warning.contains("源文件删除失败") })
+    );
+    assert_eq!(outcome.error.unwrap().code(), CoreErrorCode::Internal);
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/source.txt", "/docs/target.txt"]
+    );
+}
+
+#[tokio::test]
+async fn rename_fails_closed_for_directories_symlinks_and_existing_targets() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/sub", FakeNode::directory()),
+        ("/docs/link", FakeNode::symlink()),
+        ("/docs/source.txt", FakeNode::file("source")),
+        ("/docs/existing.txt", FakeNode::file("existing")),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let directory_error = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/sub").unwrap(),
+            &RemotePath::try_new("/docs/renamed").unwrap(),
+        )
+        .await
+        .expect_err("directory rename must fail closed");
+    assert_eq!(directory_error.code(), CoreErrorCode::CapabilityUnavailable);
+
+    let symlink_error = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/link").unwrap(),
+            &RemotePath::try_new("/docs/renamed-link").unwrap(),
+        )
+        .await
+        .expect_err("symlink rename must fail closed");
+    assert_eq!(symlink_error.code(), CoreErrorCode::Validation);
+
+    let conflict = service
+        .rename_no_clobber(
+            &connection(),
+            &RemotePath::try_new("/docs/source.txt").unwrap(),
+            &RemotePath::try_new("/docs/existing.txt").unwrap(),
+        )
+        .await
+        .expect_err("existing target must be rejected");
+    assert_eq!(conflict.code(), CoreErrorCode::Conflict);
+    assert_eq!(
+        connector.node("/docs/existing.txt").await.unwrap().bytes,
+        b"existing"
+    );
+}
+
+#[tokio::test]
+async fn create_directory_uses_one_atomic_directory_creation() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let result = service
+        .create_directory(
+            &connection(),
+            &RemotePath::try_new("/docs/new-folder").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.path, "/docs/new-folder");
+    assert!(result.warning.is_none());
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/new-folder"]
+    );
+    assert_eq!(connector.closes().await, 1);
+}
+
+#[tokio::test]
+async fn delete_removes_files_symlinks_and_only_empty_directories() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/file.txt", FakeNode::file("file")),
+        ("/docs/link", FakeNode::symlink()),
+        ("/docs/empty", FakeNode::directory()),
+        ("/docs/nonempty", FakeNode::directory()),
+        ("/docs/nonempty/child.txt", FakeNode::file("child")),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    for path in ["/docs/file.txt", "/docs/link", "/docs/empty"] {
+        let result = service
+            .delete(&connection(), &RemotePath::try_new(path).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(result.path, path);
+    }
+    let nonempty = service
+        .delete(
+            &connection(),
+            &RemotePath::try_new("/docs/nonempty").unwrap(),
+        )
+        .await
+        .expect_err("non-empty directories must not be removed recursively");
+    assert_eq!(nonempty.code(), CoreErrorCode::Conflict);
+    assert_eq!(
+        connector.paths().await,
+        vec!["/", "/docs", "/docs/nonempty", "/docs/nonempty/child.txt"]
+    );
+    assert_eq!(connector.closes().await, 4);
+}
+
+#[tokio::test]
+async fn create_directory_rejects_existing_targets_and_missing_parents() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+        ("/docs/existing", FakeNode::directory()),
+    ])
+    .await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let conflict = service
+        .create_directory(
+            &connection(),
+            &RemotePath::try_new("/docs/existing").unwrap(),
+        )
+        .await
+        .expect_err("existing directory must conflict");
+    assert_eq!(conflict.code(), CoreErrorCode::Conflict);
+
+    let missing = service
+        .create_directory(&connection(), &RemotePath::try_new("/missing/new").unwrap())
+        .await
+        .expect_err("missing parent must fail");
+    assert_eq!(missing.code(), CoreErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn upload_succeeds_with_a_warning_when_temp_cleanup_fails() {
+    let connector = FakeConnector::with_nodes([
+        ("/", FakeNode::directory()),
+        ("/docs", FakeNode::directory()),
+    ])
+    .await;
+    connector.fail_remove_containing(".harbor-upload-").await;
+    let service = RemoteFileService::new(Arc::new(connector.clone()));
+
+    let outcome = service
+        .upload_batch(
+            &connection(),
+            &RemoteDirectoryPath::try_new("/docs").unwrap(),
+            &[RemoteUploadFile {
+                name: "one.txt".to_owned(),
+                bytes: b"one".to_vec(),
+            }],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status, UploadBatchStatus::Succeeded);
+    assert_eq!(outcome.committed, vec!["/docs/one.txt"]);
+    assert_eq!(outcome.residual.len(), 1);
+    assert!(outcome.residual[0].contains(".harbor-upload-"));
+    assert!(
+        outcome
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("清理失败"))
+    );
+    assert_eq!(connector.node("/docs/one.txt").await.unwrap().bytes, b"one");
+}
+
+#[test]
+fn file_mutation_contracts_serialize_with_camel_case_fields_and_statuses() {
+    let succeeded = RemoteUploadOutcome {
+        status: UploadBatchStatus::Succeeded,
+        committed: vec!["/docs/one.txt".to_owned()],
+        residual: Vec::new(),
+        warning: None,
+        error: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&succeeded).unwrap(),
+        json!({
+            "status": "succeeded",
+            "committed": ["/docs/one.txt"],
+            "residual": [],
+        })
+    );
+
+    let residue = RemoteUploadOutcome {
+        status: UploadBatchStatus::FailedWithResidue,
+        committed: vec!["/docs/one.txt".to_owned()],
+        residual: vec!["/docs/one.txt".to_owned()],
+        warning: Some("回滚未完全完成".to_owned()),
+        error: Some(CoreError::new(
+            CoreErrorCode::Conflict,
+            "第 2 个文件提交失败",
+            false,
+        )),
+    };
+    let residue_json = serde_json::to_value(&residue).unwrap();
+    assert_eq!(residue_json["status"], json!("failed_with_residue"));
+    assert_eq!(residue_json["committed"], json!(["/docs/one.txt"]));
+    assert_eq!(residue_json["residual"], json!(["/docs/one.txt"]));
+    assert_eq!(residue_json["warning"], json!("回滚未完全完成"));
+    assert_eq!(residue_json["error"]["code"], json!("CONFLICT"));
+    assert_eq!(residue_json["error"]["retryable"], json!(false));
+    assert_eq!(
+        serde_json::from_value::<RemoteUploadOutcome>(residue_json).unwrap(),
+        residue
+    );
+
+    let renamed = RemoteRenameResult {
+        status: RenameStatus::Partial,
+        source_path: "/docs/one.txt".to_owned(),
+        target_path: "/docs/two.txt".to_owned(),
+        warning: Some("源文件删除失败".to_owned()),
+        error: None,
+    };
+    let renamed_json = serde_json::to_value(&renamed).unwrap();
+    assert_eq!(renamed_json["status"], json!("partial"));
+    assert_eq!(renamed_json["sourcePath"], json!("/docs/one.txt"));
+    assert_eq!(renamed_json["targetPath"], json!("/docs/two.txt"));
+    assert!(renamed_json.get("error").is_none());
+    assert_eq!(
+        serde_json::from_value::<RemoteRenameResult>(renamed_json).unwrap(),
+        renamed
+    );
+
+    let mutation = RemoteFileMutationResult {
+        path: "/docs".to_owned(),
+        warning: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&mutation).unwrap(),
+        json!({ "path": "/docs" })
+    );
 }

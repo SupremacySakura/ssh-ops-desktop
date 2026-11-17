@@ -2,11 +2,17 @@ import type {
   ConnectOutcome,
   ConnectionHandle,
   ConnectionStateEvent,
+  CoreError,
+  CoreErrorCode,
   CoreHealth,
   DockerAction,
   DockerContainer,
   DockerLogs,
   DockerShell,
+  FileDeleteArgs,
+  FileMkdirArgs,
+  FileRenameArgs,
+  FileUploadArgs,
   FileWriteArgs,
   Group,
   MonitorSnapshot,
@@ -14,7 +20,9 @@ import type {
   RemoteDownload,
   RemoteFileEntry,
   RemotePath,
+  RemoteRenameResult,
   RemoteTextFile,
+  RemoteUploadFile,
   Server,
   ServerCredentialInput,
   SshConfigImportPreview,
@@ -24,6 +32,10 @@ import type {
   TerminalGapEvent,
 } from '@opspilot/contracts';
 import {
+  FileDeleteArgsSchema,
+  FileMkdirArgsSchema,
+  FileRenameArgsSchema,
+  FileUploadArgsSchema,
   FileWriteArgsSchema,
   RemoteDirectoryPathSchema,
   RemotePathSchema,
@@ -53,6 +65,7 @@ export interface FakeCoreOptions {
   dockerStartedAtWarning?: string | null;
   connectOutcome?: ConnectOutcome | ((serverId: string) => ConnectOutcome);
   files?: FakeFileSystem;
+  fileFaults?: FakeFileFaults;
   monitorSnapshots?: MonitorSnapshot[] | ((
     connection: ConnectionHandle,
     sequence: number,
@@ -65,6 +78,13 @@ export interface FakeFileSystem {
   entriesByDirectory?: Record<string, RemoteFileEntry[]>;
   documents?: Record<string, RemoteTextFile>;
   downloads?: Record<string, RemoteDownload>;
+}
+
+export interface FakeFileFaults {
+  hardlinkUnsupported?: boolean;
+  failCommitAt?: number;
+  failRollback?: boolean;
+  failRenameUnlink?: boolean;
 }
 
 const readyHealth: CoreHealth = {
@@ -82,6 +102,7 @@ export function createFakeCoreClient({
   dockerStartedAtWarning = null,
   connectOutcome,
   files,
+  fileFaults = {},
   monitorSnapshots,
   sshConfigImport,
   overrides = {},
@@ -358,6 +379,208 @@ export function createFakeCoreClient({
       }
       throw fakeError('NOT_FOUND', '远程文件不存在');
     },
+    uploadFiles: async (connection, directory, uploads) => {
+      remember(calls, 'uploadFiles', [connection, directory, uploads]);
+      const args = parseUploadArgs(directory, uploads);
+      if (!entriesByDirectory[args.directory]) {
+        throw fakeError('NOT_FOUND', '上传目标目录不存在');
+      }
+      const existingNames = new Set(
+        (entriesByDirectory[args.directory] ?? []).map((entry) => entry.name),
+      );
+      const conflict = args.files.find((file) => existingNames.has(file.name));
+      if (conflict) {
+        return {
+          status: 'failed_rolled_back',
+          committed: [],
+          residual: [],
+          error: fakeCoreError(
+            'CONFLICT',
+            `目标文件 ${joinRemotePath(args.directory, conflict.name)} 已存在，未覆盖`,
+          ),
+        };
+      }
+      if (fileFaults.hardlinkUnsupported) {
+        return {
+          status: 'failed_rolled_back',
+          committed: [],
+          residual: [],
+          error: fakeCoreError(
+            'CAPABILITY_UNAVAILABLE',
+            'SFTP 服务器未启用 hardlink@openssh.com，无法安全提交上传',
+          ),
+        };
+      }
+
+      const committed: RemoteFileEntry[] = [];
+      for (const [index, file] of args.files.entries()) {
+        if (fileFaults.failCommitAt === index + 1) {
+          const remaining = fileFaults.failRollback ? committed : [];
+          if (!fileFaults.failRollback) {
+            const rollbackPaths = new Set(committed.map((entry) => entry.path));
+            entriesByDirectory = Object.fromEntries(
+              Object.entries(entriesByDirectory).map(([path, entries]) => [
+                path,
+                entries.filter((entry) => !rollbackPaths.has(entry.path)),
+              ]),
+            );
+          } else if (remaining.length > 0) {
+            entriesByDirectory = {
+              ...entriesByDirectory,
+              [args.directory]: [
+                ...(entriesByDirectory[args.directory] ?? []),
+                ...remaining,
+              ],
+            };
+          }
+          const residual = remaining.map((entry) => entry.path);
+          return {
+            status: residual.length > 0
+              ? 'failed_with_residue'
+              : 'failed_rolled_back',
+            committed: residual,
+            residual,
+            warning: residual.length > 0
+              ? `回滚未完全完成，以下路径可能仍然存在：${residual.join('、')}`
+              : undefined,
+            error: fakeCoreError(
+              'CONFLICT',
+              `第 ${index + 1} 个文件提交失败`,
+            ),
+          };
+        }
+        committed.push(uploadedFileEntry(args.directory, file));
+      }
+      entriesByDirectory = {
+        ...entriesByDirectory,
+        [args.directory]: [
+          ...(entriesByDirectory[args.directory] ?? []),
+          ...committed,
+        ],
+      };
+      return {
+        status: 'succeeded',
+        committed: committed.map((entry) => entry.path),
+        residual: [],
+      };
+    },
+    createDirectory: async (connection, path) => {
+      remember(calls, 'createDirectory', [connection, path]);
+      const args = parseMkdirArgs(path);
+      const parent = remoteParent(args.path);
+      const parentEntries = entriesByDirectory[parent];
+      if (!parentEntries) {
+        throw fakeError('NOT_FOUND', '新建目录的父目录不存在');
+      }
+      if (findFileEntry(entriesByDirectory, args.path)) {
+        throw fakeError('CONFLICT', `目标 ${args.path} 已存在，未创建目录`);
+      }
+      entriesByDirectory = {
+        ...entriesByDirectory,
+        [parent]: [
+          ...parentEntries,
+          {
+            name: remoteBasename(args.path),
+            path: args.path,
+            kind: 'directory',
+            size: 0,
+            modifiedAt: currentTimestamp(),
+            permissions: 0o755,
+          },
+        ],
+        [args.path]: [],
+      };
+      return { path: args.path };
+    },
+    renameFile: async (connection, sourcePath, targetPath) => {
+      remember(calls, 'renameFile', [connection, sourcePath, targetPath]);
+      const args = parseRenameArgs(sourcePath, targetPath);
+      const source = findFileEntry(entriesByDirectory, args.sourcePath);
+      if (!source) {
+        throw fakeError('NOT_FOUND', '重命名源文件不存在');
+      }
+      if (source.kind === 'directory') {
+        throw fakeError(
+          'CAPABILITY_UNAVAILABLE',
+          '当前 SFTP 服务器没有经过验证的原子 no-replace 目录重命名原语，已拒绝操作',
+        );
+      }
+      if (source.kind !== 'file') {
+        throw fakeError('VALIDATION', '重命名源不是普通文件，已拒绝');
+      }
+      if (findFileEntry(entriesByDirectory, args.targetPath)) {
+        throw fakeError('CONFLICT', `目标文件 ${args.targetPath} 已存在，未覆盖`);
+      }
+      const renamed: RemoteFileEntry = {
+        ...source,
+        name: remoteBasename(args.targetPath),
+        path: args.targetPath,
+        modifiedAt: currentTimestamp(),
+      };
+      const targetParent = remoteParent(args.targetPath);
+      entriesByDirectory = Object.fromEntries(
+        Object.entries(entriesByDirectory).map(([path, entries]) => [
+          path,
+          fileFaults.failRenameUnlink
+            ? [...entries, ...(path === targetParent ? [renamed] : [])]
+            : path === targetParent
+              ? [
+                  ...entries.filter((entry) => entry.path !== source.path),
+                  renamed,
+                ]
+              : entries.filter((entry) => entry.path !== source.path),
+        ]),
+      );
+      if (!fileFaults.failRenameUnlink) {
+        moveRecordKey(documents, args.sourcePath, args.targetPath);
+        moveRecordKey(downloads, args.sourcePath, args.targetPath);
+        return {
+          status: 'renamed',
+          sourcePath: args.sourcePath,
+          targetPath: args.targetPath,
+        };
+      }
+      return {
+        status: 'partial',
+        sourcePath: args.sourcePath,
+        targetPath: args.targetPath,
+        warning: '目标文件已创建，但源文件删除失败；请确认后重试清理源文件。',
+        error: fakeCoreError('INTERNAL', '源文件删除失败', true),
+      } satisfies RemoteRenameResult;
+    },
+    deleteFile: async (connection, path) => {
+      remember(calls, 'deleteFile', [connection, path]);
+      const args = parseDeleteArgs(path);
+      const entry = findFileEntry(entriesByDirectory, args.path);
+      if (!entry) {
+        throw fakeError('NOT_FOUND', '要删除的远程条目不存在');
+      }
+      if (entry.kind === 'directory') {
+        const hasChildren = Object.entries(entriesByDirectory).some(([path, entries]) => (
+          remoteParent(path) === args.path && entries.length > 0
+        ));
+        if (hasChildren) {
+          throw fakeError(
+            'CONFLICT',
+            '目录非空；Harbor 不会递归删除，请先清空目录',
+          );
+        }
+      }
+      const parent = remoteParent(args.path);
+      entriesByDirectory = Object.fromEntries(
+        Object.entries(entriesByDirectory)
+          .filter(([path]) => path !== args.path)
+          .map(([path, entries]) => [
+            path,
+            path === parent
+              ? entries.filter((candidate) => candidate.path !== args.path)
+              : entries,
+          ]),
+      );
+      delete documents[args.path];
+      delete downloads[args.path];
+      return { path: args.path };
+    },
     listDockerContainers: async (connection) => {
       remember(calls, 'listDockerContainers', [connection]);
       return {
@@ -587,6 +810,14 @@ function fakeError(code: string, message: string): Error {
   });
 }
 
+function fakeCoreError(
+  code: CoreErrorCode,
+  message: string,
+  retryable = false,
+): CoreError {
+  return { code, message, retryable };
+}
+
 function remember(
   calls: CoreCall[],
   method: keyof CoreClient,
@@ -657,6 +888,85 @@ function parseWriteArgs(
   });
   if (!parsed.success) throw fakeError('VALIDATION', '保存内容或冲突校验值无效');
   return parsed.data;
+}
+
+function parseUploadArgs(
+  directory: RemoteDirectoryPath | string,
+  files: RemoteUploadFile[],
+): FileUploadArgs {
+  const parsed = FileUploadArgsSchema.safeParse({ directory, files });
+  if (!parsed.success) throw fakeError('VALIDATION', '上传文件或目录参数无效');
+  return parsed.data;
+}
+
+function parseMkdirArgs(path: RemotePath | string): FileMkdirArgs {
+  const parsed = FileMkdirArgsSchema.safeParse({ path });
+  if (!parsed.success) throw fakeError('VALIDATION', '新建目录路径无效');
+  return parsed.data;
+}
+
+function parseRenameArgs(
+  sourcePath: RemotePath | string,
+  targetPath: RemotePath | string,
+): FileRenameArgs {
+  const parsed = FileRenameArgsSchema.safeParse({ sourcePath, targetPath });
+  if (!parsed.success) throw fakeError('VALIDATION', '重命名路径无效');
+  return parsed.data;
+}
+
+function parseDeleteArgs(path: RemotePath | string): FileDeleteArgs {
+  const parsed = FileDeleteArgsSchema.safeParse({ path });
+  if (!parsed.success) throw fakeError('VALIDATION', '删除路径无效');
+  return parsed.data;
+}
+
+function joinRemotePath(directory: string, name: string): string {
+  return directory === '/' ? `/${name}` : `${directory}/${name}`;
+}
+
+function remoteParent(path: string): string {
+  const index = path.lastIndexOf('/');
+  return index <= 0 ? '/' : path.slice(0, index);
+}
+
+function remoteBasename(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
+function uploadedFileEntry(
+  directory: string,
+  file: RemoteUploadFile,
+): RemoteFileEntry {
+  return {
+    name: file.name,
+    path: joinRemotePath(directory, file.name),
+    kind: 'file',
+    size: file.bytes.length,
+    modifiedAt: currentTimestamp(),
+    permissions: 0o644,
+  };
+}
+
+function findFileEntry(
+  entriesByDirectory: Record<string, RemoteFileEntry[]>,
+  path: string,
+): RemoteFileEntry | null {
+  for (const entries of Object.values(entriesByDirectory)) {
+    const entry = entries.find((candidate) => candidate.path === path);
+    if (entry) return entry;
+  }
+  return null;
+}
+
+function moveRecordKey<T>(
+  record: Record<string, T>,
+  source: string,
+  target: string,
+): void {
+  const value = record[source];
+  if (value === undefined) return;
+  delete record[source];
+  record[target] = value;
 }
 
 function fakeSha256(value: string): string {

@@ -2,7 +2,9 @@ import type {
   ConnectionHandle,
   RemoteFileEntry,
   RemoteFileWriteResult,
+  RemoteRenameResult,
   RemoteTextFile,
+  RemoteUploadOutcome,
 } from '@opspilot/contracts';
 import {
   MAX_EDITABLE_FILE_BYTES,
@@ -14,24 +16,31 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  Pencil,
   FileQuestion,
   FileText,
   Folder,
   Link2,
+  Plus,
   RefreshCw,
   RotateCw,
   ServerOff,
+  Trash2,
+  Upload,
+  X,
 } from 'lucide-react';
 import {
   Suspense,
   lazy,
   useEffect,
+  useId,
   useRef,
   useState,
 } from 'react';
-import type { ReactNode } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 
 import type { CoreClient } from '../../api/core';
+import { ConfirmDialog } from '../../components/confirm-dialog';
 import {
   breadcrumbItems,
   downloadBlocked,
@@ -40,7 +49,10 @@ import {
   formatFileModifiedAt,
   formatFileSize,
   formatPermissions,
+  joinRemoteResource,
   remoteFileErrorMessage,
+  uploadBatchBlocked,
+  uploadBatchNeedsConfirmation,
 } from './file-browser-utils';
 
 const TextFileEditor = lazy(async () => {
@@ -92,10 +104,27 @@ export function FileBrowser({
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
   const [editorDocument, setEditorDocument] = useState<RemoteTextFile | null>(null);
   const [editorConnection, setEditorConnection] = useState<ConnectionHandle | null>(null);
+  const [uploadFiles, setUploadFiles] = useState<File[] | null>(null);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadOutcome, setUploadOutcome] = useState<RemoteUploadOutcome | null>(null);
+  const [mkdirOpen, setMkdirOpen] = useState(false);
+  const [mkdirName, setMkdirName] = useState('');
+  const [mkdirBusy, setMkdirBusy] = useState(false);
+  const [mkdirError, setMkdirError] = useState<string | null>(null);
+  const [renameEntry, setRenameEntry] = useState<RemoteFileEntry | null>(null);
+  const [renameName, setRenameName] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renameOutcome, setRenameOutcome] = useState<RemoteRenameResult | null>(null);
+  const [deleteEntry, setDeleteEntry] = useState<RemoteFileEntry | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const loadedKey = useRef<string | null>(null);
   const appliedJumpNonce = useRef<number | null>(null);
   const treeLoaded = useRef<Set<string>>(new Set());
   const treeRequests = useRef<Set<string>>(new Set());
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const connectionId = connection?.connectionId ?? null;
   const connectionIdRef = useRef(connectionId);
   connectionIdRef.current = connectionId;
@@ -109,6 +138,22 @@ export function FileBrowser({
     setExpanded(new Set(['/']));
     setSelectedPath(null);
     setFileNotice(null);
+    setUploadFiles(null);
+    setUploadBusy(false);
+    setUploadError(null);
+    setUploadOutcome(null);
+    setMkdirOpen(false);
+    setMkdirName('');
+    setMkdirBusy(false);
+    setMkdirError(null);
+    setRenameEntry(null);
+    setRenameName('');
+    setRenameBusy(false);
+    setRenameError(null);
+    setRenameOutcome(null);
+    setDeleteEntry(null);
+    setDeleteBusy(false);
+    setDeleteError(null);
     if (connection) setEditorConnection(connection);
     loadedKey.current = null;
     treeLoaded.current.clear();
@@ -374,6 +419,273 @@ export function FileBrowser({
     setRetryToken((token) => token + 1);
   }
 
+  function refreshAfterMutation() {
+    loadedKey.current = null;
+    treeLoaded.current.clear();
+    treeRequests.current.clear();
+    setRetryToken((token) => token + 1);
+  }
+
+  function selectUploadFiles(event: ChangeEvent<HTMLInputElement>) {
+    const selected = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = '';
+    if (selected.length === 0) return;
+    if (uploadBatchBlocked(selected.map((file) => file.size))) {
+      setFileNotice({
+        kind: 'error',
+        text: '上传批次超过限制：单文件最多 16 MiB，整批最多 64 MiB 且不超过 32 个文件。',
+      });
+      return;
+    }
+    const invalidName = selected.find((file) => (
+      joinRemoteResource(path, file.name) === null
+    ));
+    if (invalidName) {
+      setFileNotice({
+        kind: 'error',
+        text: `文件名 ${invalidName.name} 不是安全的 basename，未开始上传。`,
+      });
+      return;
+    }
+    const names = new Set<string>();
+    const duplicate = selected.find((file) => {
+      if (names.has(file.name)) return true;
+      names.add(file.name);
+      return false;
+    });
+    if (duplicate) {
+      setFileNotice({
+        kind: 'error',
+        text: `上传批次包含重复文件名 ${duplicate.name}，未开始上传。`,
+      });
+      return;
+    }
+    setUploadFiles(selected);
+    setUploadBusy(false);
+    setUploadError(null);
+    setUploadOutcome(null);
+  }
+
+  function closeUploadDialog() {
+    if (uploadBusy) return;
+    setUploadFiles(null);
+    setUploadError(null);
+    setUploadOutcome(null);
+  }
+
+  async function submitUpload() {
+    if (!connection || !uploadFiles || uploadBusy) return;
+    const requestedConnectionId = connection.connectionId;
+    const count = uploadFiles.length;
+    setUploadBusy(true);
+    setUploadError(null);
+    setUploadOutcome(null);
+    try {
+      const payload = await Promise.all(uploadFiles.map(async (file) => ({
+        name: file.name,
+        bytes: await readFileBytes(file),
+      })));
+      if (connectionIdRef.current !== requestedConnectionId) return;
+      const outcome = await core.uploadFiles(connection, path, payload);
+      if (connectionIdRef.current !== requestedConnectionId) return;
+      if (outcome.status === 'succeeded') {
+        setUploadFiles(null);
+        refreshAfterMutation();
+        setFileNotice({
+          kind: 'info',
+          text: [
+            `已上传 ${count} 个文件到 ${path}。`,
+            outcome.warning,
+            outcome.residual.length > 0
+              ? `残留临时路径：${outcome.residual.join('、')}`
+              : null,
+          ].filter(Boolean).join(' '),
+        });
+        return;
+      }
+      setUploadOutcome(outcome);
+      const reason = outcome.error
+        ? remoteFileErrorMessage(outcome.error)
+        : '上传失败';
+      if (outcome.status === 'failed_with_residue') {
+        setUploadError(
+          `${reason}；${outcome.warning ?? '部分文件未回滚，请刷新目录核对。'}`,
+        );
+      } else {
+        setUploadError(`${reason}；本次已提交文件已回滚，可重试。`);
+      }
+    } catch (error) {
+      if (connectionIdRef.current === requestedConnectionId) {
+        setUploadError(remoteFileErrorMessage(error));
+      }
+    } finally {
+      if (connectionIdRef.current === requestedConnectionId) {
+        setUploadBusy(false);
+      }
+    }
+  }
+
+  function openMkdirDialog() {
+    setMkdirName('');
+    setMkdirError(null);
+    setMkdirOpen(true);
+  }
+
+  function closeMkdirDialog() {
+    if (mkdirBusy) return;
+    setMkdirOpen(false);
+    setMkdirError(null);
+  }
+
+  async function submitMkdir() {
+    if (!connection || mkdirBusy) return;
+    const target = joinRemoteResource(path, mkdirName);
+    if (!target) {
+      setMkdirError('文件夹名称必须是安全的 basename，不能包含 / 或控制字符。');
+      return;
+    }
+    const requestedConnectionId = connection.connectionId;
+    setMkdirBusy(true);
+    setMkdirError(null);
+    try {
+      const result = await core.createDirectory(connection, target);
+      if (connectionIdRef.current !== requestedConnectionId) return;
+      setMkdirOpen(false);
+      setMkdirName('');
+      refreshAfterMutation();
+      setFileNotice({
+        kind: 'info',
+        text: result.warning
+          ? `已创建 ${result.path}。${result.warning}`
+          : `已创建 ${result.path}`,
+      });
+    } catch (error) {
+      if (connectionIdRef.current === requestedConnectionId) {
+        setMkdirError(remoteFileErrorMessage(error));
+      }
+    } finally {
+      if (connectionIdRef.current === requestedConnectionId) {
+        setMkdirBusy(false);
+      }
+    }
+  }
+
+  function openRenameDialog(entry: RemoteFileEntry) {
+    setRenameEntry(entry);
+    setRenameName(entry.name);
+    setRenameError(null);
+    setRenameOutcome(null);
+  }
+
+  function closeRenameDialog() {
+    if (renameBusy) return;
+    setRenameEntry(null);
+    setRenameError(null);
+    setRenameOutcome(null);
+  }
+
+  async function submitRename() {
+    if (!connection || !renameEntry || renameBusy) return;
+    if (renameEntry.kind === 'directory') {
+      setRenameError(
+        '当前 SFTP 服务器没有经过验证的原子 no-replace 目录重命名原语，已拒绝操作。',
+      );
+      return;
+    }
+    const parent = renameEntry.path.includes('/')
+      ? renameEntry.path.slice(0, renameEntry.path.lastIndexOf('/')) || '/'
+      : '/';
+    const target = joinRemoteResource(parent, renameName);
+    if (!target) {
+      setRenameError('新名称必须是安全的 basename，不能包含 / 或控制字符。');
+      return;
+    }
+    const requestedConnectionId = connection.connectionId;
+    setRenameBusy(true);
+    setRenameError(null);
+    setRenameOutcome(null);
+    try {
+      const result = await core.renameFile(connection, renameEntry.path, target);
+      if (connectionIdRef.current !== requestedConnectionId) return;
+      if (result.status === 'partial') {
+        setRenameOutcome(result);
+        setRenameError(
+          result.warning
+          ?? '目标文件已创建，但源文件未删除；请确认后重试清理源文件。',
+        );
+        return;
+      }
+      setRenameEntry(null);
+      setRenameError(null);
+      setRenameOutcome(null);
+      setSelectedPath(result.targetPath);
+      refreshAfterMutation();
+      setFileNotice({
+        kind: 'info',
+        text: result.warning
+          ? `已将 ${result.sourcePath} 重命名为 ${result.targetPath}。${result.warning}`
+          : `已将 ${result.sourcePath} 重命名为 ${result.targetPath}`,
+      });
+    } catch (error) {
+      if (connectionIdRef.current === requestedConnectionId) {
+        setRenameError(remoteFileErrorMessage(error));
+      }
+    } finally {
+      if (connectionIdRef.current === requestedConnectionId) {
+        setRenameBusy(false);
+      }
+    }
+  }
+
+  function startRenameCleanup() {
+    if (!renameEntry || !renameOutcome) return;
+    setDeleteEntry(renameEntry);
+    setDeleteError(null);
+    setRenameEntry(null);
+    setRenameError(null);
+    setRenameOutcome(null);
+  }
+
+  function requestDelete(entry: RemoteFileEntry) {
+    setDeleteEntry(entry);
+    setDeleteError(null);
+  }
+
+  function closeDeleteDialog() {
+    if (deleteBusy) return;
+    setDeleteEntry(null);
+    setDeleteError(null);
+  }
+
+  async function submitDelete() {
+    if (!connection || !deleteEntry || deleteBusy) return;
+    const requestedConnectionId = connection.connectionId;
+    const entry = deleteEntry;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      const result = await core.deleteFile(connection, entry.path);
+      if (connectionIdRef.current !== requestedConnectionId) return;
+      setDeleteEntry(null);
+      if (selectedPath === entry.path) setSelectedPath(null);
+      refreshAfterMutation();
+      setFileNotice({
+        kind: 'info',
+        text: result.warning
+          ? `已删除 ${result.path}。${result.warning}`
+          : `已删除 ${result.path}`,
+      });
+    } catch (error) {
+      if (connectionIdRef.current === requestedConnectionId) {
+        setDeleteError(remoteFileErrorMessage(error));
+      }
+    } finally {
+      if (connectionIdRef.current === requestedConnectionId) {
+        setDeleteBusy(false);
+      }
+    }
+  }
+
   function applySaved(result: RemoteFileWriteResult) {
     setEntries((current) => current.map((entry) => (
       entry.path === result.path
@@ -424,6 +736,253 @@ export function FileBrowser({
       />
     </Suspense>
   ) : null;
+  const uploadSizes = uploadFiles?.map((file) => file.size) ?? [];
+  const uploadTotal = uploadSizes.reduce((total, size) => total + size, 0);
+  const uploadWarning = uploadFiles !== null
+    && uploadBatchNeedsConfirmation(uploadSizes);
+  const actionDialogs = (
+    <>
+      {uploadFiles ? (
+        <FileDialog
+          busy={uploadBusy}
+          footer={(
+            <>
+              <button
+                className="h-8 border border-hairline px-4 text-[11px] font-medium text-ink hover:bg-paper disabled:opacity-40"
+                disabled={uploadBusy}
+                onClick={closeUploadDialog}
+                type="button"
+              >
+                取消
+              </button>
+              {uploadOutcome?.status === 'failed_with_residue' ? (
+                <button
+                  className="h-8 bg-ink px-4 text-[11px] font-medium text-paper"
+                  onClick={() => {
+                    refreshAfterMutation();
+                    closeUploadDialog();
+                  }}
+                  type="button"
+                >
+                  刷新目录
+                </button>
+              ) : (
+                <button
+                  className="h-8 bg-ink px-4 text-[11px] font-medium text-paper disabled:opacity-40"
+                  disabled={uploadBusy}
+                  onClick={() => void submitUpload()}
+                  type="button"
+                >
+                  {uploadBusy
+                    ? '上传中…'
+                    : uploadOutcome?.status === 'failed_rolled_back'
+                      ? '重试上传'
+                      : '确认上传'}
+                </button>
+              )}
+            </>
+          )}
+          onCancel={closeUploadDialog}
+          title={`上传文件到 ${path}`}
+        >
+          <ul
+            aria-label="待上传文件"
+            className="m-0 max-h-44 list-none overflow-auto border-y border-hairline p-0"
+          >
+            {uploadFiles.map((file) => (
+              <li
+                className="flex h-8 items-center justify-between gap-4 border-b border-hairline/70 px-2 font-mono text-[10px] last:border-b-0"
+                key={`${file.name}-${file.lastModified}-${file.size}`}
+              >
+                <span className="truncate text-ink">{file.name}</span>
+                <span className="shrink-0 text-muted">{formatFileSize(file.size)}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 font-mono text-[10px] text-muted">
+            {uploadFiles.length} 个文件 · {formatFileSize(uploadTotal)}
+          </p>
+          {uploadWarning ? (
+            <p className="mt-3 border-l-2 border-warning pl-2 text-[10px] leading-5 text-warning">
+              批次包含大文件（超过 4 MiB）。上传会占用较多内存与 IPC，请确认网络稳定后再继续。
+            </p>
+          ) : null}
+          <p className="mt-3 text-[10px] leading-5 text-muted">
+            上传使用同目录临时文件与 hardlink 原子提交，目标已存在时不会覆盖。
+          </p>
+          {uploadOutcome?.residual.length ? (
+            <div className="mt-3 border-l-2 border-danger pl-2">
+              <p className="text-[10px] font-medium text-danger">残留路径</p>
+              <ul className="m-0 mt-1 list-none p-0 font-mono text-[10px] text-ink">
+                {uploadOutcome.residual.map((residual) => (
+                  <li className="break-all" key={residual}>{residual}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {uploadError ? (
+            <p className="mt-3 text-[11px] leading-5 text-danger" role="alert">
+              {uploadError}
+            </p>
+          ) : null}
+        </FileDialog>
+      ) : null}
+
+      {mkdirOpen ? (
+        <FileDialog
+          busy={mkdirBusy}
+          footer={(
+            <>
+              <button
+                className="h-8 border border-hairline px-4 text-[11px] font-medium text-ink hover:bg-paper disabled:opacity-40"
+                disabled={mkdirBusy}
+                onClick={closeMkdirDialog}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                className="h-8 bg-ink px-4 text-[11px] font-medium text-paper disabled:opacity-40"
+                disabled={mkdirBusy}
+                onClick={() => void submitMkdir()}
+                type="button"
+              >
+                {mkdirBusy ? '创建中…' : '创建文件夹'}
+              </button>
+            </>
+          )}
+          onCancel={closeMkdirDialog}
+          title="新建文件夹"
+        >
+          <label
+            className="block font-mono text-[9px] tracking-[0.12em] text-muted"
+            htmlFor="harbor-mkdir-name"
+          >
+            文件夹名称
+          </label>
+          <input
+            autoFocus
+            className="mt-2 h-8 w-full border border-hairline bg-paper px-2 font-mono text-[11px] text-ink outline-none focus:border-accent"
+            id="harbor-mkdir-name"
+            onChange={(event) => setMkdirName(event.currentTarget.value)}
+            value={mkdirName}
+          />
+          <p className="mt-2 text-[10px] leading-5 text-muted">
+            将在 {path} 下创建单层目录；不会自动创建缺失的父目录。
+          </p>
+          {mkdirError ? (
+            <p className="mt-3 text-[11px] leading-5 text-danger" role="alert">
+              {mkdirError}
+            </p>
+          ) : null}
+        </FileDialog>
+      ) : null}
+
+      {renameEntry ? (
+        <FileDialog
+          busy={renameBusy}
+          footer={renameOutcome?.status === 'partial' ? (
+            <>
+              <button
+                className="h-8 border border-hairline px-4 text-[11px] font-medium text-ink hover:bg-paper"
+                onClick={closeRenameDialog}
+                type="button"
+              >
+                关闭
+              </button>
+              <button
+                className="h-8 bg-danger px-4 text-[11px] font-medium text-paper"
+                onClick={startRenameCleanup}
+                type="button"
+              >
+                删除源文件…
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="h-8 border border-hairline px-4 text-[11px] font-medium text-ink hover:bg-paper disabled:opacity-40"
+                disabled={renameBusy}
+                onClick={closeRenameDialog}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                className="h-8 bg-ink px-4 text-[11px] font-medium text-paper disabled:opacity-40"
+                disabled={renameBusy || renameEntry.kind === 'directory'}
+                onClick={() => void submitRename()}
+                type="button"
+              >
+                {renameBusy ? '重命名中…' : '确认重命名'}
+              </button>
+            </>
+          )}
+          onCancel={closeRenameDialog}
+          title={`重命名 ${renameEntry.name}`}
+        >
+          <p className="mb-3 break-all font-mono text-[10px] text-muted">
+            {renameEntry.path}
+          </p>
+          <label
+            className="block font-mono text-[9px] tracking-[0.12em] text-muted"
+            htmlFor="harbor-rename-name"
+          >
+            新名称
+          </label>
+          <input
+            autoFocus
+            className="mt-2 h-8 w-full border border-hairline bg-paper px-2 font-mono text-[11px] text-ink outline-none focus:border-accent"
+            id="harbor-rename-name"
+            onChange={(event) => setRenameName(event.currentTarget.value)}
+            value={renameName}
+          />
+          {renameEntry.kind === 'directory' ? (
+            <p className="mt-3 border-l-2 border-warning pl-2 text-[10px] leading-5 text-warning">
+              目录重命名当前 fail closed：没有经过验证的原子 no-replace 原语，不会退化为
+              check-then-act。
+            </p>
+          ) : null}
+          {renameOutcome?.status === 'partial' ? (
+            <div className="mt-3 border-y border-hairline py-2">
+              <p className="font-mono text-[9px] tracking-[0.12em] text-muted">
+                已创建目标
+              </p>
+              <p className="mt-1 break-all font-mono text-[10px] text-ink">
+                {renameOutcome.targetPath}
+              </p>
+            </div>
+          ) : null}
+          {renameError ? (
+            <p className="mt-3 text-[11px] leading-5 text-danger" role="alert">
+              {renameError}
+            </p>
+          ) : null}
+        </FileDialog>
+      ) : null}
+
+      {deleteEntry ? (
+        <ConfirmDialog
+          busy={deleteBusy}
+          busyLabel="正在删除…"
+          confirmLabel="确认删除"
+          description={(
+            <>
+              将删除{' '}
+              <strong className="break-all font-medium text-ink">{deleteEntry.path}</strong>
+              {deleteEntry.kind === 'directory'
+                ? '。Harbor 只删除空目录，不会递归删除其中的内容。'
+                : '。此操作无法撤销。'}
+            </>
+          )}
+          error={deleteError}
+          onCancel={closeDeleteDialog}
+          onConfirm={() => void submitDelete()}
+          title={deleteEntry.kind === 'directory' ? '删除目录' : '删除文件'}
+        />
+      ) : null}
+    </>
+  );
 
   if (offline) {
     return (
@@ -436,6 +995,7 @@ export function FileBrowser({
           title="服务器连接已断开"
         />
         {editorModal}
+        {actionDialogs}
       </>
     );
   }
@@ -449,6 +1009,7 @@ export function FileBrowser({
           title="正在建立 SSH 连接"
         />
         {editorModal}
+        {actionDialogs}
       </>
     );
   }
@@ -507,6 +1068,32 @@ export function FileBrowser({
           <span className="shrink-0 font-mono text-[9px] tracking-[0.06em] text-muted">
             {sortedEntries.length} ITEMS
           </span>
+          <input
+            aria-label="选择上传文件"
+            className="sr-only"
+            multiple
+            onChange={selectUploadFiles}
+            ref={uploadInputRef}
+            type="file"
+          />
+          <button
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 border border-hairline bg-paper px-2 text-[10px] font-medium text-ink hover:border-ink disabled:opacity-40"
+            disabled={listState !== 'ready'}
+            onClick={() => uploadInputRef.current?.click()}
+            type="button"
+          >
+            <Upload aria-hidden className="size-3.5" strokeWidth={1.5} />
+            上传
+          </button>
+          <button
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 border border-hairline bg-paper px-2 text-[10px] font-medium text-ink hover:border-ink disabled:opacity-40"
+            disabled={listState !== 'ready'}
+            onClick={openMkdirDialog}
+            type="button"
+          >
+            <Plus aria-hidden className="size-3.5" strokeWidth={1.5} />
+            新建文件夹
+          </button>
           <button
             aria-label="刷新目录"
             className="grid size-7 shrink-0 place-items-center border border-hairline bg-paper text-muted hover:border-ink hover:text-ink disabled:opacity-40"
@@ -610,11 +1197,11 @@ export function FileBrowser({
             >
               <thead className="sticky top-0 z-10 bg-shell">
                 <tr className="h-8 border-b border-hairline font-mono text-[9px] tracking-[0.08em] text-muted">
-                  <th className="w-[48%] px-3 font-normal">名称</th>
-                  <th className="w-[14%] px-2 text-right font-normal">大小</th>
-                  <th className="w-[22%] px-2 font-normal">修改时间</th>
+                  <th className="w-[40%] px-3 font-normal">名称</th>
+                  <th className="w-[12%] px-2 text-right font-normal">大小</th>
+                  <th className="w-[20%] px-2 font-normal">修改时间</th>
                   <th className="w-[10%] px-2 font-normal">权限</th>
-                  <th className="w-[6%] px-2 text-right font-normal">操作</th>
+                  <th className="w-[18%] px-2 text-right font-normal">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -666,18 +1253,40 @@ export function FileBrowser({
                         {formatPermissions(entry.permissions)}
                       </td>
                       <td className="px-2 text-right">
-                        {entry.kind === 'file' ? (
+                        <span className="inline-flex items-center justify-end gap-0.5">
+                          {entry.kind === 'file' ? (
+                            <button
+                              aria-label={`下载 ${entry.name}`}
+                              className="grid size-7 place-items-center text-muted hover:bg-paper hover:text-ink disabled:opacity-40"
+                              disabled={downloadingPath !== null}
+                              onClick={() => void download(entry)}
+                              title="下载到本地"
+                              type="button"
+                            >
+                              <Download aria-hidden className="size-3.5" strokeWidth={1.5} />
+                            </button>
+                          ) : null}
+                          {entry.kind === 'file' || entry.kind === 'directory' ? (
+                            <button
+                              aria-label={`重命名 ${entry.name}`}
+                              className="grid size-7 place-items-center text-muted hover:bg-paper hover:text-ink"
+                              onClick={() => openRenameDialog(entry)}
+                              title="重命名"
+                              type="button"
+                            >
+                              <Pencil aria-hidden className="size-3.5" strokeWidth={1.5} />
+                            </button>
+                          ) : null}
                           <button
-                            aria-label={`下载 ${entry.name}`}
-                            className="grid size-7 place-items-center text-muted hover:bg-paper hover:text-ink disabled:opacity-40"
-                            disabled={downloadingPath !== null}
-                            onClick={() => void download(entry)}
-                            title="下载到本地"
+                            aria-label={`删除 ${entry.name}`}
+                            className="grid size-7 place-items-center text-muted hover:bg-paper hover:text-danger"
+                            onClick={() => requestDelete(entry)}
+                            title="删除"
                             type="button"
                           >
-                            <Download aria-hidden className="size-3.5" strokeWidth={1.5} />
+                            <Trash2 aria-hidden className="size-3.5" strokeWidth={1.5} />
                           </button>
-                        ) : null}
+                        </span>
                       </td>
                     </tr>
                   );
@@ -690,7 +1299,85 @@ export function FileBrowser({
 
       </div>
       {editorModal}
+      {actionDialogs}
     </>
+  );
+}
+
+function FileDialog({
+  busy,
+  children,
+  footer,
+  onCancel,
+  title,
+}: {
+  busy: boolean;
+  children: ReactNode;
+  footer: ReactNode;
+  onCancel(): void;
+  title: string;
+}) {
+  const titleId = useId();
+  const sectionRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const section = sectionRef.current;
+    if (!section) return;
+    if (!section.contains(document.activeElement)) section.focus();
+  }, []);
+
+  useEffect(() => {
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !busy) onCancel();
+    }
+
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [busy, onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-ink/40 p-6"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onCancel();
+      }}
+    >
+      <section
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className="w-[460px] border border-ink bg-shell outline-none"
+        ref={sectionRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <header className="flex items-start gap-3 border-b border-hairline px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <p className="font-mono text-[9px] tracking-[0.16em] text-muted">
+              FILE OPERATION
+            </p>
+            <h2
+              className="mt-1 break-all text-[18px] font-semibold tracking-[-0.01em] text-ink"
+              id={titleId}
+            >
+              {title}
+            </h2>
+          </div>
+          <button
+            aria-label="关闭对话框"
+            className="grid size-7 shrink-0 place-items-center text-muted hover:bg-paper hover:text-ink disabled:opacity-40"
+            disabled={busy}
+            onClick={onCancel}
+            type="button"
+          >
+            <X aria-hidden className="size-4" strokeWidth={1.5} />
+          </button>
+        </header>
+        <div className="px-5 py-4">{children}</div>
+        <footer className="flex justify-end gap-2 border-t border-hairline px-5 py-3">
+          {footer}
+        </footer>
+      </section>
+    </div>
   );
 }
 
@@ -847,6 +1534,25 @@ function joinDirectory(parent: string, name: string): string | null {
     parent === '/' ? `/${name}` : `${parent}/${name}`,
   );
   return parsed.success ? parsed.data : null;
+}
+
+async function readFileBytes(file: File): Promise<number[]> {
+  if (typeof file.arrayBuffer === 'function') {
+    return Array.from(new Uint8Array(await file.arrayBuffer()));
+  }
+  const buffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('无法读取本地文件'));
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) {
+        resolve(reader.result);
+      } else {
+        reject(new Error('无法读取本地文件'));
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  });
+  return Array.from(new Uint8Array(buffer));
 }
 
 function compareEntries(left: RemoteFileEntry, right: RemoteFileEntry): number {
