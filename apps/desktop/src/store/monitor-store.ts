@@ -225,6 +225,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
             phase: reason,
             latest: null,
             error: reason === 'offline' ? '服务器离线，请重连后继续采样' : null,
+            unavailable: [],
             inFlight: false,
             lastUpdatedAt: null,
           },
