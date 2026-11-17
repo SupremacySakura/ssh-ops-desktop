@@ -13,6 +13,7 @@ import { createRoot } from 'react-dom/client';
 import App from '../../../../apps/desktop/src/App';
 import '../../../../apps/desktop/src/styles.css';
 import { useHarborStore } from '../../../../apps/desktop/src/store/harbor-store';
+import { useMonitorStore } from '../../../../apps/desktop/src/store/monitor-store';
 import { useTerminalStore } from '../../../../apps/desktop/src/store/terminal-store';
 import {
   createFakeCoreClient,
@@ -170,6 +171,26 @@ const importPreview: SshConfigImportPreview = {
     status: 'existing',
     unsupportedDirectives: [],
     warnings: [],
+  }, {
+    id: '019c62b2-2970-7000-8000-000000000156',
+    alias: 'imported-copy',
+    host: 'imported.example.com',
+    port: 2222,
+    username: 'deploy',
+    identityFile: null,
+    status: 'duplicateInBatch',
+    unsupportedDirectives: [],
+    warnings: [],
+  }, {
+    id: '019c62b2-2970-7000-8000-000000000157',
+    alias: 'proxied',
+    host: 'proxied.example.com',
+    port: 22,
+    username: 'deploy',
+    identityFile: null,
+    status: 'unsupported',
+    unsupportedDirectives: ['ProxyJump'],
+    warnings: ['ProxyJump 未实现，导入后不会建立跳板连接'],
   }],
   warnings: [],
   warningCount: 0,
@@ -227,15 +248,6 @@ const SCENARIOS: Record<string, FixtureScenario> = {
     ...scenarioDefaults(),
     servers: terminalServers,
     files: fixtureFiles,
-    overrides: {
-      writeFile: async () => {
-        throw {
-          code: 'CONFLICT',
-          message: '远程文件已在别处修改',
-          retryable: false,
-        };
-      },
-    },
   },
   import: {
     ...scenarioDefaults(),
@@ -480,12 +492,14 @@ function boot() {
       core: FakeCoreClient;
       terminalStore: typeof useTerminalStore;
       harborStore: typeof useHarborStore;
+      monitorStore: typeof useMonitorStore;
       disconnectFirstSession(): void;
     };
   }).__harborRuntime = {
     core,
     terminalStore: useTerminalStore,
     harborStore: useHarborStore,
+    monitorStore: useMonitorStore,
     disconnectFirstSession: () => {
       const session = Object.values(useTerminalStore.getState().runtimes)
         .flatMap((runtime) => runtime.sessions)

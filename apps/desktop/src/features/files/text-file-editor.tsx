@@ -97,6 +97,52 @@ export function TextFileEditor({
     }
   }
 
+  async function retryAfterConflict() {
+    if (saving || reloading || tooLarge) return;
+    setSaving(true);
+    setError(null);
+    setConflict(false);
+    setNotice(null);
+    const requestedConnectionId = connection.connectionId;
+    try {
+      const latest = await core.readFile(connection, base.path);
+      if (connectionRef.current.connectionId !== requestedConnectionId) {
+        setError('连接已变化，重试保存未执行；请重新加载远端内容确认。');
+        return;
+      }
+      const result = await core.writeFile(
+        connection,
+        base.path,
+        draft,
+        latest.sha256,
+      );
+      if (connectionRef.current.connectionId !== requestedConnectionId) {
+        setError('连接已变化，保存结果未应用到当前编辑器；请重新加载远端内容确认。');
+        return;
+      }
+      setBase({
+        ...latest,
+        text: draft,
+        sha256: result.sha256,
+        size: result.size,
+        modifiedAt: result.modifiedAt,
+      });
+      setNotice(
+        result.warning
+          ? `已保存到远程。${result.warning}`
+          : '已保存到远程',
+      );
+      onSaved(result);
+    } catch (saveError) {
+      if (connectionRef.current.connectionId === requestedConnectionId) {
+        setError(remoteFileErrorMessage(saveError));
+        setConflict(errorCode(saveError) === 'CONFLICT');
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function reload() {
     if (saving || reloading) return;
     if (
@@ -204,7 +250,7 @@ export function TextFileEditor({
                   </p>
                   <button
                     className="inline-flex h-7 items-center gap-1.5 border border-danger px-2 text-[10px] font-medium text-danger hover:bg-paper"
-                    onClick={() => void save()}
+                    onClick={() => void retryAfterConflict()}
                     type="button"
                   >
                     <RotateCw aria-hidden className="size-3" strokeWidth={1.5} />

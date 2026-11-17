@@ -91,14 +91,14 @@ fn upload_is_atomic_and_resume_requires_matching_source_metadata() {
     fs::write(&source, b"0123456789").unwrap();
     let adapter = LocalSftpAdapter::new(remote.path()).unwrap();
     let destination = RemotePath::try_new("/srv/releases/bundle.tar").unwrap();
-    let task_id = Id::new();
+    let transfer_id = Id::new();
 
     let interrupted = adapter
         .upload(
             &source,
             &destination,
             UploadOptions {
-                task_id,
+                transfer_id,
                 conflict: ConflictPolicy::Fail,
                 checkpoint: None,
                 byte_limit: Some(4),
@@ -111,7 +111,7 @@ fn upload_is_atomic_and_resume_requires_matching_source_metadata() {
         fs::read(
             remote
                 .path()
-                .join(format!("srv/releases/.opspilot-upload-{task_id}.part"))
+                .join(format!("srv/releases/.harbor-upload-{transfer_id}.part"))
         )
         .unwrap(),
         b"0123"
@@ -124,7 +124,7 @@ fn upload_is_atomic_and_resume_requires_matching_source_metadata() {
             &changed_source,
             &destination,
             UploadOptions {
-                task_id,
+                transfer_id,
                 conflict: ConflictPolicy::ResumeIfMatching,
                 checkpoint: Some(interrupted.checkpoint.clone()),
                 byte_limit: None,
@@ -138,7 +138,7 @@ fn upload_is_atomic_and_resume_requires_matching_source_metadata() {
             &source,
             &destination,
             UploadOptions {
-                task_id,
+                transfer_id,
                 conflict: ConflictPolicy::ResumeIfMatching,
                 checkpoint: Some(interrupted.checkpoint),
                 byte_limit: None,
@@ -153,7 +153,7 @@ fn upload_is_atomic_and_resume_requires_matching_source_metadata() {
     assert!(
         !remote
             .path()
-            .join(format!("srv/releases/.opspilot-upload-{task_id}.part"))
+            .join(format!("srv/releases/.harbor-upload-{transfer_id}.part"))
             .exists()
     );
 }

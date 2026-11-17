@@ -155,18 +155,18 @@ pub struct TransferCheckpoint {
 
 #[derive(Clone, Debug)]
 pub struct UploadOptions {
-    pub task_id: Id,
+    pub transfer_id: Id,
     pub conflict: ConflictPolicy,
     pub checkpoint: Option<TransferCheckpoint>,
-    /// Test/adapter interruption hook. Production callers leave this unset and cancel through
-    /// the task engine between chunks.
+    /// Test/adapter interruption hook. Production callers leave this unset; cancellation is
+    /// controlled by the caller or the upload byte limit.
     pub byte_limit: Option<u64>,
 }
 
 impl UploadOptions {
-    pub fn new(task_id: Id, conflict: ConflictPolicy) -> Self {
+    pub fn new(transfer_id: Id, conflict: ConflictPolicy) -> Self {
         Self {
-            task_id,
+            transfer_id,
             conflict,
             checkpoint: None,
             byte_limit: None,
@@ -243,7 +243,7 @@ impl LocalSftpAdapter {
             }
         }
 
-        let part_path = parent.join(format!(".opspilot-upload-{}.part", options.task_id));
+        let part_path = parent.join(format!(".harbor-upload-{}.part", options.transfer_id));
         if fs::symlink_metadata(&part_path)
             .map(|metadata| metadata.file_type().is_symlink())
             .unwrap_or(false)

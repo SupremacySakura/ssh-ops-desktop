@@ -14,6 +14,7 @@ import {
 import { useEffect, useId, useRef, useState } from 'react';
 
 import { ConfirmDialog } from '../../components/confirm-dialog';
+import { useDialogFocusTrap } from '../../components/use-dialog-focus-trap';
 import { formatLastConnectedAt, useHarborStore } from '../../store/harbor-store';
 import {
   connectionErrorMessage,
@@ -288,6 +289,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
 
       {prompt || changedPrompt ? (
         <HostKeyDialog
+          active={active}
           checked={trustChecked}
           checkboxId={trustCheckboxId}
           onCancel={() => dismissHostKey(server.id)}
@@ -336,6 +338,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
 }
 
 function HostKeyDialog({
+  active,
   checked,
   checkboxId,
   onCancel,
@@ -344,6 +347,7 @@ function HostKeyDialog({
   prompt,
   server,
 }: {
+  active: boolean;
   checked: boolean;
   checkboxId: string;
   onCancel(): void;
@@ -353,13 +357,25 @@ function HostKeyDialog({
   server: Server;
 }) {
   const changed = 'expectedSha256' in prompt;
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+  useDialogFocusTrap(sectionRef, {
+    active,
+    canEscape: active,
+    onEscape: onCancel,
+  });
+  useEffect(() => {
+    if (active) cancelRef.current?.focus();
+  }, [active]);
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-ink/45 p-6">
       <section
         aria-labelledby="host-key-title"
         aria-modal="true"
         className="w-[560px] border border-ink bg-shell"
+        ref={sectionRef}
         role="dialog"
+        tabIndex={-1}
       >
         <header className="flex items-start gap-3 border-b border-hairline px-5 py-4">
           <span className="grid size-9 shrink-0 place-items-center border border-accent text-accent">
@@ -377,6 +393,7 @@ function HostKeyDialog({
             aria-label="取消主机指纹确认"
             className="grid size-7 place-items-center text-muted hover:bg-paper hover:text-ink"
             onClick={onCancel}
+            ref={cancelRef}
             type="button"
           >
             <X aria-hidden className="size-4" strokeWidth={1.5} />

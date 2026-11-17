@@ -810,6 +810,73 @@ describe('Harbor empty shell', () => {
     expect(core.calls.filter((call) => call.method === 'connect')).toHaveLength(2);
   });
 
+  it('does not focus or dismiss a hidden host-key dialog from another server', async () => {
+    const prod = terminalServer('prod-web-01');
+    const dev = terminalServer(
+      'dev-box',
+      '019c62b2-2970-7000-8000-000000000007',
+    );
+    let prodAttempts = 0;
+    const core = createFakeCoreClient({
+      servers: [prod, dev],
+      connectOutcome: (serverId) => {
+        if (serverId === prod.id) {
+          prodAttempts += 1;
+          if (prodAttempts === 1) {
+            return {
+              kind: 'hostKeyRequired',
+              prompt: {
+                verificationId: '019c62b2-2970-7000-8000-000000000020',
+                algorithm: 'ssh-ed25519',
+                sha256: 'SHA256:fixture',
+                expiresAt: '2026-01-01T00:00:00.000Z',
+              },
+            };
+          }
+        }
+        return {
+          kind: 'ready',
+          connection: {
+            serverId,
+            connectionId: serverId === prod.id
+              ? '019c62b2-2970-7000-8000-000000000021'
+              : '019c62b2-2970-7000-8000-000000000022',
+          },
+        };
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    const hostKeyDialog = await screen.findByRole('dialog', {
+      name: '首次连接，核对主机指纹',
+    });
+    expect(within(hostKeyDialog).getByRole('button', {
+      name: '取消主机指纹确认',
+    })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole('button', { name: /^打开服务器 dev-box/u }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    const hiddenDialog = screen.getByRole('dialog', {
+      hidden: true,
+      name: '首次连接，核对主机指纹',
+    });
+    expect(hiddenDialog).not.toContainElement(document.activeElement as HTMLElement);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(hiddenDialog).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    expect(screen.getByRole('dialog', { name: '首次连接，核对主机指纹' }))
+      .toBeVisible();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '首次连接，核对主机指纹' }))
+      .not.toBeInTheDocument();
+  });
+
   it('shows an actionable connection failure and retries from the terminal view', async () => {
     let attempt = 0;
     const server = terminalServer('prod-web-01');

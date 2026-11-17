@@ -86,4 +86,16 @@ export function useDialogFocusTrap(
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [active, canEscape, onEscape, sectionRef]);
+
+  useEffect(() => {
+    if (active) return;
+    const section = sectionRef.current;
+    if (
+      section
+      && document.activeElement instanceof HTMLElement
+      && section.contains(document.activeElement)
+    ) {
+      document.activeElement.blur();
+    }
+  }, [active, sectionRef]);
 }

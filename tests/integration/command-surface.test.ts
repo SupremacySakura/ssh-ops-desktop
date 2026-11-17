@@ -10,6 +10,7 @@ interface InvokeCall {
   command: string;
   keys: string[];
   spreadSchemas: string[];
+  result: { schema: string | null; shape: 'array' | 'single' | 'void' };
 }
 
 function parseManifestCommands(): string[] {
@@ -30,15 +31,27 @@ interface RustCommand {
   name: string;
   params: string[];
   payloadParams: string[];
+  payloadTypes: Record<string, string>;
+  returnType: string;
+}
+
+function rustFiles(directory: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...rustFiles(path));
+    else if (entry.name.endsWith('.rs')) files.push(path);
+  }
+  return files;
 }
 
 function parseCommandFunctions(): RustCommand[] {
   const directory = join(repoRoot, 'src-tauri/src/commands');
   const commands: RustCommand[] = [];
-  for (const file of readdirSync(directory).filter((name) => name.endsWith('.rs'))) {
-    const source = readFileSync(join(directory, file), 'utf8');
+  for (const path of rustFiles(directory)) {
+    const source = readFileSync(path, 'utf8');
     for (const match of source.matchAll(
-      /#\[tauri::command\]\s*pub\(crate\)\s+(?:async\s+)?fn\s+(\w+)\s*\(([\s\S]*?)\)\s*->/gu,
+      /#\[tauri::command\]\s*pub\(crate\)\s+(?:async\s+)?fn\s+(\w+)\s*\(([\s\S]*?)\)\s*->\s*([\s\S]*?)\s*\{/gu,
     )) {
       const params = match[2]
         .split(',')
@@ -65,6 +78,15 @@ function parseCommandFunctions(): RustCommand[] {
             && !injectedPath.test(type)
           ))
           .map(({ name }) => name),
+        payloadTypes: Object.fromEntries(
+          params
+            .filter(({ type }) => (
+              !injected.has(type.split('<')[0].trim())
+              && !injectedPath.test(type)
+            ))
+            .map(({ name, type }) => [name, type]),
+        ),
+        returnType: match[3].replaceAll(/\s+/gu, ' ').trim(),
       });
     }
   }
@@ -126,6 +148,30 @@ function parseInvokeCalls(): InvokeCall[] {
     return found;
   };
 
+  const resultSchemaFor = (
+    node: ts.Node,
+  ): { schema: string | null; shape: 'array' | 'single' | 'void' } => {
+    let current: ts.Node = node;
+    while (current.parent) {
+      const parent: ts.Node = current.parent;
+      if (
+        ts.isCallExpression(parent)
+        && ts.isPropertyAccessExpression(parent.expression)
+        && parent.expression.name.text === 'parse'
+        && parent.arguments.some((argument) => argument === current)
+      ) {
+        const receiver = parent.expression.expression.getText(sourceFile);
+        const schema = /\b(\w+Schema)\b/u.exec(receiver)?.[1];
+        return {
+          schema: schema ? schemaImports.get(schema) ?? schema : null,
+          shape: /\.array\(\)$/u.test(receiver) ? 'array' : 'single',
+        };
+      }
+      current = parent;
+    }
+    return { schema: null, shape: 'void' };
+  };
+
   const visit = (node: ts.Node) => {
     if (
       ts.isCallExpression(node)
@@ -166,7 +212,12 @@ function parseInvokeCalls(): InvokeCall[] {
           }
         }
       }
-      calls.push({ command: command.text, keys, spreadSchemas });
+      calls.push({
+        command: command.text,
+        keys,
+        spreadSchemas,
+        result: resultSchemaFor(node),
+      });
     }
     ts.forEachChild(node, visit);
   };
@@ -187,6 +238,131 @@ function schemaKeys(schemaName: string): string[] {
 function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readRepoFile(path)) as Record<string, unknown>;
 }
+
+interface ReturnContract {
+  schema: string | null;
+  shape: 'array' | 'single' | 'void';
+}
+
+const EXPECTED_RETURN_SCHEMAS: Record<string, ReturnContract> = {
+  CoreHealth: { schema: 'CoreHealthSchema', shape: 'single' },
+  'Result<CoreHealth, CoreError>': { schema: 'CoreHealthSchema', shape: 'single' },
+  'Result<Vec<Server>, CoreError>': { schema: 'ServerSchema', shape: 'array' },
+  'Result<Server, CoreError>': { schema: 'ServerSchema', shape: 'single' },
+  'Result<Vec<opspilot_domain::ServerGroup>, CoreError>': {
+    schema: 'GroupSchema',
+    shape: 'array',
+  },
+  'Result<opspilot_domain::ServerGroup, CoreError>': {
+    schema: 'GroupSchema',
+    shape: 'single',
+  },
+  'Result<ConnectOutcome, CoreError>': {
+    schema: 'ConnectOutcomeSchema',
+    shape: 'single',
+  },
+  'Result<TerminalSession, CoreError>': {
+    schema: 'TerminalSessionSchema',
+    shape: 'single',
+  },
+  'Result<Vec<RemoteFileEntry>, CoreError>': {
+    schema: 'RemoteFileListSchema',
+    shape: 'single',
+  },
+  'Result<RemoteTextFile, CoreError>': {
+    schema: 'RemoteTextFileSchema',
+    shape: 'single',
+  },
+  'Result<RemoteFileWriteResult, CoreError>': {
+    schema: 'RemoteFileWriteResultSchema',
+    shape: 'single',
+  },
+  'Result<RemoteFileDownload, CoreError>': {
+    schema: 'RemoteDownloadSchema',
+    shape: 'single',
+  },
+  'Result<RemoteUploadOutcome, CoreError>': {
+    schema: 'RemoteUploadOutcomeSchema',
+    shape: 'single',
+  },
+  'Result<RemoteFileMutationResult, CoreError>': {
+    schema: 'RemoteFileMutationResultSchema',
+    shape: 'single',
+  },
+  'Result<RemoteRenameResult, CoreError>': {
+    schema: 'RemoteRenameResultSchema',
+    shape: 'single',
+  },
+  'Result<DockerContainerList, CoreError>': {
+    schema: 'DockerContainerListSchema',
+    shape: 'single',
+  },
+  'Result<DockerLogs, CoreError>': {
+    schema: 'DockerLogsSchema',
+    shape: 'single',
+  },
+  'Result<MonitorSnapshot, CoreError>': {
+    schema: 'MonitorSnapshotSchema',
+    shape: 'single',
+  },
+  'Result<SshConfigImportPreview, CoreError>': {
+    schema: 'SshConfigImportPreviewSchema',
+    shape: 'single',
+  },
+  'Result<SshConfigImportResult, CoreError>': {
+    schema: 'SshConfigImportResultSchema',
+    shape: 'single',
+  },
+  'Result<(), CoreError>': { schema: null, shape: 'void' },
+};
+
+const EXPECTED_PARAMETER_TYPES: Record<string, Record<string, string>> = {
+  server_create: {
+    input: 'ServerInput',
+    credential: 'ServerCredentialInput',
+  },
+  server_update: {
+    id: 'Id',
+    input: 'ServerInput',
+    credential: 'Option<ServerCredentialInput>',
+  },
+  connection_connect: { server_id: 'Id' },
+  connection_trust_host_key: { server_id: 'Id', verification_id: 'Id' },
+  connection_disconnect: { connection: 'ConnectionHandle' },
+  terminal_open: { connection: 'ConnectionHandle', columns: 'u32', rows: 'u32' },
+  terminal_write: { terminal_session_id: 'Id', bytes: 'Vec<u8>' },
+  terminal_resize: {
+    terminal_session_id: 'Id',
+    columns: 'u32',
+    rows: 'u32',
+  },
+  terminal_close: { terminal_session_id: 'Id' },
+  file_write: {
+    connection: 'ConnectionHandle',
+    path: 'RemotePath',
+    content: 'String',
+    expected_sha256: 'String',
+  },
+  file_upload: {
+    connection: 'ConnectionHandle',
+    directory: 'RemoteDirectoryPath',
+    files: 'Vec<RemoteUploadFile>',
+  },
+  docker_logs: {
+    connection: 'ConnectionHandle',
+    container_id: 'String',
+    tail: 'u32',
+  },
+  docker_exec: {
+    connection: 'ConnectionHandle',
+    container_id: 'String',
+    shell: 'Option<DockerShell>',
+    columns: 'u32',
+    rows: 'u32',
+  },
+  monitor_snapshot: { connection: 'ConnectionHandle' },
+  ssh_config_import_apply: { input: 'SshConfigImportApplyInput' },
+};
 
 describe('Tauri command surface', () => {
   const manifestCommands = parseManifestCommands();
@@ -278,9 +454,8 @@ describe('Tauri command surface', () => {
     };
     const identifiers = schema.definitions.Identifier.oneOf.map(({ const: id }) => id);
     expect(new Set(identifiers).size).toBe(identifiers.length);
-    for (const identifier of expectedIdentifiers) {
-      expect(identifiers).toContain(identifier);
-    }
+    expect(identifiers.filter((identifier) => !identifier.startsWith('core:')))
+      .toEqual(expectedIdentifiers);
   });
 
   it('matches CoreClient invoke payloads to Rust command parameters', () => {
@@ -303,17 +478,45 @@ describe('Tauri command surface', () => {
         payloadKeys,
         `${call.command} invoke payload must match the Rust signature`,
       ).toEqual(rustParams);
+
+      const expectedTypes = EXPECTED_PARAMETER_TYPES[call.command];
+      if (expectedTypes) {
+        for (const [param, type] of Object.entries(expectedTypes)) {
+          expect(
+            rust?.payloadTypes[param],
+            `${call.command}(${param}) Rust type`,
+          ).toBe(type);
+        }
+      }
+      for (const [param, type] of Object.entries(rust?.payloadTypes ?? {})) {
+        expect(
+          type,
+          `${call.command}(${param}) must have a recognized Rust type`,
+        ).toMatch(
+          /^(?:Id|String|u8|u16|u32|u64|usize|i32|i64|bool|Vec<[^<>]+>|Option<[^<>]+>|ServerInput|ServerCredentialInput|GroupInput|ConnectionHandle|RemotePath|RemoteDirectoryPath|RemoteUploadFile|DockerAction|DockerShell|SshConfigImportApplyInput)$/u,
+        );
+      }
+
+      expect(
+        rust?.returnType,
+        `${call.command} return type must be in the contract map`,
+      ).toBeDefined();
+      expect(
+        call.result,
+        `${call.command} must parse the Rust return type with the matching schema`,
+      ).toStrictEqual(EXPECTED_RETURN_SCHEMAS[rust?.returnType ?? '']);
     }
   });
 
   it('subscribes to every emitted event with the matching capability', () => {
-    const libSource = readRepoFile('src-tauri/src/lib.rs');
-    const connectionSource = readRepoFile('src-tauri/src/commands/connection.rs');
-    const emitted = new Set([
-      ...[...libSource.matchAll(/\.emit\(\s*"([^"]+)"/gu)].map(([, name]) => name),
-      ...[...connectionSource.matchAll(/\.emit\(\s*\n?\s*"([^"]+)"/gu)]
-        .map(([, name]) => name),
-    ]);
+    const sources = rustFiles(join(repoRoot, 'src-tauri/src'))
+      .map((path) => readFileSync(path, 'utf8'));
+    const emitted = new Set(
+      sources.flatMap((source) => (
+        [...source.matchAll(/\.emit\(\s*\n?\s*"([^"]+)"/gu)]
+          .map(([, name]) => name)
+      )),
+    );
     const subscribed = new Set(
       [...readRepoFile('apps/desktop/src/api/core.ts').matchAll(
         /\blisten\(\s*'([^']+)'/gu,

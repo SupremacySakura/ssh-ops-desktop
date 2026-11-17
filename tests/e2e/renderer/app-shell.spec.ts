@@ -1,4 +1,16 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+const pageErrors = new WeakMap<Page, string[]>();
+
+test.beforeEach(({ page }) => {
+  const errors: string[] = [];
+  pageErrors.set(page, errors);
+  page.on('pageerror', (error) => errors.push(error.message));
+});
+
+test.afterEach(({ page }) => {
+  expect(pageErrors.get(page) ?? []).toEqual([]);
+});
 
 test('Harbor empty shell renders the calibrated foundation', async ({ page }) => {
   await page.goto('/');
@@ -169,7 +181,8 @@ test('selecting a server opens a live xterm with sessions, history, and keepaliv
   );
   await expect(firstTerminal).toHaveCSS('background-color', 'rgb(20, 19, 17)');
 
-  await page.locator('.xterm-helper-textarea').focus();
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
   await page.keyboard.type('echo harbor-history');
   await page.keyboard.press('Enter');
   await expect(firstTerminal).toContainText('echo harbor-history');
@@ -259,7 +272,11 @@ test('lists Docker containers, reads both log streams, restarts, and execs into 
   const confirmation = page.getByRole('alertdialog', { name: '重启容器？' });
   await expect(confirmation).toContainText('web');
   await confirmation.getByRole('button', { name: '确认重启' }).click();
-  await expect(page.getByText('容器已重启')).toBeVisible();
+  await expect(
+    page.locator('[data-workspace-panel="docker"]').getByText('容器已重启'),
+  ).toBeVisible();
+  await expect(table).toContainText('Up less than a second');
+  await expect(table).not.toContainText('2026-11-17 12:00:00 UTC');
   await expect.poll(() => page.evaluate(() => {
     const runtime = window as unknown as {
       __harborRuntime: {
@@ -319,7 +336,8 @@ test('never records interactive input that the remote pty does not echo', async 
   });
   await expect(terminal).toContainText('[sudo] password for deploy:');
 
-  await page.locator('.xterm-helper-textarea').focus();
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
   await page.keyboard.type('deploy');
   await page.keyboard.press('Enter');
   await page.waitForTimeout(150);
@@ -338,12 +356,15 @@ test('routes native paste through confirmation and sends one keyboard paste', as
   }).click();
   const terminal = page.getByRole('log', { name: '终端 1' });
   await expect(terminal).toBeVisible();
-  await page.locator('.xterm-helper-textarea').focus();
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
 
   const dispatchNativePaste = (text: string) => page.evaluate((value) => {
     const data = new DataTransfer();
     data.setData('text/plain', value);
-    const textarea = document.querySelector('.xterm-helper-textarea');
+    const textarea = document.querySelector(
+      '[data-workspace-panel="terminal"]:not(.hidden) .xterm-helper-textarea',
+    );
     if (!(textarea instanceof HTMLElement)) {
       throw new Error('missing xterm textarea');
     }
@@ -380,9 +401,12 @@ test('routes native paste through confirmation and sends one keyboard paste', as
       value: async () => 'echo keyboard-paste',
     });
   });
-  await page.locator('.xterm-helper-textarea').focus();
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
   await page.evaluate(() => {
-    const textarea = document.querySelector('.xterm-helper-textarea');
+    const textarea = document.querySelector(
+      '[data-workspace-panel="terminal"]:not(.hidden) .xterm-helper-textarea',
+    );
     if (!(textarea instanceof HTMLElement)) {
       throw new Error('missing xterm textarea');
     }

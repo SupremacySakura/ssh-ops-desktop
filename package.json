@@ -12,7 +12,7 @@
     "build:release": "tauri build --config src-tauri/tauri.release.conf.json",
     "tauri": "tauri",
     "lint": "eslint . --max-warnings 0",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm -r typecheck && tsc -p tests/integration/tsconfig.json --noEmit",
     "test": "pnpm test:packages && pnpm test:smoke",
     "test:packages": "pnpm -r test",
     "test:smoke": "node --test tests/smoke/workspace.test.mjs",

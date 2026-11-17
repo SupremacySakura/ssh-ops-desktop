@@ -8,10 +8,13 @@ import {
   pascalToSnake,
   readRepoFile,
   renameVariant,
+  serdeDeniesUnknownFields,
+  serdeFieldRename,
   serdeHasDefault,
   serdeRenameStyle,
   serdeSkipsNone,
   serdeTag,
+  derivesDeserialize,
   type RustField,
   type RustItem,
   unwrapOption,
@@ -31,6 +34,7 @@ const SOURCES = [
   'src-tauri/src/commands/ssh_config_import.rs',
   'src-tauri/src/commands/health.rs',
   'src-tauri/src/commands/connection.rs',
+  'src-tauri/src/commands/docker.rs',
 ] as const;
 
 interface ZodNode {
@@ -103,6 +107,12 @@ const structNames = new Set(
 const enumNames = new Set(
   allItems.filter((item) => item.kind === 'enum').map((item) => item.name),
 );
+const itemsByName = new Map<string, RustItem[]>();
+for (const item of allItems) {
+  const items = itemsByName.get(item.name) ?? [];
+  items.push(item);
+  itemsByName.set(item.name, items);
+}
 
 function requireItem(name: string): RustItem {
   const item = itemByName.get(name);
@@ -113,7 +123,8 @@ function requireItem(name: string): RustItem {
 function serdeFields(item: RustItem): Array<{ json: string; field: RustField }> {
   const style = serdeRenameStyle(item);
   return item.fields.map((field) => ({
-    json: style === 'camelCase' ? snakeToCamel(field.name) : field.name,
+    json: serdeFieldRename(field)
+      ?? (style === 'camelCase' ? snakeToCamel(field.name) : field.name),
     field,
   }));
 }
@@ -125,7 +136,12 @@ function snakeToCamel(value: string): string {
 function expectRustMatchesZod(
   rustName: string,
   schemaName: string,
-  options: { nullableFields?: string[]; optionalFields?: string[] } = {},
+  options: {
+    literalFields?: string[];
+    nullableFields?: string[];
+    optionalFields?: string[];
+    nestedLiteralFields?: Record<string, string[]>;
+  } = {},
 ) {
   const rust = requireItem(rustName);
   const schema = (contracts as unknown as Record<string, unknown>)[schemaName];
@@ -135,6 +151,12 @@ function expectRustMatchesZod(
   const rustJsonNames = rustFields.map(({ json }) => json).toSorted();
   expect(rustJsonNames, `${rustName} fields`).toEqual(Object.keys(shape).toSorted());
   expect(strictObject(schema), `${schemaName} must reject unknown keys`).toBe(true);
+  if (derivesDeserialize(rust)) {
+    expect(
+      serdeDeniesUnknownFields(rust),
+      `${rustName} must declare deny_unknown_fields because it is deserialized`,
+    ).toBe(true);
+  }
 
   for (const { json, field } of rustFields) {
     const zodField = shape[json];
@@ -172,7 +194,11 @@ function expectRustMatchesZod(
 
     switch (rustType.kind) {
       case 'string':
-        expect(zodKind(zodField), `${rustName}.${field.name}`).toMatch(/^(string|pipe)$/u);
+        expect(zodKind(zodField), `${rustName}.${field.name}`).toMatch(
+          options.literalFields?.includes(json)
+            ? /^(string|pipe|literal)$/u
+            : /^(string|pipe)$/u,
+        );
         break;
       case 'number':
         expect(zodKind(zodField), `${rustName}.${field.name}`).toBe('number');
@@ -188,6 +214,12 @@ function expectRustMatchesZod(
         break;
       case 'object':
         expect(zodKind(zodField), `${rustName}.${field.name}`).toBe('object');
+        expectNestedObjectMatchesZod(
+          rustType.inner ?? '',
+          zodField,
+          `${rustName}.${field.name}`,
+          options.nestedLiteralFields?.[json] ?? [],
+        );
         break;
       case 'enum':
         expect(zodKind(zodField), `${rustName}.${field.name}`).toBe('enum');
@@ -196,6 +228,63 @@ function expectRustMatchesZod(
         throw new Error(
           `${rustName}.${field.name} has unmapped Rust type ${field.type}`,
         );
+    }
+  }
+}
+
+function expectNestedObjectMatchesZod(
+  rustName: string,
+  zodSchema: ZodNode,
+  path: string,
+  literalFields: string[] = [],
+) {
+  const candidates = itemsByName.get(rustName) ?? [];
+  const rust = candidates.find(({ kind }) => kind === 'struct');
+  if (!rust) throw new Error(`${path} references unparsed Rust struct ${rustName}`);
+  const shape = objectShape(unwrap(zodSchema).node);
+  const rustFields = serdeFields(rust);
+  expect(
+    rustFields.map(({ json }) => json).toSorted(),
+    `${path} (${rustName}) nested fields`,
+  ).toEqual(Object.keys(shape).toSorted());
+  expect(strictObject(unwrap(zodSchema).node), `${path} must reject unknown keys`)
+    .toBe(true);
+  for (const { json, field } of rustFields) {
+    const zodField = shape[json];
+    if (!zodField) throw new Error(`${path}.${json} is missing from Zod`);
+    const nested = classifyRustType(field.type, structNames, enumNames);
+    switch (nested.kind) {
+      case 'string':
+        expect(zodKind(zodField), `${path}.${json}`).toMatch(
+          literalFields.includes(json)
+            ? /^(string|pipe|literal)$/u
+            : /^(string|pipe)$/u,
+        );
+        break;
+      case 'number':
+        expect(zodKind(zodField), `${path}.${json}`).toBe('number');
+        break;
+      case 'boolean':
+        expect(zodKind(zodField), `${path}.${json}`).toBe('boolean');
+        break;
+      case 'bytes':
+      case 'array':
+        expect(zodKind(zodField), `${path}.${json}`).toBe('array');
+        break;
+      case 'enum':
+        expect(zodKind(zodField), `${path}.${json}`).toBe('enum');
+        break;
+      case 'object':
+        expect(zodKind(zodField), `${path}.${json}`).toBe('object');
+        expectNestedObjectMatchesZod(
+          nested.inner ?? '',
+          zodField,
+          `${path}.${json}`,
+          [],
+        );
+        break;
+      default:
+        throw new Error(`${path}.${json} has unmapped Rust type ${field.type}`);
     }
   }
 }
@@ -251,9 +340,15 @@ describe('Rust DTO ↔ Zod contract', () => {
   });
 
   it('keeps monitor and Docker DTOs aligned with the frontend schemas', () => {
+    expectRustMatchesZod('MemoryMetric', 'MonitorMemorySchema');
+    expectRustMatchesZod('DiskMetric', 'MonitorDiskSchema', {
+      literalFields: ['mountPoint'],
+    });
+    expectRustMatchesZod('LoadMetric', 'MonitorLoadSchema');
     expectRustMatchesZod('ProcessMetric', 'MonitorProcessSchema');
     expectRustMatchesZod('MonitorSnapshot', 'MonitorSnapshotSchema', {
       optionalFields: ['cpuPercent', 'memory', 'disk', 'load', 'uptimeSeconds'],
+      nestedLiteralFields: { disk: ['mountPoint'] },
     });
     expectRustMatchesZod('DockerContainer', 'DockerContainerSchema', {
       nullableFields: ['startedAt'],
@@ -316,10 +411,43 @@ describe('Rust DTO ↔ Zod contract', () => {
     ).toEqual(
       connect.variants.map((variant) => renameVariant(variant.name, connectStyle)).toSorted(),
     );
+    const connectOptions = new Map(
+      connectSchema._def.options.map((option) => [
+        option.shape.kind._def.values?.[0] ?? '',
+        option,
+      ]),
+    );
+    for (const variant of connect.variants) {
+      const kind = renameVariant(variant.name, connectStyle);
+      const option = connectOptions.get(kind);
+      expect(option, `ConnectOutcome.${kind} must exist in Zod`).toBeDefined();
+      const expectedFields = variant.fields
+        .map((field) => serdeFieldRename(field) ?? snakeToCamel(field.name))
+        .toSorted();
+      expect(
+        Object.keys(option!.shape).filter((field) => field !== 'kind').toSorted(),
+        `ConnectOutcome.${kind} fields`,
+      ).toEqual(expectedFields);
+      for (const field of variant.fields) {
+        const json = serdeFieldRename(field) ?? snakeToCamel(field.name);
+        const zodField = option!.shape[json];
+        expect(zodField, `ConnectOutcome.${kind}.${json} must exist`).toBeDefined();
+        const rustType = classifyRustType(field.type, structNames, enumNames);
+        expect(
+          rustType.kind,
+          `ConnectOutcome.${kind}.${json} must be a known DTO type`,
+        ).toBe('object');
+        expectNestedObjectMatchesZod(
+          rustType.inner ?? '',
+          zodField,
+          `ConnectOutcome.${kind}.${json}`,
+        );
+      }
+    }
 
     const state = requireItem('ConnectionState');
     expect(serdeTag(state)).toBe('kind');
-    const stateStyle = serdeRenameStyle(state) ?? 'snake_case';
+    const stateStyle = serdeRenameStyle(state) ?? 'camelCase';
     const stateSchema = contracts.ConnectionStateEventSchema as unknown as {
       _def: { options: Array<{ shape: Record<string, ZodNode> }> };
     };
@@ -334,6 +462,71 @@ describe('Rust DTO ↔ Zod contract', () => {
       expect(rustVariants.has(variant), `ConnectionState.${variant}`).toBe(true);
     }
     expect(zodStates).toEqual(['closed', 'connecting', 'error', 'ready']);
+  });
+
+  it('keeps the Tauri connection event enum and error payload in sync', () => {
+    const source = readRepoFile('src-tauri/src/commands/connection.rs');
+    const items = parseRustItems(source, 'src-tauri/src/commands/connection.rs');
+    const item = items.find(({ name }) => name === 'ConnectionState');
+    expect(item, 'Tauri ConnectionState must be declared').toBeDefined();
+    expect(serdeTag(item!)).toBe('kind');
+    expect(serdeRenameStyle(item!)).toBe('camelCase');
+    const event = items.find(({ name }) => name === 'ConnectionStateEvent');
+    expect(event, 'ConnectionStateEvent must be declared').toBeDefined();
+    expect(serdeRenameStyle(event!)).toBe('camelCase');
+    expect(event!.fields.map(({ name }) => name)).toEqual([
+      'server_id',
+      'connection_id',
+      'sequence',
+      'state',
+    ]);
+
+    const schema = contracts.ConnectionStateEventSchema as unknown as {
+      _def: { options: Array<{ shape: Record<string, ZodNode> }> };
+    };
+    const zodVariants = new Map(
+      schema._def.options.map((option) => {
+        const state = unwrap(option.shape.state).node;
+        const kind = state._def.shape?.kind._def.values?.[0] ?? '';
+        return [kind, option];
+      }),
+    );
+    expect([...zodVariants.keys()].toSorted()).toEqual(
+      item!.variants.map((variant) => renameVariant(variant.name, 'camelCase'))
+        .toSorted(),
+    );
+
+    for (const variant of item!.variants) {
+      const kind = renameVariant(variant.name, 'camelCase');
+      const option = zodVariants.get(kind);
+      expect(option, `ConnectionStateEvent must include ${kind}`).toBeDefined();
+      const state = unwrap(option!.shape.state).node;
+      expect(
+        Object.keys(option!.shape).toSorted(),
+        `ConnectionStateEvent.${kind} fields`,
+      ).toEqual(
+        variant.fields.length === 0
+          ? ['connectionId', 'sequence', 'serverId', 'state']
+          : ['connectionId', 'sequence', 'serverId', 'state'],
+      );
+      expect(
+        Object.keys(state._def.shape ?? {}).toSorted(),
+        `ConnectionState.${kind} fields`,
+      ).toEqual(
+        variant.fields.length === 0
+          ? ['kind']
+          : ['code', 'kind', 'message', 'retryable'],
+      );
+    }
+
+    const errorVariant = item!.variants.find(({ name }) => name === 'Error');
+    expect(errorVariant, 'ConnectionState::Error must exist').toBeDefined();
+    expect(errorVariant!.fields.map(({ name }) => name).toSorted()).toEqual(
+      ['code', 'message', 'retryable'],
+    );
+    expect(
+      event!.fields.find(({ name }) => name === 'connection_id')?.type,
+    ).toBe('Option<Id>');
   });
 
   it('accepts serde-shaped JSON for every catalog and file DTO', () => {

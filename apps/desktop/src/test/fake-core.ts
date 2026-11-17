@@ -54,6 +54,7 @@ export interface FakeCoreClient extends CoreClient {
   emitTerminalData(event: TerminalDataEvent): void;
   emitTerminalGap(event: TerminalGapEvent): void;
   emitTerminalClosed(event: TerminalClosedEvent): void;
+  setRemoteDocument(path: string, text: string, sha256?: string): void;
 }
 
 export interface FakeCoreOptions {
@@ -804,6 +805,33 @@ export function createFakeCoreClient({
     emitTerminalData,
     emitTerminalGap,
     emitTerminalClosed,
+    setRemoteDocument: (
+      path: string,
+      text: string,
+      sha256: string = fakeSha256(text),
+    ) => {
+      const remotePath = parseFilePath(path);
+      const size = new TextEncoder().encode(text).byteLength;
+      const modifiedAt = currentTimestamp();
+      documents = {
+        ...documents,
+        [remotePath]: {
+          path: remotePath,
+          text,
+          sha256,
+          size,
+          modifiedAt,
+        },
+      };
+      entriesByDirectory = Object.fromEntries(
+        Object.entries(entriesByDirectory).map(([directory, entries]) => [
+          directory,
+          entries.map((entry) => (
+            entry.path === remotePath ? { ...entry, size, modifiedAt } : entry
+          )),
+        ]),
+      );
+    },
   }, overrides);
 }
 

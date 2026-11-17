@@ -1,12 +1,65 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 import { FIXTURE_METADATA_KEY } from './fixture/scenario-keys';
+
+const pageErrors = new WeakMap<Page, string[]>();
+
+test.beforeEach(({ page }) => {
+  const errors: string[] = [];
+  pageErrors.set(page, errors);
+  page.on('pageerror', (error) => errors.push(error.message));
+});
+
+test.afterEach(({ page }) => {
+  expect(pageErrors.get(page) ?? []).toEqual([]);
+});
+
+async function readFixtureDocument(
+  page: Page,
+  path: string,
+): Promise<{ text: string; sha256: string; size: number }> {
+  return page.evaluate(async (filePath) => {
+    const runtime = (window as unknown as {
+      __harborRuntime: {
+        core: {
+          calls: Array<{ method: string; args: unknown[] }>;
+          readFile(
+            connection: { serverId: string; connectionId: string },
+            path: string,
+          ): Promise<{ text: string }>;
+        };
+      };
+    }).__harborRuntime;
+    const connection = runtime.core.calls
+      .filter((call) => call.method === 'connect')
+      .at(-1)?.args[0] as { serverId: string; connectionId: string } | undefined;
+    if (!connection) throw new Error('fixture has no connected server');
+    return runtime.core.readFile(connection, filePath);
+  }, path);
+}
+
+async function readFixtureFile(page: Page, path: string): Promise<string> {
+  return (await readFixtureDocument(page, path)).text;
+}
+
+async function replaceEditorText(
+  page: Page,
+  editor: ReturnType<Page['getByRole']>,
+  text: string,
+) {
+  const input = editor.getByRole('textbox');
+  await input.focus();
+  await expect(input).toBeFocused();
+  await input.press('End');
+  await input.press('Shift+Home');
+  await input.press('Delete');
+  await page.keyboard.insertText(text);
+  await expect(editor.locator('.view-lines')).toHaveText(text);
+}
 
 test('adds a server, connects, edits a file, monitors it, and execs into Docker', async ({
   page,
 }) => {
-  const pageErrors: string[] = [];
-  page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.goto('/?scenario=integration');
   await expect(page.getByRole('heading', { name: '还没有服务器' })).toBeVisible();
 
@@ -26,7 +79,8 @@ test('adds a server, connects, edits a file, monitors it, and execs into Docker'
     name: /^打开服务器 fresh-prod/u,
   })).toHaveAttribute('aria-current', 'true');
 
-  await page.locator('.xterm-helper-textarea').focus();
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
   await page.keyboard.type('cd /etc');
   await page.keyboard.press('Enter');
   await expect(terminal).toContainText('cd /etc');
@@ -42,17 +96,24 @@ test('adds a server, connects, edits a file, monitors it, and execs into Docker'
   await page.getByRole('button', { name: '打开文件 app.conf' }).dblclick();
   const editor = page.getByRole('dialog', { name: '编辑 app.conf' });
   await expect(editor.locator('.monaco-editor')).toBeVisible();
-  const editorInput = editor.getByRole('textbox', {
-    name: 'app.conf 的远程文本内容',
-  });
-  await editorInput.focus();
-  await page.keyboard.press('ControlOrMeta+A');
-  await page.keyboard.insertText('hello from harbor');
+  await replaceEditorText(page, editor, 'hello from harbor');
   await expect(editor.getByText('有未保存修改')).toBeVisible();
   await editor.getByRole('button', { name: '保存到远程' }).click();
   await expect(editor.getByRole('status')).toContainText('已保存到远程');
   await expect(editor.getByText('与远端一致')).toBeVisible();
   await editor.getByLabel('关闭编辑器').click();
+  const savedDocument = await readFixtureDocument(page, '/app.conf');
+  expect(savedDocument.text.trimEnd()).toBe('hello from harbor');
+  expect(savedDocument.size).toBeGreaterThanOrEqual(17);
+  expect(savedDocument.sha256).toMatch(/^[a-f0-9]{64}$/u);
+  expect(savedDocument.sha256).not.toBe(
+    '5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03',
+  );
+  await page.getByRole('button', { name: '打开文件 app.conf' }).dblclick();
+  await expect(page.getByRole('dialog', { name: '编辑 app.conf' })
+    .locator('.monaco-editor')).toContainText('hello from harbor');
+  await page.getByRole('dialog', { name: '编辑 app.conf' })
+    .getByLabel('关闭编辑器').click();
 
   await page.getByRole('button', { name: '监控' }).click();
   await expect(page.getByRole('heading', { name: '系统监控' })).toBeVisible();
@@ -79,17 +140,42 @@ test('adds a server, connects, edits a file, monitors it, and execs into Docker'
   await page.getByRole('button', { name: 'Docker' }).click();
   const containers = page.getByRole('table', { name: 'Docker 容器' });
   await expect(containers).toContainText('nginx:alpine');
+  await expect(containers).toContainText('Up 3 hours');
   await page.getByRole('button', { name: '重启 web' }).click();
   const confirmation = page.getByRole('alertdialog', { name: '重启容器？' });
   await confirmation.getByRole('button', { name: '确认重启' }).click();
-  await expect(page.getByText('容器已重启')).toBeVisible();
+  const dockerPanel = page.locator('[data-workspace-panel="docker"]');
+  await expect(dockerPanel.getByText('容器已重启')).toBeVisible();
+  await expect(containers).toContainText('Up less than a second');
+  await expect(containers).not.toContainText('2026-11-17 12:00:00 UTC');
+  await expect.poll(async () => page.evaluate(() => {
+    const states = (window as unknown as {
+      __harborRuntime: {
+        core: {
+          calls: Array<{ method: string; args: unknown[] }>;
+        };
+      };
+    }).__harborRuntime.core.calls;
+    return states.filter((call) => call.method === 'runDockerAction').length;
+  })).toBe(1);
+
+  await page.getByRole('button', { name: '停止 web' }).click();
+  await expect(page.getByRole('alertdialog', { name: '停止容器？' }))
+    .toBeVisible();
+  await page.getByRole('alertdialog', { name: '停止容器？' })
+    .getByRole('button', { name: '确认停止' }).click();
+  await expect(dockerPanel.getByText('容器已停止')).toBeVisible();
+  await expect(containers).toContainText('已停止');
+  await page.getByRole('button', { name: '启动 web' }).click();
+  await expect(dockerPanel.getByText('容器已启动')).toBeVisible();
+  await expect(containers).toContainText('运行中');
+  await expect(containers).toContainText('Up less than a second');
 
   await page.getByRole('button', { name: 'Exec web' }).click();
   await expect(page.getByRole('tab', { name: '切换到 终端 2' }))
     .toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('log', { name: '终端 2' }))
     .toContainText('docker exec web sh');
-  expect(pageErrors).toEqual([]);
 });
 
 test('keeps terminal output and monitor sort across tabs and server switches', async ({
@@ -99,7 +185,8 @@ test('keeps terminal output and monitor sort across tabs and server switches', a
   await page.getByRole('button', { name: /^打开服务器 prod-web-01/u }).click();
   const prodTerminal = page.getByRole('log', { name: '终端 1' });
   await expect(prodTerminal).toContainText('harbor renderer fixture');
-  await page.locator('.xterm-helper-textarea').focus();
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
   await page.keyboard.type('echo prod-marker');
   await page.keyboard.press('Enter');
   await expect(prodTerminal).toContainText('echo prod-marker');
@@ -154,38 +241,111 @@ test('retries a failed monitor sample without losing the panel', async ({ page }
   await page.getByRole('button', { name: '监控' }).click();
   const failure = page.getByRole('alert').filter({ hasText: '监控采集失败' });
   await expect(failure).toContainText('服务器拒绝读取系统指标');
+  const callsBeforeRetry = await page.evaluate(() => (
+    window as unknown as {
+      __harborRuntime: {
+        core: { calls: Array<{ method: string }> };
+      };
+    }
+  ).__harborRuntime.core.calls
+    .filter((call) => call.method === 'monitorSnapshot').length);
   await failure.getByRole('button', { name: '立即重试' }).click();
+  await expect.poll(async () => page.evaluate(() => (
+    window as unknown as {
+      __harborRuntime: {
+        core: { calls: Array<{ method: string }> };
+      };
+    }
+  ).__harborRuntime.core.calls
+    .filter((call) => call.method === 'monitorSnapshot').length), {
+    timeout: 700,
+  })
+    .toBeGreaterThan(callsBeforeRetry);
   await expect(page.getByRole('region', { name: 'CPU 概览' })).toContainText('%');
   await expect(failure).toHaveCount(0);
+  await expect(page.getByRole('img', { name: 'CPU 概览近 5 分钟趋势' }))
+    .toBeVisible();
+  await expect.poll(async () => page.evaluate(() => (
+    window as unknown as {
+      __harborRuntime: {
+        monitorStore: {
+          getState(): {
+            states: Record<string, { samples: Array<{ cpuPercent: number | null }> }>;
+          };
+        };
+      };
+    }
+  ).__harborRuntime.monitorStore.getState().states[
+    '019c62b2-2970-7000-8000-000000000101'
+  ]?.samples.length ?? 0)).toBeGreaterThan(0);
 });
 
 test('drops a late monitor sample from a background server', async ({ page }) => {
   await page.goto('/?scenario=monitor-late');
   await page.getByRole('button', { name: /^打开服务器 prod-web-01/u }).click();
   await page.getByRole('button', { name: '监控' }).click();
-  await expect(page.getByRole('region', { name: 'CPU 概览' }))
-    .toContainText('等待采样');
-  const prodCpu = page.getByRole('region', { name: 'CPU 概览' });
+  const prodWorkspace = page.getByRole('main', { includeHidden: true }).filter({
+    has: page.getByRole('heading', { name: 'prod-web-01', exact: true }),
+  });
+  const prodCpu = prodWorkspace.getByRole('region', { name: 'CPU 概览' });
+  await expect(prodCpu).toContainText('等待采样');
 
   await page.getByRole('button', { name: /^打开服务器 dev-box/u }).click();
   await page.getByRole('button', { name: '监控' }).click();
-  const devCpu = page.getByRole('region', { name: 'CPU 概览' });
+  const devWorkspace = page.getByRole('main', { includeHidden: true }).filter({
+    has: page.getByRole('heading', { name: 'dev-box', exact: true }),
+  });
+  const devCpu = devWorkspace.getByRole('region', { name: 'CPU 概览' });
   await expect.poll(async () => (
     await devCpu.locator('p.font-mono.text-\\[20px\\]').textContent()
   )).toBe('91.0%');
 
-  await page.waitForTimeout(1_500);
-  await expect.poll(async () => (
-    await devCpu.locator('p.font-mono.text-\\[20px\\]').textContent()
-  )).toBe('91.0%');
-  await expect(devCpu).not.toContainText('77.0%');
+  await expect.poll(async () => page.evaluate(() => (
+    window as unknown as {
+      __harborRuntime: {
+        monitorStore: {
+          getState(): {
+            states: Record<string, { samples: Array<{ cpuPercent: number | null }> }>;
+          };
+        };
+      };
+    }
+  ).__harborRuntime.monitorStore.getState().states[
+    '019c62b2-2970-7000-8000-000000000102'
+  ]?.samples.length ?? 0)).toBeGreaterThanOrEqual(2);
+  await expect.poll(async () => page.evaluate(() => (
+    window as unknown as {
+      __harborRuntime: {
+        monitorStore: {
+          getState(): {
+            states: Record<string, { samples: Array<{ cpuPercent: number | null }> }>;
+          };
+        };
+      };
+    }
+  ).__harborRuntime.monitorStore.getState().states[
+    '019c62b2-2970-7000-8000-000000000101'
+  ]?.samples.some((sample) => sample.cpuPercent === 77) ?? false)).toBe(false);
 
   await page.getByRole('button', { name: /^打开服务器 prod-web-01/u }).click();
   await page.getByRole('button', { name: '监控' }).click();
-  await expect(prodCpu).not.toContainText('77.0%');
   await expect.poll(async () => (
     await prodCpu.locator('p.font-mono.text-\\[20px\\]').textContent()
   )).toBe('31.0%');
+  await expect.poll(async () => page.evaluate(() => {
+    const samples = (window as unknown as {
+      __harborRuntime: {
+        monitorStore: {
+          getState(): {
+            states: Record<string, { samples: Array<{ cpuPercent: number | null }> }>;
+          };
+        };
+      };
+    }).__harborRuntime.monitorStore.getState().states[
+      '019c62b2-2970-7000-8000-000000000101'
+    ]?.samples ?? [];
+    return samples.some((sample) => sample.cpuPercent === 77);
+  })).toBe(false);
 });
 
 test('keeps a conflicted draft and lets the user retry the save', async ({ page }) => {
@@ -195,17 +355,57 @@ test('keeps a conflicted draft and lets the user retry the save', async ({ page 
   await page.getByRole('button', { name: '打开文件 app.conf' }).dblclick();
 
   const editor = page.getByRole('dialog', { name: '编辑 app.conf' });
-  const editorInput = editor.getByRole('textbox', {
-    name: 'app.conf 的远程文本内容',
+  await replaceEditorText(page, editor, '');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __harborRuntime: {
+        core: {
+          setRemoteDocument(path: string, text: string, sha256?: string): void;
+        };
+      };
+    }).__harborRuntime.core.setRemoteDocument(
+      '/app.conf',
+      'remote changed elsewhere\n',
+    );
   });
-  await editorInput.focus();
-  await page.keyboard.press('ControlOrMeta+A');
   await page.keyboard.insertText('draft kept locally');
   await editor.getByRole('button', { name: '保存到远程' }).click();
   await expect(editor.getByRole('alert')).toContainText('已在别处修改');
   await expect(editor).toContainText('草稿仍保留在本编辑器内');
   await expect(editor.locator('.monaco-editor')).toContainText('draft kept locally');
-  await expect(editor.getByRole('button', { name: '重试保存' })).toBeVisible();
+  expect(await readFixtureFile(page, '/app.conf')).toBe('remote changed elsewhere\n');
+  const writesBeforeRetry = await page.evaluate(() => (
+    window as unknown as {
+      __harborRuntime: {
+        core: { calls: Array<{ method: string }> };
+      };
+    }
+  ).__harborRuntime.core.calls
+    .filter((call) => call.method === 'writeFile').length);
+  await editor.getByRole('button', { name: '重试保存' }).click();
+  await expect.poll(async () => page.evaluate(() => (
+    window as unknown as {
+      __harborRuntime: {
+        core: { calls: Array<{ method: string }> };
+      };
+    }
+  ).__harborRuntime.core.calls
+    .filter((call) => call.method === 'writeFile').length))
+    .toBeGreaterThan(writesBeforeRetry);
+  await expect(editor.getByRole('status')).toContainText('已保存到远程');
+  await expect(editor.getByText('与远端一致')).toBeVisible();
+  expect((await readFixtureFile(page, '/app.conf')).trimEnd())
+    .toBe('draft kept locally');
+  page.once('dialog', (dialog) => void dialog.accept());
+  await editor.getByRole('button', { name: '重新加载远端内容' }).click();
+  await expect(editor.getByRole('status')).toContainText('已重新加载远端内容');
+  await expect(editor.locator('.view-lines'))
+    .toContainText('draft kept locally');
+  await replaceEditorText(page, editor, 'resolved after reload');
+  await editor.getByRole('button', { name: '保存到远程' }).click();
+  await expect(editor.getByRole('status')).toContainText('已保存到远程');
+  expect((await readFixtureFile(page, '/app.conf')).trimEnd())
+    .toBe('resolved after reload');
 });
 
 test('shows explicit offline states with a reconnect action', async ({ page }) => {
@@ -243,13 +443,19 @@ test('shows empty search and empty directory states', async ({ page }) => {
   await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByRole('heading', { name: '目录为空' })).toBeVisible();
   await expect(page.getByText('/ 当前没有文件或子目录。')).toBeVisible();
-  await expect(page.getByRole('button', { name: '新建文件夹' }).first())
-    .toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: '目录为空' })
+      .locator('..')
+      .getByRole('button', { name: '新建文件夹' }),
+  ).toBeVisible();
 });
 
-test('imports three ready hosts and skips the existing one', async ({ page }) => {
+test('imports three ready hosts from the command palette and skips duplicates', async ({
+  page,
+}) => {
   await page.goto('/?scenario=import');
-  await page.getByRole('button', { name: '从 SSH Config 导入' }).click();
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+KeyK' : 'Control+KeyK');
+  await page.getByRole('option', { name: /从 SSH Config 导入/u }).click();
   const dialog = page.getByRole('dialog', { name: '导入 SSH Config' });
   await expect(dialog.getByText('imported-prod')).toBeVisible();
   await expect(dialog.getByRole('checkbox', { name: '选择 imported-staging' }))
@@ -260,7 +466,14 @@ test('imports three ready hosts and skips the existing one', async ({ page }) =>
     .toBeEnabled();
   await expect(dialog.getByRole('checkbox', { name: '选择 already-here' }))
     .toBeDisabled();
+  await expect(dialog.getByRole('checkbox', { name: '选择 imported-copy' }))
+    .toBeDisabled();
+  await expect(dialog.getByRole('checkbox', { name: '选择 proxied' }))
+    .toBeDisabled();
   await expect(dialog.getByText('已存在', { exact: true })).toHaveCount(2);
+  await expect(dialog.getByText('同批重复')).toBeVisible();
+  await expect(dialog.getByText('暂不支持', { exact: true })).toBeVisible();
+  await expect(dialog.getByText(/ProxyJump 未实现/u)).toBeVisible();
 
   await dialog.getByRole('button', { name: '导入 4 台服务器' }).click();
   await expect(dialog.getByText('导入完成')).toBeVisible();
@@ -277,6 +490,8 @@ test('imports three ready hosts and skips the existing one', async ({ page }) =>
     .toBeVisible();
   await expect(page.getByRole('button', { name: /^打开服务器 race-existing/u }))
     .toHaveCount(1);
+  await expect(page.getByRole('button', { name: /^打开服务器 already-here/u }))
+    .toHaveCount(0);
 
   await page.getByRole('button', { name: /^打开服务器 imported-prod/u }).click();
   await expect(page.getByText('凭据待配置').first()).toBeVisible();

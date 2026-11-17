@@ -9,6 +9,8 @@ export default tseslint.config(
       '**/node_modules/**',
       'src-tauri/gen/**',
       'target/**',
+      'playwright-report/**',
+      'test-results/**',
     ],
   },
   eslint.configs.recommended,

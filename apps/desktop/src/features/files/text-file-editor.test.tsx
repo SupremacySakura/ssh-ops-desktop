@@ -132,6 +132,37 @@ describe('TextFileEditor', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('retries with the latest remote hash and writes the preserved draft', async () => {
+    const core = editorCore();
+    const onSaved = vi.fn();
+    render(
+      <TextFileEditor
+        connection={connection}
+        core={core}
+        document={document}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+
+    const editor = screen.getByRole('textbox', { name: '远程文件内容' });
+    fireEvent.change(editor, { target: { value: 'draft after conflict\n' } });
+    core.setRemoteDocument('/app.conf', 'remote changed elsewhere\n');
+    fireEvent.click(screen.getByRole('button', { name: '保存到远程' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('已在别处修改');
+    expect(editor).toHaveValue('draft after conflict\n');
+    fireEvent.click(screen.getByRole('button', { name: '重试保存' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('已保存到远程');
+    expect((await core.readFile(connection, '/app.conf')).text)
+      .toBe('draft after conflict\n');
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/app.conf',
+      size: 21,
+    }));
+  });
+
   it('reloads the latest remote text and replaces the conflict hash', async () => {
     const latest: RemoteTextFile = {
       ...document,

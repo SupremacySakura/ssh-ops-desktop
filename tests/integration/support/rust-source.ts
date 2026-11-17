@@ -213,6 +213,19 @@ export function serdeHasDefault(field: RustField): boolean {
   return /#\[serde\([^)]*default/u.test(attributesText(field.attributes));
 }
 
+export function serdeFieldRename(field: RustField): string | null {
+  return /rename\s*=\s*"([^"]+)"/u.exec(attributesText(field.attributes))?.[1]
+    ?? null;
+}
+
+export function serdeDeniesUnknownFields(item: RustItem): boolean {
+  return /\bdeny_unknown_fields\b/u.test(attributesText(item.attributes));
+}
+
+export function derivesDeserialize(item: RustItem): boolean {
+  return /\bDeserialize\b/u.test(attributesText(item.attributes));
+}
+
 export function unwrapOption(type: string): string | null {
   const match = /^Option<(.+)>$/u.exec(type.trim());
   return match ? match[1] : null;
