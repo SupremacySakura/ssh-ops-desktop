@@ -2,6 +2,7 @@
 
 import '@testing-library/jest-dom/vitest';
 
+import type { SshConfigImportPreview } from '@opspilot/contracts';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -241,6 +242,50 @@ describe('Harbor empty shell', () => {
     expect(core.calls).toContainEqual(expect.objectContaining({ method: 'updateServer' }));
   });
 
+  it('keeps imported servers visibly pending while their metadata is edited', async () => {
+    const core = createFakeCoreClient({
+      servers: [{
+        id: '019c62b2-2970-7000-8000-000000000015',
+        name: 'imported-pending',
+        host: 'pending.example.com',
+        port: 22,
+        user: 'deploy',
+        authType: 'key',
+        secretRef: null,
+        groupId: null,
+        favorite: false,
+        lastConnectedAt: null,
+        createdAt: 1_699_000_000,
+      }],
+    });
+
+    render(<App core={core} />);
+    const server = await screen.findByRole('button', {
+      name: /^打开服务器 imported-pending/u,
+    });
+    expect(screen.getByText('凭据待配置')).toBeVisible();
+    fireEvent.click(server);
+    expect(screen.getByText(/认证方式待配置/u)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '编辑服务器' }));
+
+    const dialog = screen.getByRole('dialog', { name: '编辑服务器' });
+    expect(within(dialog).getByText(
+      '当前凭据待配置；留空只保存服务器元数据，补充凭据后才能连接。',
+    )).toBeVisible();
+    expect(within(dialog).getByPlaceholderText('留空继续待配置')).toBeVisible();
+
+    fireEvent.change(within(dialog).getByLabelText('名称'), {
+      target: { value: 'imported-pending-renamed' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存服务器' }));
+
+    expect(await screen.findByRole('heading', {
+      name: 'imported-pending-renamed',
+    })).toBeVisible();
+    expect(screen.getByText(/认证方式待配置/u)).toBeVisible();
+    expect(core.calls).toContainEqual(expect.objectContaining({ method: 'updateServer' }));
+  });
+
   it('requires confirmation before deleting the selected server', async () => {
     const core = createFakeCoreClient({
       servers: [{
@@ -379,7 +424,7 @@ describe('Harbor empty shell', () => {
       name: '搜索服务器或命令',
     });
     expect(search).toHaveFocus();
-    expect(within(palette).queryByText('从 SSH Config 导入')).not.toBeInTheDocument();
+    expect(within(palette).getByText('从 SSH Config 导入')).toBeInTheDocument();
 
     fireEvent.change(search, { target: { value: 'example.com' } });
     expect(within(palette).getAllByRole('option')).toHaveLength(2);
@@ -405,5 +450,144 @@ describe('Harbor empty shell', () => {
     });
     fireEvent.keyDown(within(reopened).getByRole('searchbox'), { key: 'Enter' });
     expect(screen.getByRole('dialog', { name: '添加服务器' })).toBeVisible();
+  });
+
+  it('previews SSH Config rows, imports only ready selections, and marks pending credentials', async () => {
+    const importPreview: SshConfigImportPreview = {
+      previewId: '019c62b2-2970-7000-8000-000000000010',
+      sourcePath: '~/.ssh/config',
+      items: [{
+        id: '019c62b2-2970-7000-8000-000000000011',
+        alias: 'imported-prod',
+        host: 'imported.example.com',
+        port: 2222,
+        username: 'deploy',
+        identityFile: '~/.ssh/id_ed25519',
+        status: 'ready',
+        unsupportedDirectives: [],
+        warnings: [],
+      }, {
+        id: '019c62b2-2970-7000-8000-000000000012',
+        alias: 'existing',
+        host: 'existing.example.com',
+        port: 22,
+        username: 'deploy',
+        identityFile: null,
+        status: 'existing',
+        unsupportedDirectives: [],
+        warnings: [],
+      }, {
+        id: '019c62b2-2970-7000-8000-000000000013',
+        alias: 'imported-copy',
+        host: 'imported.example.com',
+        port: 2222,
+        username: 'deploy',
+        identityFile: null,
+        status: 'duplicateInBatch',
+        unsupportedDirectives: [],
+        warnings: [],
+      }, {
+        id: '019c62b2-2970-7000-8000-000000000014',
+        alias: 'proxied',
+        host: 'proxied.example.com',
+        port: 22,
+        username: 'deploy',
+        identityFile: null,
+        status: 'unsupported',
+        unsupportedDirectives: ['ProxyJump'],
+        warnings: ['第 8 行：ProxyJump 暂不支持；该 Host 已停用，避免按错误路径直连。'],
+      }],
+      warnings: [],
+      warningCount: 0,
+      existingCount: 1,
+      importableCount: 1,
+    };
+    const core = createFakeCoreClient({
+      sshConfigImport: importPreview,
+    });
+
+    render(<App core={core} />);
+    await screen.findByRole('heading', { name: '还没有服务器' });
+    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    fireEvent.click(within(screen.getByRole('dialog', { name: '命令面板' })).getByRole(
+      'option',
+      { name: /从 SSH Config 导入/u },
+    ));
+
+    const dialog = await screen.findByRole('dialog', { name: '导入 SSH Config' });
+    expect(await within(dialog).findByText('imported-prod')).toBeVisible();
+    expect(within(dialog).getAllByText('~/.ssh/config')).toHaveLength(2);
+    expect(within(dialog).getAllByText('imported.example.com')).toHaveLength(2);
+    expect(within(dialog).getAllByText('deploy')).toHaveLength(4);
+    expect(within(dialog).getAllByText('2222')).toHaveLength(2);
+
+    const readyChoice = within(dialog).getByRole('checkbox', {
+      name: '选择 imported-prod',
+    });
+    expect(readyChoice).toBeEnabled();
+    expect(readyChoice).toBeChecked();
+    expect(within(dialog).getByRole('checkbox', {
+      name: '选择 existing',
+    })).toBeDisabled();
+    expect(within(dialog).getByRole('checkbox', {
+      name: '选择 imported-copy',
+    })).toBeDisabled();
+    expect(within(dialog).getByRole('checkbox', {
+      name: '选择 proxied',
+    })).toBeDisabled();
+    expect(within(dialog).getAllByText('已存在')).toHaveLength(2);
+    expect(within(dialog).getByText('同批重复')).toBeVisible();
+    expect(within(dialog).getByText('暂不支持')).toBeVisible();
+
+    fireEvent.click(readyChoice);
+    expect(within(dialog).getByRole('button', {
+      name: '导入 0 台服务器',
+    })).toBeDisabled();
+    fireEvent.click(readyChoice);
+    fireEvent.click(within(dialog).getByRole('button', {
+      name: '导入 1 台服务器',
+    }));
+
+    expect(await within(dialog).findByText('导入完成')).toBeVisible();
+    expect(within(dialog).getByText(/已导入/u)).toHaveTextContent('已导入 1 台服务器');
+    fireEvent.click(within(dialog).getByRole('button', { name: '完成' }));
+
+    const imported = await screen.findByRole('button', {
+      name: /^打开服务器 imported-prod/u,
+    });
+    expect(screen.getAllByText('凭据待配置').length).toBeGreaterThan(0);
+    fireEvent.click(imported);
+    expect(screen.getByText(/尚未配置密码或私钥/u)).toBeVisible();
+    expect(core.calls).toContainEqual({
+      method: 'applySshConfigImport',
+      args: [{
+        previewId: importPreview.previewId,
+        selectedRowIds: [importPreview.items[0].id],
+      }],
+    });
+  });
+
+  it('shows a Chinese error when the SSH Config file is missing', async () => {
+    const core = createFakeCoreClient({
+      overrides: {
+        previewSshConfigImport: async () => {
+          throw {
+            code: 'NOT_FOUND',
+            message: '未找到 SSH Config 文件，请确认 ~/.ssh/config 存在',
+            retryable: false,
+          };
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    await screen.findByRole('heading', { name: '还没有服务器' });
+    fireEvent.click(screen.getByRole('button', { name: '从 SSH Config 导入' }));
+
+    const dialog = await screen.findByRole('dialog', { name: '导入 SSH Config' });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      '未找到 SSH Config 文件',
+    );
+    expect(within(dialog).getByRole('button', { name: '重新读取' })).toBeVisible();
   });
 });

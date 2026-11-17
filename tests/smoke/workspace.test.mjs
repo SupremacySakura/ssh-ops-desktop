@@ -128,7 +128,7 @@ test('removed OpsPilot subsystems and native E2E sources are absent', () => {
   }
 });
 
-test('Harbor catalog commands are registered and authorized exactly once', () => {
+test('Harbor commands are registered and authorized exactly once', () => {
   const expectedCommands = [
     'core_health',
     'server_list',
@@ -140,6 +140,8 @@ test('Harbor catalog commands are registered and authorized exactly once', () =>
     'server_group_create',
     'server_group_update',
     'server_group_delete',
+    'ssh_config_import_preview',
+    'ssh_config_import_apply',
   ];
   const expectedAllowPermissions = expectedCommands.map(
     (command) => `allow-${command.replaceAll('_', '-')}`,

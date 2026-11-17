@@ -4,16 +4,17 @@ Harbor 是一款面向个人开发者的本地优先纯 SSH 桌面运维台，�
 
 ## 当前状态
 
-仓库已完成 Harbor v1 的基础切换，并落地服务器目录：
+仓库已完成 Harbor v1 的基础切换，并落地服务器目录与 SSH Config 导入：
 
 - 已移除旧 OpsPilot 的 AI Agent、Task Engine、Audit、Agent Runtime 与 Agent/Model 共享包。
 - Rust workspace 只保留 `domain`、`ssh-core`、`persistence`、`secrets`、`remote-adapters` 与 Tauri 壳。
-- SQLite v2 schema 为 `groups` 与 `servers`，不迁移旧数据。
+- SQLite schema 保存 `groups`、`servers` 与内部 `known_host_keys`，不迁移旧数据。
 - Calibrated Panel 服务器目录支持分组、搜索、收藏与最近连接排序，以及服务器和分组的增删改。
-- 服务器密码或私钥只写入系统凭据库，SQLite 仅保存 `secret_ref`。
-- 命令面板可通过 ⌘K / Ctrl+K 搜索服务器并执行添加服务器动作。
+- 服务器密码或私钥只写入系统凭据库，SQLite 仅保存 `secret_ref`；导入的服务器以 `secret_ref = NULL` 明确表示“凭据待配置”。
+- 可从 `~/.ssh/config` 预览明确的 Host，跳过通配 Host、不完整条目、已存在项和批内重复项，再批量导入待配置服务器。
+- 命令面板可通过 ⌘K / Ctrl+K 搜索服务器、添加服务器或打开 SSH Config 导入。
 
-SSH 连接、终端、文件、监控、Docker 与 SSH Config 导入由后续议题接入；当前版本不提供这些交互。
+SSH 连接、终端、文件、监控与 Docker 由后续议题接入；当前版本不提供这些交互。SSH Config 导入不会复制私钥、信任主机指纹或执行 `Include`、`Match`、`ProxyJump`、`ProxyCommand` 等尚未实现的连接语义。
 
 ## 技术栈
 
@@ -80,7 +81,7 @@ cargo fmt --check
 
 ## 安全原则
 
-- **敏感信息不进 SQLite**：密码、私钥口令与 Token 只存储于系统安全凭据库，数据库仅保存 `secret_ref`。
+- **敏感信息不进 SQLite**：密码、私钥口令与 Token 只存储于系统安全凭据库，数据库仅保存可空的 `secret_ref`；`NULL` 只表示凭据待配置，不是凭据或占位引用。
 - **主机身份校验**：首次连接展示主机指纹并要求确认，指纹变化时默认阻断。
 - **前端最小权限**：Tauri Capability 只开放当前功能需要的命令；前端通过类型化 `CoreClient` 与 Rust Core 通信。
 - **远程路径校验**：SFTP 路径必须经过 `RemotePath::try_new`，不得直接拼接未校验输入。

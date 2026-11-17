@@ -8,4 +8,4 @@ mod server_repository;
 
 pub use database::Database;
 pub use group_repository::GroupRepository;
-pub use server_repository::ServerRepository;
+pub use server_repository::{BatchCreateResult, ServerRepository};

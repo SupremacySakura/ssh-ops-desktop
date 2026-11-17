@@ -43,12 +43,18 @@ export function EmptyWorkspace() {
                 </h2>
                 <p className="mt-1 font-mono text-[11px] text-muted">
                   {selectedServer.user}@{selectedServer.host}:{selectedServer.port} ·{' '}
-                  {selectedServer.authType === 'key' ? '私钥认证' : '密码认证'}
+                  {selectedServer.secretRef === null
+                    ? '认证方式待配置'
+                    : selectedServer.authType === 'key'
+                      ? '私钥认证'
+                      : '密码认证'}
                 </p>
               </div>
               <div className="ml-6 flex shrink-0 items-center gap-2">
                 <span className="font-mono text-[10px] tracking-[0.1em] text-muted">
-                  {formatLastConnectedAt(selectedServer.lastConnectedAt)}
+                  {selectedServer.secretRef === null
+                    ? '凭据待配置'
+                    : formatLastConnectedAt(selectedServer.lastConnectedAt)}
                 </span>
                 <button
                   className="inline-flex h-8 items-center gap-1.5 border border-hairline bg-paper px-2.5 text-[11px] font-medium text-ink hover:border-ink disabled:opacity-40"
@@ -91,7 +97,9 @@ export function EmptyWorkspace() {
                 <p className="text-[#8E8A80]">harbor://{selectedServer.host}:{selectedServer.port}</p>
                 <p className="mt-2 text-screen-text">服务器目录已就绪。</p>
                 <p className="text-[#B9B4A8]">
-                  SSH 连接、终端、文件、监控与 Docker 将在后续议题接入；当前工作区保留服务器上下文。
+                  {selectedServer.secretRef === null
+                    ? '尚未配置密码或私钥。编辑服务器并保存凭据后，才能发起 SSH 连接。'
+                    : 'SSH 连接、终端、文件、监控与 Docker 将在后续议题接入；当前工作区保留服务器上下文。'}
                 </p>
                 <div aria-hidden className="mt-4 flex items-center gap-2">
                   <span className="h-px w-12 bg-accent" />
@@ -109,7 +117,11 @@ export function EmptyWorkspace() {
             description={
               <>
                 将从 Harbor 删除 <strong className="font-medium text-ink">{selectedServer.name}</strong>
-                （{selectedServer.user}@{selectedServer.host}:{selectedServer.port}）。系统凭据库中的对应凭据也会一并清理，此操作无法撤销。
+                （{selectedServer.user}@{selectedServer.host}:{selectedServer.port}）。
+                {selectedServer.secretRef === null
+                  ? '该服务器尚未配置凭据。'
+                  : '系统凭据库中的对应凭据也会一并清理。'}
+                此操作无法撤销。
               </>
             }
             error={catalogError}

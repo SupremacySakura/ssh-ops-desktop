@@ -21,7 +21,7 @@ async fn catalog_survives_reopening_the_database_file() {
             22,
             "deploy",
             AuthType::Key,
-            "secret-ref-fixture",
+            Some("secret-ref-fixture"),
             Some(group.id),
             true,
         )

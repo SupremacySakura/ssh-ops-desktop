@@ -1,6 +1,6 @@
 # Harbor 安全边界
 
-本文记录当前 Harbor 基础壳已经实现的权限边界，以及后续功能不得绕过的约束。它描述可验证的代码现状，不把尚未实现的服务器 CRUD、SSH 会话、SFTP 或终端能力写成已有能力。
+本文记录当前 Harbor 已实现的权限边界，以及后续功能不得绕过的约束。当前已实现服务器目录与 SSH Config 导入；不把尚未实现的 SSH 会话、SFTP 或终端能力写成已有能力。
 
 ## 信任区域
 
@@ -13,9 +13,9 @@
 
 ## WebView 与 IPC
 
-- 主窗口 capability 只授予显式生成的 `allow-core-health`，不包含 `shell:*`、`fs:*`、HTTP 通配权限或远程 URL 访问能力。
+- 主窗口 capability 只授予显式生成的 `core_health`、服务器目录和 SSH Config 导入权限，不包含 `shell:*`、`fs:*`、HTTP 通配权限或远程 URL 访问能力。
 - 应用 command 同时在 `src-tauri/build.rs` 的 manifest、`src-tauri/src/lib.rs` 的 invoke handler、权限文件与主窗口 capability 中显式注册。
-- 当前 `core_health` 只返回版本、数据库 readiness 和凭据库 readiness；不返回数据库路径、环境变量、系统凭据名称或后端错误详情。
+- `core_health` 只返回版本、数据库 readiness 和凭据库 readiness；不返回数据库路径、环境变量、系统凭据名称或后端错误详情。
 - React 只依赖 `CoreClient` 接口；Tauri `invoke` 被限制在适配器内。IPC 拒绝时 UI 显示通用错误，不向用户暴露原始后端错误。
 
 新增 command 时，WebView 输入必须在 Rust 边界重新校验。写入、删除、重命名等危险操作必须由前端原生确认对话框把关；不要恢复旧 OperationGateway、审批、任务或审计链。
@@ -23,12 +23,22 @@
 ## SQLite 与凭据
 
 - SQLite 文件位于 Tauri 的应用私有数据目录，并启用 WAL、外键与 busy timeout。
-- v2 schema 只包含 `groups`、`servers` 与内部 `known_host_keys`。不创建 tasks、audits、agent、model、projects、tags 或 tunnel 表。
-- `servers.secret_ref` 是不透明引用；密码或私钥本体只存在于系统凭据库。
+- schema 只包含 `groups`、`servers` 与内部 `known_host_keys`。不创建 tasks、audits、agent、model、projects、tags 或 tunnel 表。
+- `servers.secret_ref` 是可空的不透明引用；非空值只指向系统凭据库，`NULL` 仅表示“凭据待配置”，不得写入空字符串、占位引用或猜测的凭据。
+- 迁移将 `servers` 重建为允许可空 `secret_ref` 的表，并在同一事务中备份和恢复 `known_host_keys`，避免服务器表重建级联丢失已信任指纹。
 - 删除分组时通过外键 `ON DELETE SET NULL` 清空服务器分组，不级联删除服务器。
 - `KeyringSecretStore` 使用固定 service 和不可猜测 account；readiness probe 只读取保留的探测 account，不创建、修改、枚举或泄露凭据。
 - `SecretValue` 使用可清零容器，`Debug` 输出固定为 `[REDACTED]`。
-- 删除服务器时，后续服务器命令必须显式清理对应系统凭据；数据库 migration 不级联删除凭据库条目。
+- 删除服务器时，非空 `secret_ref` 对应的系统凭据必须显式清理；凭据待配置服务器不访问系统凭据库。数据库 migration 不级联删除凭据库条目。
+
+## SSH Config 导入
+
+- Rust 只读取默认 `~/.ssh/config`（测试可注入路径），限制为 1 MiB、普通文件与 UTF-8；错误信息不包含文件正文或私钥内容。
+- 解析器只导入明确的 `Host`、`HostName`、`Port` 与 `User`。通配 Host、`Match` 条件块、缺少 User、非法端口和无法安全解释的主机名会被跳过并产生 warning。
+- `Include`、`Match`、`ProxyJump`、`ProxyCommand` 以及会改变连接目标或主机身份语义的指令必须显式标记为 unsupported；不能静默按直连导入。若这些语义位于顶层、通配 Host 或 Match 条件块中，无法证明具体条目不受影响时，preview 会把全部明确 Host 标为 unsupported，而不是猜测其继承结果。
+- Preview 与 apply 只在 Rust 内存中保存服务端行 ID，并与窗口和 15 分钟 TTL 绑定。Apply 只接受 preview ID 与选中行 ID，重新读取文件并校验 SHA-256 后再写入；源文件变化返回 `CONFLICT`。
+- Apply 使用事务内 `ON CONFLICT DO NOTHING` 跳过已存在与批内重复的 `(host, port, user)`，不会因单条重复让整批失败。
+- 导入不复制 `IdentityFile` 内容、不创建系统凭据、不执行代理指令，也不写入 `known_host_keys`。新服务器以 `secret_ref = NULL` 和“凭据待配置”状态进入目录。
 
 ## SSH 主机身份
 

@@ -3151,11 +3151,13 @@ dependencies = [
  "opspilot-domain",
  "opspilot-persistence",
  "opspilot-secrets",
+ "opspilot-ssh-core",
  "serde",
  "serde_json",
  "sqlx",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
 ]
 

@@ -13,7 +13,10 @@ mod terminal;
 pub use auth::{AuthRequest, AuthResolver, ResolvedAuth};
 pub use connection::{ConnectionEvent, ConnectionMachine, ConnectionState};
 pub use known_hosts::{HostEndpoint, HostKeyDecision, HostKeyVerifier, HostPublicKey};
-pub use openssh::{OpenSshArgs, OpenSshServer, SshConfigImporter, SshConfigPreview};
+pub use openssh::{
+    OpenSshArgs, OpenSshServer, SshConfigEntry, SshConfigFile, SshConfigImporter, SshConfigParse,
+    SshConfigWarning, read_ssh_config,
+};
 pub use russh_backend::{
     ConnectOutcome, ConnectionRequest, ExecOutput, HostKeyProbe, HostKeyPrompt,
     RusshConnectionManager, RusshShellBackend,

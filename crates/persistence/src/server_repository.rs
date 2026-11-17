@@ -5,6 +5,12 @@ use sqlx::{Row, sqlite::SqliteRow};
 
 use crate::Database;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchCreateResult {
+    pub created: Vec<Server>,
+    pub skipped: usize,
+}
+
 /// SQLite-backed catalog repository for servers.
 #[derive(Clone, Debug)]
 pub struct ServerRepository {
@@ -99,6 +105,57 @@ impl ServerRepository {
         }
 
         self.get(id).await
+    }
+
+    pub async fn create_many_skip_duplicates(
+        &self,
+        inputs: &[ServerInput],
+        created_at: i64,
+    ) -> Result<BatchCreateResult, CoreError> {
+        let mut transaction = self
+            .database
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| repository_error("begin server batch import", error))?;
+        let mut created = Vec::new();
+        for input in inputs {
+            let id = Id::new();
+            let row = sqlx::query(
+                "INSERT INTO servers (
+                    id, name, host, port, user, auth_type, secret_ref, group_id,
+                    favorite, last_connected_at, created_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                 ON CONFLICT(host, port, user) DO NOTHING
+                 RETURNING id, name, host, port, user, auth_type, secret_ref, group_id,
+                           favorite, last_connected_at, created_at",
+            )
+            .bind(id.to_string())
+            .bind(input.name())
+            .bind(input.host().as_str())
+            .bind(i64::from(input.port().get()))
+            .bind(input.user())
+            .bind(input.auth_type().as_str())
+            .bind(input.secret_ref())
+            .bind(input.group_id().map(|group_id| group_id.to_string()))
+            .bind(i64::from(input.favorite()))
+            .bind(created_at)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(map_server_write_error)?;
+            if let Some(row) = row {
+                created.push(server_from_row(&row)?);
+            }
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| repository_error("commit server batch import", error))?;
+
+        Ok(BatchCreateResult {
+            skipped: inputs.len().saturating_sub(created.len()),
+            created,
+        })
     }
 
     pub async fn set_favorite(&self, id: Id, favorite: bool) -> Result<Server, CoreError> {

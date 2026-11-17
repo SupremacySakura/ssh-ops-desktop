@@ -11,6 +11,8 @@ fn main() {
             "server_group_create",
             "server_group_update",
             "server_group_delete",
+            "ssh_config_import_preview",
+            "ssh_config_import_apply",
         ]));
     tauri_build::try_build(attributes).expect("failed to build Tauri command manifest");
 }

@@ -13,7 +13,7 @@ async fn server_round_trips_through_the_repository() {
         22,
         "deploy",
         AuthType::Key,
-        "secret-ref-fixture",
+        Some("secret-ref-fixture"),
         None,
         true,
     )
@@ -36,7 +36,7 @@ async fn server_round_trips_through_the_repository() {
     assert_eq!(created.port, 22);
     assert_eq!(created.user, "deploy");
     assert_eq!(created.auth_type, AuthType::Key);
-    assert_eq!(created.secret_ref, "secret-ref-fixture");
+    assert_eq!(created.secret_ref.as_deref(), Some("secret-ref-fixture"));
     assert!(created.favorite);
     assert_eq!(created.created_at, 1_700_000_000);
 }
@@ -53,7 +53,7 @@ async fn server_identity_is_unique_across_the_catalog() {
         22,
         "deploy",
         AuthType::Key,
-        "secret-ref-fixture",
+        Some("secret-ref-fixture"),
         None,
         false,
     )
@@ -87,7 +87,7 @@ async fn server_update_changes_the_editable_namplate_without_resetting_history()
                 22,
                 "deploy",
                 AuthType::Key,
-                "secret-ref-fixture",
+                Some("secret-ref-fixture"),
                 None,
                 false,
             )
@@ -102,7 +102,7 @@ async fn server_update_changes_the_editable_namplate_without_resetting_history()
         2222,
         "ops",
         AuthType::Password,
-        "next-secret-ref-fixture",
+        Some("next-secret-ref-fixture"),
         None,
         true,
     )
@@ -119,7 +119,10 @@ async fn server_update_changes_the_editable_namplate_without_resetting_history()
     assert_eq!(updated.port, 2222);
     assert_eq!(updated.user, "ops");
     assert_eq!(updated.auth_type, AuthType::Password);
-    assert_eq!(updated.secret_ref, "next-secret-ref-fixture");
+    assert_eq!(
+        updated.secret_ref.as_deref(),
+        Some("next-secret-ref-fixture")
+    );
     assert!(updated.favorite);
     assert_eq!(updated.created_at, original.created_at);
     assert_eq!(updated.last_connected_at, original.last_connected_at);
@@ -200,6 +203,115 @@ async fn deleting_a_server_removes_it_from_the_catalog() {
     );
 }
 
+#[tokio::test]
+async fn imported_servers_persist_with_an_explicit_pending_credential() {
+    let database = Database::open(":memory:")
+        .await
+        .expect("in-memory database should open");
+    let repository = ServerRepository::new(database);
+    let input = ServerInput::try_new(
+        "imported-prod",
+        "imported.example.com",
+        22,
+        "deploy",
+        AuthType::Key,
+        None,
+        None,
+        false,
+    )
+    .expect("pending imported server should be valid");
+
+    let created = repository
+        .create(&input, 1_700_000_000)
+        .await
+        .expect("pending server should be created");
+    let fetched = repository
+        .get(created.id)
+        .await
+        .expect("pending server should be readable");
+
+    assert_eq!(fetched.secret_ref, None);
+    assert_eq!(fetched, created);
+}
+
+#[tokio::test]
+async fn batch_create_skips_existing_and_in_batch_duplicate_identities_atomically() {
+    let database = Database::open(":memory:")
+        .await
+        .expect("in-memory database should open");
+    let repository = ServerRepository::new(database);
+    repository
+        .create(
+            &ServerInput::try_new(
+                "existing",
+                "existing.example.com",
+                22,
+                "deploy",
+                AuthType::Key,
+                Some("secret-ref-fixture"),
+                None,
+                false,
+            )
+            .expect("fixture should be valid"),
+            1_700_000_000,
+        )
+        .await
+        .expect("existing server should be created");
+
+    let inputs = vec![
+        ServerInput::try_new(
+            "new",
+            "new.example.com",
+            22,
+            "deploy",
+            AuthType::Key,
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+        ServerInput::try_new(
+            "new-duplicate",
+            "new.example.com",
+            22,
+            "deploy",
+            AuthType::Key,
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+        ServerInput::try_new(
+            "existing",
+            "existing.example.com",
+            22,
+            "deploy",
+            AuthType::Key,
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    ];
+
+    let result = repository
+        .create_many_skip_duplicates(&inputs, 1_700_000_100)
+        .await
+        .expect("batch import should commit");
+
+    assert_eq!(result.created.len(), 1);
+    assert_eq!(result.created[0].name, "new");
+    assert_eq!(result.skipped, 2);
+    assert_eq!(
+        repository
+            .list()
+            .await
+            .expect("servers should be listed")
+            .len(),
+        2
+    );
+}
+
 fn server_input(name: &str, host: &str, favorite: bool) -> ServerInput {
     ServerInput::try_new(
         name,
@@ -207,7 +319,7 @@ fn server_input(name: &str, host: &str, favorite: bool) -> ServerInput {
         22,
         "deploy",
         AuthType::Key,
-        "secret-ref-fixture",
+        Some("secret-ref-fixture"),
         None,
         favorite,
     )
