@@ -151,6 +151,7 @@ test('Harbor commands are registered and authorized exactly once', () => {
     'file_read',
     'file_write',
     'file_download',
+    'monitor_snapshot',
     'ssh_config_import_preview',
     'ssh_config_import_apply',
   ];

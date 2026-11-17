@@ -6,6 +6,7 @@ use std::{
 };
 
 use opspilot_persistence::Database;
+use opspilot_remote_adapters::{CpuSampleStore, RemoteExecutor, SystemMonitor};
 use opspilot_secrets::{KeyringSecretStore, SecretStore};
 use opspilot_ssh_core::{
     ConnectionHandle, RemoteFileService, RusshConnectionManager, RusshSftpConnector,
@@ -20,6 +21,7 @@ mod catalog;
 mod connection;
 mod file;
 mod health;
+mod monitor;
 mod ssh_config_import;
 mod terminal;
 
@@ -30,6 +32,7 @@ pub(crate) use catalog::{
 pub(crate) use connection::{connection_connect, connection_disconnect, connection_trust_host_key};
 pub(crate) use file::{file_download, file_list, file_read, file_write};
 pub(crate) use health::core_health;
+pub(crate) use monitor::monitor_snapshot;
 pub(crate) use ssh_config_import::{ssh_config_import_apply, ssh_config_import_preview};
 pub(crate) use terminal::{terminal_close, terminal_open, terminal_resize, terminal_write};
 
@@ -40,6 +43,7 @@ pub(crate) struct CoreServices<S = KeyringSecretStore> {
     pub(crate) connection_manager: RusshConnectionManager<S>,
     pub(crate) terminal_manager: TerminalManager<RusshShellBackend<S>>,
     pub(crate) file_operations: Arc<dyn FileOperations>,
+    pub(crate) monitor: SystemMonitor<RemoteExecutor<S>>,
     connection_sequences: Arc<Mutex<HashMap<opspilot_domain::Id, u64>>>,
     pub(crate) ssh_config_path: Option<PathBuf>,
     pub(crate) ssh_config_previews: Arc<StdMutex<SshConfigPreviewRegistry>>,
@@ -61,12 +65,17 @@ where
         let file_operations = Arc::new(RemoteFileService::new(Arc::new(RusshSftpConnector::new(
             connection_manager.clone(),
         ))));
+        let monitor = SystemMonitor::new(
+            RemoteExecutor::new(connection_manager.clone()),
+            CpuSampleStore::default(),
+        );
         Self {
             database,
             secret_store,
             connection_manager,
             terminal_manager,
             file_operations,
+            monitor,
             connection_sequences: Arc::new(Mutex::new(HashMap::new())),
             ssh_config_path: None,
             ssh_config_previews: Arc::new(StdMutex::new(SshConfigPreviewRegistry::default())),

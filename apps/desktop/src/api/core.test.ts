@@ -58,6 +58,36 @@ const fileEntry = {
   modifiedAt: 42,
   permissions: 0o640,
 } as const;
+const monitorSnapshot = {
+  timestamp: '2026-11-17T12:34:56.789Z',
+  cpuPercent: 42.5,
+  memory: {
+    totalBytes: 8_000,
+    availableBytes: 3_000,
+    usedBytes: 5_000,
+  },
+  disk: {
+    filesystem: '/dev/vda1',
+    totalBytes: 100_000,
+    usedBytes: 40_000,
+    availableBytes: 60_000,
+    mountPoint: '/',
+  },
+  load: {
+    one: 0.25,
+    five: 0.5,
+    fifteen: 0.75,
+  },
+  uptimeSeconds: 123_456,
+  topProcesses: [{
+    pid: 42,
+    user: 'deploy',
+    name: 'nginx worker',
+    cpuPercent: 125.5,
+    memoryPercent: 3.25,
+  }],
+  unavailable: ['processes_partial'],
+} as const;
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -202,6 +232,26 @@ describe('Tauri CoreClient catalog contract', () => {
         selectedRowIds: [importPreview.items[0].id],
       },
     });
+  });
+
+  it('samples monitoring through the active connection and rejects drifted snapshots', async () => {
+    const client = createTauriCoreClient();
+    const connection = {
+      serverId: '019c62b2-2970-7000-8000-000000000003',
+      connectionId: '019c62b2-2970-7000-8000-000000000020',
+    };
+    invokeMock
+      .mockResolvedValueOnce(monitorSnapshot)
+      .mockResolvedValueOnce({
+        ...monitorSnapshot,
+        unavailable: ['cpu_from_the_future'],
+      });
+
+    await expect(client.monitorSnapshot(connection)).resolves.toEqual(monitorSnapshot);
+    await expect(client.monitorSnapshot(connection)).rejects.toThrow();
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'monitor_snapshot', { connection });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'monitor_snapshot', { connection });
   });
 });
 

@@ -8,6 +8,7 @@ import {
   FileWriteArgsSchema,
   GroupInputSchema,
   GroupSchema,
+  MonitorSnapshotSchema,
   RemoteDirectoryPathSchema,
   RemoteDownloadSchema,
   RemoteFileListSchema,
@@ -30,6 +31,7 @@ import {
   type CoreHealth,
   type Group,
   type GroupInput,
+  type MonitorSnapshot,
   type RemoteDownload,
   type RemoteDirectoryPath,
   type RemoteFileEntry,
@@ -92,6 +94,7 @@ export interface CoreClient {
     connection: ConnectionHandle,
     path: RemotePath | string,
   ): Promise<RemoteDownload>;
+  monitorSnapshot(connection: ConnectionHandle): Promise<MonitorSnapshot>;
   subscribeConnectionState(handler: (event: ConnectionStateEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalData(handler: (event: TerminalDataEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalGap(handler: (event: TerminalGapEvent) => void): Promise<UnlistenFn>;
@@ -197,6 +200,9 @@ export function createTauriCoreClient(): CoreClient {
         connection: ConnectionHandleSchema.parse(connection),
         path: RemotePathSchema.parse(path),
       }),
+    ),
+    monitorSnapshot: async (connection) => MonitorSnapshotSchema.parse(
+      await invoke('monitor_snapshot', { connection }),
     ),
     subscribeConnectionState: async (handler) => listen('connection:state', (event) => {
       const parsed = ConnectionStateEventSchema.safeParse(event.payload);

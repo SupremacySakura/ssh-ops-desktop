@@ -25,6 +25,7 @@
     "allow-file-read",
     "allow-file-write",
     "allow-file-download",
+    "allow-monitor-snapshot",
     "allow-ssh-config-import-preview",
     "allow-ssh-config-import-apply",
     "core:event:allow-listen",

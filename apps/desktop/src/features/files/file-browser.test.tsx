@@ -161,6 +161,75 @@ describe('FileBrowser', () => {
     }));
   });
 
+  it('loads ancestor directories when jumping to a deep path', async () => {
+    const directory = (name: string, path: string): RemoteFileEntry => ({
+      name,
+      path,
+      kind: 'directory',
+      size: 0,
+      modifiedAt: 1_700_000_000,
+      permissions: 0o755,
+    });
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [directory('srv', '/srv')],
+          '/srv': [directory('app', '/srv/app')],
+          '/srv/app': [directory('releases', '/srv/app/releases')],
+          '/srv/app/releases': [],
+        },
+      },
+    });
+
+    renderBrowser({
+      core,
+      jumpRequest: { nonce: 1, path: '/srv/app/releases' },
+    });
+
+    expect(await screen.findByRole('button', { name: '跳转到 /srv/app/releases' }))
+      .toHaveAttribute('aria-current', 'page');
+    expect(await screen.findByRole('button', { name: '目录 /srv' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: '目录 /srv/app' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: '目录 /srv/app/releases' }))
+      .toHaveAttribute('aria-current', 'page');
+    expect(core.calls.filter((call) => call.method === 'listFiles').map(
+      (call) => call.args[1],
+    )).toEqual(expect.arrayContaining(['/srv', '/srv/app', '/srv/app/releases']));
+  });
+
+  it('loads a tree directory only when it is expanded', async () => {
+    const nginxDirectory: RemoteFileEntry = {
+      name: 'nginx',
+      path: '/etc/nginx',
+      kind: 'directory',
+      size: 0,
+      modifiedAt: 1_700_000_300,
+      permissions: 0o755,
+    };
+    const core = createFakeCoreClient({
+      files: {
+        entriesByDirectory: {
+          '/': [etc],
+          '/etc': [nginxDirectory],
+        },
+      },
+    });
+    renderBrowser({ core });
+
+    expect(await screen.findByRole('button', { name: '目录 /etc' })).toBeVisible();
+    expect(core.calls.some((call) => (
+      call.method === 'listFiles' && call.args[1] === '/etc'
+    ))).toBe(false);
+
+    fireEvent.click(await screen.findByRole('button', { name: '展开目录 /etc' }));
+
+    expect(await screen.findByRole('button', { name: '目录 /etc/nginx' })).toBeVisible();
+    expect(core.calls).toContainEqual(expect.objectContaining({
+      method: 'listFiles',
+      args: [connection, '/etc'],
+    }));
+  });
+
   it('shows an offline state with a reconnect action and never opens SFTP', () => {
     const onReconnect = vi.fn();
     const { core } = renderBrowser({ status: 'closed', onReconnect });

@@ -3150,6 +3150,7 @@ dependencies = [
  "async-trait",
  "opspilot-domain",
  "opspilot-persistence",
+ "opspilot-remote-adapters",
  "opspilot-secrets",
  "opspilot-ssh-core",
  "serde",

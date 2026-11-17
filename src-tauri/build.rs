@@ -22,6 +22,7 @@ fn main() {
             "file_read",
             "file_write",
             "file_download",
+            "monitor_snapshot",
             "ssh_config_import_preview",
             "ssh_config_import_apply",
         ]));

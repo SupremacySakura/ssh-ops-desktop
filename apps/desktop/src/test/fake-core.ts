@@ -1,9 +1,11 @@
 import type {
   ConnectOutcome,
+  ConnectionHandle,
   ConnectionStateEvent,
   CoreHealth,
   FileWriteArgs,
   Group,
+  MonitorSnapshot,
   RemoteDirectoryPath,
   RemoteDownload,
   RemoteFileEntry,
@@ -44,6 +46,10 @@ export interface FakeCoreOptions {
   health?: CoreHealth;
   connectOutcome?: ConnectOutcome | ((serverId: string) => ConnectOutcome);
   files?: FakeFileSystem;
+  monitorSnapshots?: MonitorSnapshot[] | ((
+    connection: ConnectionHandle,
+    sequence: number,
+  ) => MonitorSnapshot | Promise<MonitorSnapshot>);
   sshConfigImport?: SshConfigImportPreview;
   overrides?: Partial<CoreClient>;
 }
@@ -66,6 +72,7 @@ export function createFakeCoreClient({
   health = readyHealth,
   connectOutcome,
   files,
+  monitorSnapshots,
   sshConfigImport,
   overrides = {},
 }: FakeCoreOptions = {}): FakeCoreClient {
@@ -95,6 +102,7 @@ export function createFakeCoreClient({
   const terminalGapHandlers = new Set<(event: TerminalGapEvent) => void>();
   const terminalClosedHandlers = new Set<(event: TerminalClosedEvent) => void>();
   let connectionSequence = 0;
+  let monitorSequence = 0;
 
   const emitConnectionState = (event: ConnectionStateEvent) => {
     for (const handler of connectionStateHandlers) handler(event);
@@ -339,6 +347,17 @@ export function createFakeCoreClient({
       }
       throw fakeError('NOT_FOUND', '远程文件不存在');
     },
+    monitorSnapshot: async (connection) => {
+      remember(calls, 'monitorSnapshot', [connection]);
+      const sequence = monitorSequence;
+      monitorSequence += 1;
+      const snapshot = typeof monitorSnapshots === 'function'
+        ? await monitorSnapshots(connection, sequence)
+        : monitorSnapshots && monitorSnapshots.length > 0
+          ? monitorSnapshots[Math.min(sequence, monitorSnapshots.length - 1)]
+          : defaultMonitorSnapshot();
+      return cloneMonitorSnapshot(snapshot);
+    },
     subscribeConnectionState: async (handler) => {
       connectionStateHandlers.add(handler);
       return () => connectionStateHandlers.delete(handler);
@@ -539,6 +558,52 @@ function cloneSshConfigImportPreview(
       warnings: [...item.warnings],
     })),
     warnings: preview.warnings.map((warning) => ({ ...warning })),
+  };
+}
+
+function defaultMonitorSnapshot(): MonitorSnapshot {
+  return {
+    timestamp: new Date().toISOString(),
+    cpuPercent: 34,
+    memory: {
+      totalBytes: 8 * 1024 * 1024 * 1024,
+      availableBytes: Math.floor(8 * 1024 * 1024 * 1024 * 0.38),
+      usedBytes: Math.floor(8 * 1024 * 1024 * 1024 * 0.62),
+    },
+    disk: {
+      filesystem: '/dev/vda1',
+      totalBytes: 80 * 1024 * 1024 * 1024,
+      usedBytes: Math.floor(80 * 1024 * 1024 * 1024 * 0.48),
+      availableBytes: Math.floor(80 * 1024 * 1024 * 1024 * 0.52),
+      mountPoint: '/',
+    },
+    load: { one: 0.42, five: 0.38, fifteen: 0.41 },
+    uptimeSeconds: 2_004_000,
+    topProcesses: [{
+      pid: 4242,
+      user: 'deploy',
+      name: 'nginx worker',
+      cpuPercent: 12.5,
+      memoryPercent: 3.25,
+    }, {
+      pid: 5151,
+      user: 'postgres',
+      name: 'postgres',
+      cpuPercent: 2.5,
+      memoryPercent: 18.75,
+    }],
+    unavailable: [],
+  };
+}
+
+function cloneMonitorSnapshot(snapshot: MonitorSnapshot): MonitorSnapshot {
+  return {
+    ...snapshot,
+    memory: snapshot.memory ? { ...snapshot.memory } : undefined,
+    disk: snapshot.disk ? { ...snapshot.disk } : undefined,
+    load: snapshot.load ? { ...snapshot.load } : undefined,
+    topProcesses: snapshot.topProcesses.map((process) => ({ ...process })),
+    unavailable: [...snapshot.unavailable],
   };
 }
 

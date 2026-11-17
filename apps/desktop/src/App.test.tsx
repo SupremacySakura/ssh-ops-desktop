@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from './App';
 import { useHarborStore } from './store/harbor-store';
+import { useMonitorStore } from './store/monitor-store';
 import { useTerminalStore } from './store/terminal-store';
 import { createFakeCoreClient } from './test/fake-core';
 
@@ -35,11 +36,13 @@ const readyCore = createFakeCoreClient({
 
 beforeEach(() => {
   useHarborStore.getState().reset();
+  useMonitorStore.getState().reset();
   useTerminalStore.getState().reset();
 });
 
 afterEach(() => {
   cleanup();
+  useMonitorStore.getState().reset();
   useTerminalStore.getState().reset();
 });
 
@@ -716,9 +719,13 @@ describe('Harbor empty shell', () => {
       method: 'listFiles',
       args: [runtime?.connection, '/etc'],
     });
+    expect(core.calls).toContainEqual({
+      method: 'listFiles',
+      args: [runtime?.connection, '/'],
+    });
     expect(
       core.calls.filter((call) => call.method === 'listFiles'),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(screen.queryByText('无法确定终端当前目录，已打开根目录'))
       .not.toBeInTheDocument();
   });
@@ -999,6 +1006,40 @@ describe('Harbor empty shell', () => {
       '未找到 SSH Config 文件',
     );
     expect(within(dialog).getByRole('button', { name: '重新读取' })).toBeVisible();
+  });
+});
+
+describe('Harbor monitoring workspace', () => {
+  it('shows five calibrated cards, live header gauges, and the process table', async () => {
+    const core = createFakeCoreClient({
+      servers: [terminalServer('monitor-box')],
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 monitor-box/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+
+    fireEvent.click(screen.getByRole('button', { name: '监控' }));
+
+    expect(await screen.findByRole('heading', { name: '系统监控' })).toBeVisible();
+    expect(screen.getByRole('region', { name: 'CPU 概览' })).toBeVisible();
+    expect(screen.getByRole('region', { name: '内存概览' })).toBeVisible();
+    expect(screen.getByRole('region', { name: '磁盘概览' })).toBeVisible();
+    expect(screen.getByRole('region', { name: '负载概览' })).toBeVisible();
+    expect(screen.getByRole('region', { name: '运行时间概览' })).toBeVisible();
+    expect(
+      await within(screen.getByRole('region', { name: 'CPU 概览' })).findByText('34.0%'),
+    ).toBeVisible();
+    await waitFor(() => {
+      expect(screen.getByLabelText('CPU 使用率')).toHaveTextContent('34.0%');
+      expect(screen.getByLabelText('内存使用率')).toHaveTextContent('62.0%');
+      expect(screen.getByLabelText('磁盘使用率')).toHaveTextContent('48.0%');
+    });
+    const table = screen.getByRole('table', { name: 'Top 10 进程' });
+    expect(within(table).getByText('nginx worker')).toBeVisible();
+    expect(within(table).getAllByText('postgres').length).toBeGreaterThan(0);
   });
 });
 

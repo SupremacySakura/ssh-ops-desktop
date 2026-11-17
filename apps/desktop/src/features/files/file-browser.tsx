@@ -94,7 +94,11 @@ export function FileBrowser({
   const [editorConnection, setEditorConnection] = useState<ConnectionHandle | null>(null);
   const loadedKey = useRef<string | null>(null);
   const appliedJumpNonce = useRef<number | null>(null);
+  const treeLoaded = useRef<Set<string>>(new Set());
+  const treeRequests = useRef<Set<string>>(new Set());
   const connectionId = connection?.connectionId ?? null;
+  const connectionIdRef = useRef(connectionId);
+  connectionIdRef.current = connectionId;
 
   useEffect(() => {
     setPath('/');
@@ -107,6 +111,8 @@ export function FileBrowser({
     setFileNotice(null);
     if (connection) setEditorConnection(connection);
     loadedKey.current = null;
+    treeLoaded.current.clear();
+    treeRequests.current.clear();
   }, [connection, connectionId]);
 
   useEffect(() => {
@@ -118,15 +124,27 @@ export function FileBrowser({
     setListState('loading');
     setListError(null);
     setEntries([]);
-    void core.listFiles(connection, path)
-      .then((result) => {
-        if (cancelled) return;
+    const ancestors = breadcrumbItems(path)
+      .slice(0, -1)
+      .map((item) => item.path)
+      .filter((directory) => !treeLoaded.current.has(directory));
+    const directories = [...ancestors, path];
+    void Promise.all(directories.map(async (directory) => (
+      [directory, await core.listFiles(connection, directory)] as const
+    )))
+      .then((results) => {
+        if (cancelled || connectionIdRef.current !== connection.connectionId) return;
+        for (const [directory] of results) treeLoaded.current.add(directory);
+        setTreeChildren((current) => {
+          const next = { ...current };
+          for (const [directory, result] of results) {
+            next[directory] = result.filter((entry) => entry.kind === 'directory');
+          }
+          return next;
+        });
+        const currentEntries = results.find(([directory]) => directory === path)?.[1] ?? [];
         loadedKey.current = requestKey;
-        setEntries(result);
-        setTreeChildren((current) => ({
-          ...current,
-          [path]: result.filter((entry) => entry.kind === 'directory'),
-        }));
+        setEntries(currentEntries);
         setListState('ready');
       })
       .catch((error: unknown) => {
@@ -185,7 +203,39 @@ export function FileBrowser({
     });
   }
 
+  async function loadTreeDirectory(directory: string) {
+    if (
+      !connection
+      || connectionStatus !== 'ready'
+      || treeLoaded.current.has(directory)
+      || treeRequests.current.has(directory)
+    ) {
+      return;
+    }
+    const requestedConnectionId = connection.connectionId;
+    treeRequests.current.add(directory);
+    try {
+      const result = await core.listFiles(connection, directory);
+      if (connectionIdRef.current !== requestedConnectionId) return;
+      treeLoaded.current.add(directory);
+      setTreeChildren((current) => ({
+        ...current,
+        [directory]: result.filter((entry) => entry.kind === 'directory'),
+      }));
+    } catch (error) {
+      if (connectionIdRef.current === requestedConnectionId) {
+        setFileNotice({
+          kind: 'error',
+          text: `目录树读取 ${directory} 失败：${remoteFileErrorMessage(error)}`,
+        });
+      }
+    } finally {
+      treeRequests.current.delete(directory);
+    }
+  }
+
   function toggleExpanded(directory: string) {
+    const nextExpanded = !expanded.has(directory);
     setExpanded((current) => {
       const next = new Set(current);
       if (next.has(directory)) {
@@ -195,6 +245,7 @@ export function FileBrowser({
       }
       return next;
     });
+    if (nextExpanded) void loadTreeDirectory(directory);
   }
 
   async function openEntry(entry: RemoteFileEntry) {
@@ -678,7 +729,7 @@ function TreeBranch({
           />
           <span className="truncate font-mono">{label}</span>
         </button>
-        {children.length > 0 ? (
+        {children.length > 0 || treeChildren[directory] === undefined ? (
           <button
             aria-expanded={isExpanded}
             aria-label={`${isExpanded ? '收起' : '展开'}目录 ${directory}`}

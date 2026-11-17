@@ -16,18 +16,24 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ConfirmDialog } from '../../components/confirm-dialog';
 import { formatLastConnectedAt, useHarborStore } from '../../store/harbor-store';
 import {
-  countOpenSessions,
   connectionErrorMessage,
   useTerminalStore,
 } from '../../store/terminal-store';
 import { FileBrowser } from '../files/file-browser';
 import type { FileJumpRequest } from '../files/file-browser';
+import {
+  MonitorPanel,
+  MonitorTopbarGauges,
+} from '../monitor/monitor-panel';
+import { useMonitorSampling } from '../monitor/use-monitor-sampling';
 import { TerminalPane } from '../terminal/terminal-pane';
 
 interface ServerWorkspaceProps {
   active: boolean;
   server: Server;
 }
+
+type WorkspaceTab = 'terminal' | 'files' | 'monitor';
 
 export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
   const canonicalServer = useHarborStore((state) => (
@@ -49,7 +55,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [trustChecked, setTrustChecked] = useState(false);
-  const [activeTab, setActiveTab] = useState<'terminal' | 'files'>('terminal');
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('terminal');
   const [jumpRequest, setJumpRequest] = useState<FileJumpRequest | null>(null);
   const jumpSequence = useRef(0);
   const trustCheckboxId = useId();
@@ -57,7 +63,6 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
     ? groups.find((candidate) => candidate.id === canonicalServer.groupId)
     : null;
   const connectionStatus = runtime?.status ?? 'idle';
-  const activeSessions = runtime ? countOpenSessions(runtime) : 0;
   const prompt = runtime?.hostKeyPrompt ?? null;
   const changedPrompt = runtime?.hostKeyChangedPrompt ?? null;
   const credentialPending = canonicalServer.secretRef === null;
@@ -79,6 +84,13 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
     });
     setActiveTab('files');
   }
+
+  useMonitorSampling({
+    active: active && !credentialPending,
+    connection: runtime?.connection,
+    serverId: canonicalServer.id,
+    status: connectionStatus,
+  });
 
   useEffect(() => {
     if (eventBridgeStatus !== 'ready') return;
@@ -137,20 +149,10 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
             </div>
 
             <div className="ml-5 flex shrink-0 items-center gap-4">
-              <div className="hidden items-start gap-5 xl:flex">
-                <CalibratedReadout
-                  label="SESSIONS"
-                  maximum={8}
-                  value={activeSessions}
-                  valueLabel={`${activeSessions}/8`}
-                />
-                <CalibratedReadout
-                  label="LINK"
-                  maximum={3}
-                  value={connectionStatus === 'ready' ? 3 : connectionStatus === 'connecting' ? 1 : 0}
-                  valueLabel={statusLabel(connectionStatus, credentialPending)}
-                />
-              </div>
+              <MonitorTopbarGauges
+                connectionId={runtime?.connection?.connectionId ?? null}
+                serverId={canonicalServer.id}
+              />
               <div className="flex items-center gap-1.5">
                 <button
                   aria-label="编辑服务器"
@@ -181,34 +183,31 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
 
           <nav aria-label="服务器工作区视图" className="flex h-8 shrink-0 items-stretch border-b border-hairline bg-shell px-6">
             {[
-              { id: 'terminal' as const, label: '终端', enabled: true, hint: 'SSH 终端' },
-              { id: 'files' as const, label: '文件', enabled: true, hint: 'SFTP 浏览与在线编辑' },
-              { id: 'monitor' as const, label: '监控', enabled: false, hint: '后续议题接入' },
-              { id: 'docker' as const, label: 'Docker', enabled: false, hint: '后续议题接入' },
-            ].map((tab) => {
-              const tabActive = tab.enabled && activeTab === tab.id;
-              return (
-                <button
-                  aria-current={tabActive ? 'page' : undefined}
-                  className={`border-x border-transparent px-4 text-[11px] tracking-[0.06em] ${
-                    tabActive
-                      ? 'bg-ink text-paper'
-                      : tab.enabled
-                        ? 'text-muted hover:bg-paper hover:text-ink'
-                        : 'text-muted opacity-45'
-                  }`}
-                  disabled={!tab.enabled}
-                  key={tab.id}
-                  onClick={() => {
-                    if (tab.id === 'terminal' || tab.id === 'files') setActiveTab(tab.id);
-                  }}
-                  title={tab.hint}
-                  type="button"
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
+              { key: 'terminal' as const, label: '终端', hint: 'SSH 终端' },
+              { key: 'files' as const, label: '文件', hint: 'SFTP 浏览与在线编辑' },
+              { key: 'monitor' as const, label: '监控', hint: '系统监控' },
+              { key: null, label: 'Docker', hint: '后续议题接入' },
+            ].map((tab) => (
+              <button
+                aria-current={activeTab === tab.key ? 'page' : undefined}
+                className={`border-x border-transparent px-4 text-[11px] tracking-[0.06em] ${
+                  activeTab === tab.key
+                    ? 'bg-ink text-paper'
+                    : tab.key
+                      ? 'text-muted hover:bg-paper hover:text-ink'
+                      : 'text-muted opacity-45'
+                }`}
+                disabled={tab.key === null}
+                key={tab.label}
+                onClick={() => {
+                  if (tab.key) setActiveTab(tab.key);
+                }}
+                title={tab.hint}
+                type="button"
+              >
+                {tab.label}
+              </button>
+            ))}
           </nav>
 
           {credentialPending ? (
@@ -255,6 +254,13 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
                   </div>
                 )}
               </div>
+              {activeTab === 'monitor' ? (
+                <MonitorPanel
+                  connectionId={runtime?.connection?.connectionId ?? null}
+                  connectionStatus={connectionStatus}
+                  serverId={canonicalServer.id}
+                />
+              ) : null}
             </>
           )}
         </section>
@@ -428,41 +434,6 @@ function HostKeyDialog({
           </button>
         </footer>
       </section>
-    </div>
-  );
-}
-
-function CalibratedReadout({
-  label,
-  maximum,
-  value,
-  valueLabel,
-}: {
-  label: string;
-  maximum: number;
-  value: number;
-  valueLabel: string;
-}) {
-  return (
-    <div className="w-[112px]">
-      <div className="flex items-baseline justify-between">
-        <span className="text-[9px] tracking-[0.14em] text-muted">{label}</span>
-        <span className="font-mono text-[10px] text-ink">{valueLabel}</span>
-      </div>
-      <div className="mt-1.5 flex h-2 items-end gap-[2px]" aria-hidden>
-        {Array.from({ length: maximum }, (_, index) => (
-          <span
-            className={`flex-1 ${
-              index < value ? 'bg-accent' : 'bg-hairline'
-            } ${index % 2 === 0 ? 'h-2' : 'h-1'}`}
-            key={index}
-          />
-        ))}
-      </div>
-      <div className="mt-1 flex justify-between border-t border-hairline pt-0.5 font-mono text-[7px] text-muted">
-        <span>0</span>
-        <span>{maximum}</span>
-      </div>
     </div>
   );
 }

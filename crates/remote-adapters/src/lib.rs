@@ -5,6 +5,7 @@
 mod command;
 mod docker;
 mod linux;
+mod monitor;
 mod systemd;
 
 pub use command::{RemoteCommand, RemoteCommandRunner, RemoteExecutor, ValidatedProgram};
@@ -15,5 +16,10 @@ pub use docker::{
 pub use linux::{
     DiskMetric, LinuxMetrics, LinuxParsers, ListeningPort, LoadMetric, MemoryMetric, OsRelease,
     RemoteLinuxAdapter, ServiceManager, SystemService,
+};
+pub use monitor::{
+    CpuSampleStore, CpuTimes, MonitorSnapshot, MonitorUnavailable, ProcessMetric, ProcessParse,
+    SystemMonitor, cpu_usage_percent, parse_load_metric, parse_memory_metric, parse_proc_stat,
+    parse_processes, parse_root_disk, parse_uptime_seconds, select_top_processes,
 };
 pub use systemd::{ServiceAction, SystemdAdapter};
