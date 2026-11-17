@@ -71,6 +71,16 @@ cargo fmt --check
 - **Rust**：rustfmt + clippy（`-D warnings`，零告警）；错误统一用 `CoreError`（携带 code/retryable）；远程路径一律经 `RemotePath::try_new` 校验。
 - **工具一致性**：新增写工具必须实现 `ToolExecutor` 并接入风险门禁与审批网关；工具描述（`agent_tool_descriptors`）、JSON Schema、Rust 解析、前端调用四者必须一致，数量/大小上限前后端对齐。
 
+## UI 风格
+
+重构后的产品名 **Harbor**，UI 方向已定：**Calibrated Panel**（Braun / Dieter Rams 校准面板）。任何前端页面、组件、样式改动都必须遵循：
+
+- `apps/desktop/DESIGN.md`：视觉系统唯一权威（色板、字体、间距、组件、状态、动效）。
+- `apps/desktop/PRODUCT.md`：产品事实与使用场景。
+- `design/harbor-calibrated-panel.html`：1440×900 首屏参考稿（布局、密度与配色基准，不是逐像素复制目标）。
+
+核心规则：暖灰外壳 + 炭黑文字 + 单一信号橙；Inter Tight 与 IBM Plex Mono；1px 发丝线；无圆角卡片、渐变、玻璃拟态。签名动作是"校准刻度"（CPU/内存/磁盘标尺）、完整的服务器铭牌行、工作区左缘常驻书脊。旧 OpsPilot UI 是反参考，不作为视觉继承。
+
 ## 安全边界（不可违反）
 
 - 密码、私钥口令、Token、模型 API Key 等敏感信息**绝不**写入 SQLite、日志、审计或提交进 Git；只进系统凭据库。
@@ -87,3 +97,17 @@ cargo fmt --check
 - 修改代码前先读目标文件；改完必须运行相关检查（lint / typecheck / 测试 / fmt / clippy），并在回复中报告结果。
 - 涉及安全、权限、并发、数据库、公共 API 的改动，需说明影响与验证方式。
 - 发现问题按等级汇报（P0 阻塞 / P1 高优先 / P2 中 / P3 建议），给出文件与行号，不为凑数制造问题。
+
+## Agent skills
+
+### Issue tracker
+
+议题保存在 GitHub Issues（`SupremacySakura/ssh-ops-desktop`），通过 `gh` CLI 读写。参见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用默认五个规范标签：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。参见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文布局：根目录一个 `GLOSSARY.md` 和 `docs/adr/`，前后端与 Rust Core 共享同一套领域词汇。参见 `docs/agents/domain.md`。

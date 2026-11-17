@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Harbor — Calibrated Panel</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{--paper:#FAF9F6;--shell:#E9E6DF;--ink:#1B1A17;--muted:#6F6B62;--line:#CFCAC0;--orange:#E85D04;--screen:#141311}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{font-family:"Inter Tight","Helvetica Neue",sans-serif;background:var(--shell);color:var(--ink);display:flex}
+  .sidebar{width:300px;border-right:1px solid var(--line);padding:22px 18px;display:flex;flex-direction:column;gap:16px}
+  .brand{font-size:20px;font-weight:600;letter-spacing:.22em}
+  .brand span{color:var(--orange)}
+  .search{height:34px;border:1px solid var(--line);background:var(--paper);display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12px;color:var(--muted)}
+  .search kbd{font-family:"IBM Plex Mono",monospace;font-size:10px;border:1px solid var(--line);padding:2px 5px}
+  .group{font-size:11px;letter-spacing:.16em;color:var(--muted);display:flex;align-items:center;gap:8px;margin-top:4px}
+  .group::after{content:"";flex:1;height:1px;background:var(--line)}
+  .server{display:grid;grid-template-columns:10px 1fr auto;gap:10px;align-items:center;padding:10px;border:1px solid transparent}
+  .server .dot{width:8px;height:8px;background:var(--orange)}
+  .server .dot.off{background:var(--line)}
+  .server .name{font-size:13px;font-weight:500}
+  .server .host{font-size:10px;color:var(--muted);font-family:"IBM Plex Mono",monospace;margin-top:2px}
+  .server .fact{font-size:10px;color:var(--muted);font-family:"IBM Plex Mono",monospace}
+  .server.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .server.on .host,.server.on .fact{color:#B9B4A8}
+  .workspace{flex:1;display:flex}
+  .spine{width:30px;border-right:1px solid var(--line);display:flex;align-items:center;justify-content:center;background:#E2DED6}
+  .spine span{writing-mode:vertical-rl;transform:rotate(180deg);font-size:10px;letter-spacing:.18em;color:var(--muted)}
+  .main{flex:1;display:flex;flex-direction:column}
+  .topbar{height:96px;padding:18px 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:28px}
+  .server-title{font-size:22px;font-weight:600;letter-spacing:-.01em}
+  .server-sub{font-size:11px;color:var(--muted);font-family:"IBM Plex Mono",monospace;margin-top:4px}
+  .gauges{margin-left:auto;display:flex;gap:26px}
+  .gauge{width:120px}
+  .gauge .label{font-size:10px;letter-spacing:.14em;color:var(--muted);display:flex;justify-content:space-between}
+  .gauge .label b{color:var(--ink);font-family:"IBM Plex Mono",monospace;font-weight:500}
+  .scale{margin-top:8px;height:14px;position:relative;border-bottom:1px solid var(--ink);background:repeating-linear-gradient(90deg,var(--ink) 0 1px,transparent 1px 10px) bottom/100% 5px no-repeat}
+  .scale i{position:absolute;bottom:0;width:2px;background:var(--orange);height:14px}
+  .tabs{display:flex;gap:6px;padding:14px 24px 0}
+  .tab{font-size:12px;letter-spacing:.08em;padding:8px 16px;border:1px solid var(--line);color:var(--muted)}
+  .tab.active{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .terminal{margin:14px 24px 24px;flex:1;background:var(--screen);color:#EDEAE2;padding:20px 22px;font-family:"IBM Plex Mono",monospace;font-size:13px;line-height:1.75;border:1px solid #000}
+  .terminal .prompt{color:#8E8A80}
+  .terminal .ok{color:#9BD1A5}
+  .terminal .warn{color:#FFB25C}
+  .cursor{display:inline-block;width:8px;height:14px;background:#EDEAE2;vertical-align:-2px}
+</style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">HARBOR<span>.</span></div>
+    <div class="search"><span>搜索服务器…</span><kbd>⌘K</kbd></div>
+    <div class="group">生产 · 3</div>
+    <div class="server on"><span class="dot"></span><div><div class="name">prod-web-01</div><div class="host">45.77.12.88</div></div><div class="fact">CPU 34%</div></div>
+    <div class="server"><span class="dot"></span><div><div class="name">prod-db-01</div><div class="host">45.77.12.89</div></div><div class="fact">CPU 12%</div></div>
+    <div class="server"><span class="dot"></span><div><div class="name">prod-cache-01</div><div class="host">45.77.12.90</div></div><div class="fact">CPU 8%</div></div>
+    <div class="group">测试 · 1</div>
+    <div class="server"><span class="dot off"></span><div><div class="name">staging-web-01</div><div class="host">139.180.201.14</div></div><div class="fact">离线</div></div>
+    <div class="group">个人 · 1</div>
+    <div class="server"><span class="dot"></span><div><div class="name">dev-box</div><div class="host">10.0.0.12</div></div><div class="fact">在线</div></div>
+  </aside>
+  <section class="workspace">
+    <div class="spine"><span>PROD-WEB-01 · 已连接</span></div>
+    <div class="main">
+      <header class="topbar">
+        <div>
+          <div class="server-title">prod-web-01</div>
+          <div class="server-sub">45.77.12.88 · ubuntu 24.04 · 已连接 2h 14m</div>
+        </div>
+        <div class="gauges">
+          <div class="gauge"><div class="label"><span>CPU</span><b>34%</b></div><div class="scale"><i style="left:34%"></i></div></div>
+          <div class="gauge"><div class="label"><span>MEM</span><b>62%</b></div><div class="scale"><i style="left:62%"></i></div></div>
+          <div class="gauge"><div class="label"><span>DISK</span><b>48%</b></div><div class="scale"><i style="left:48%"></i></div></div>
+        </div>
+      </header>
+      <nav class="tabs"><span class="tab active">终端</span><span class="tab">文件</span><span class="tab">监控</span><span class="tab">Docker</span></nav>
+      <div class="terminal">
+        <div><span class="prompt">prod-web-01:~$</span> uptime</div>
+        <div>&nbsp;14:32:07 up 23 days, 4:12, 1 user, load average: 0.42, 0.38, 0.41</div>
+        <div>&nbsp;</div>
+        <div><span class="prompt">prod-web-01:~$</span> systemctl status nginx</div>
+        <div><span class="ok">● nginx.service</span> - A high performance web server</div>
+        <div>&nbsp;&nbsp;&nbsp;Loaded: loaded (/lib/systemd/system/nginx.service; enabled)</div>
+        <div>&nbsp;&nbsp;&nbsp;Active: <span class="ok">active (running)</span> since Mon 2026-11-16 20:18:03 CST</div>
+        <div>&nbsp;</div>
+        <div><span class="prompt">prod-web-01:~$</span> docker ps --format "table {{.Names}}\t{{.Status}}"</div>
+        <div>NAMES&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;STATUS</div>
+        <div>nginx-proxy&nbsp;&nbsp;&nbsp;&nbsp;Up 3 days</div>
+        <div>postgres-15&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Up 3 days</div>
+        <div>redis-cache&nbsp;&nbsp;&nbsp;&nbsp;Exited (0) 12 minutes ago <span class="warn">◂</span></div>
+        <div>&nbsp;</div>
+        <div><span class="prompt">prod-web-01:~$</span> <span class="cursor"></span></div>
+      </div>
+    </div>
+  </section>
+</body>
+</html>
