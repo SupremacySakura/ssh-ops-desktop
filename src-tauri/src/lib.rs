@@ -4,10 +4,10 @@ use std::fs;
 
 use commands::{
     CoreServices, connection_connect, connection_disconnect, connection_trust_host_key,
-    core_health, server_create, server_credential_set, server_delete, server_group_create,
-    server_group_delete, server_group_list, server_group_update, server_list, server_update,
-    ssh_config_import_apply, ssh_config_import_preview, terminal_close, terminal_open,
-    terminal_resize, terminal_write,
+    core_health, monitor_snapshot, server_create, server_credential_set, server_delete,
+    server_group_create, server_group_delete, server_group_list, server_group_update, server_list,
+    server_update, ssh_config_import_apply, ssh_config_import_preview, terminal_close,
+    terminal_open, terminal_resize, terminal_write,
 };
 use opspilot_persistence::Database;
 use opspilot_secrets::KeyringSecretStore;
@@ -64,6 +64,7 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_close,
+            monitor_snapshot,
             ssh_config_import_preview,
             ssh_config_import_apply,
         ])

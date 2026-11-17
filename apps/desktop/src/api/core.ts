@@ -6,6 +6,7 @@ import {
   CoreHealthSchema,
   GroupInputSchema,
   GroupSchema,
+  MonitorSnapshotSchema,
   ServerCredentialInputSchema,
   ServerInputSchema,
   ServerSchema,
@@ -22,6 +23,7 @@ import {
   type CoreHealth,
   type Group,
   type GroupInput,
+  type MonitorSnapshot,
   type Server,
   type ServerCredentialInput,
   type ServerInput,
@@ -60,6 +62,7 @@ export interface CoreClient {
   writeTerminal(terminalSessionId: string, bytes: Uint8Array): Promise<void>;
   resizeTerminal(terminalSessionId: string, columns: number, rows: number): Promise<void>;
   closeTerminal(terminalSessionId: string): Promise<void>;
+  monitorSnapshot(connection: ConnectionHandle): Promise<MonitorSnapshot>;
   subscribeConnectionState(handler: (event: ConnectionStateEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalData(handler: (event: TerminalDataEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalGap(handler: (event: TerminalGapEvent) => void): Promise<UnlistenFn>;
@@ -139,6 +142,9 @@ export function createTauriCoreClient(): CoreClient {
     closeTerminal: async (terminalSessionId) => {
       await invoke('terminal_close', { terminalSessionId });
     },
+    monitorSnapshot: async (connection) => MonitorSnapshotSchema.parse(
+      await invoke('monitor_snapshot', { connection }),
+    ),
     subscribeConnectionState: async (handler) => listen('connection:state', (event) => {
       const parsed = ConnectionStateEventSchema.safeParse(event.payload);
       if (parsed.success) handler(parsed.data);

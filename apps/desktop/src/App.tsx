@@ -12,6 +12,7 @@ import {
   createDefaultCommandHistory,
 } from './features/terminal/command-history';
 import { useHarborStore } from './store/harbor-store';
+import { useMonitorStore } from './store/monitor-store';
 import {
   attachTerminalEvents,
   useTerminalStore,
@@ -47,6 +48,7 @@ export default function App({ core }: AppProps) {
     return () => {
       disposed = true;
       unlisten?.();
+      useMonitorStore.getState().reset();
       useTerminalStore.getState().reset();
     };
   }, [core]);

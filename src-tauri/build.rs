@@ -18,6 +18,7 @@ fn main() {
             "terminal_write",
             "terminal_resize",
             "terminal_close",
+            "monitor_snapshot",
             "ssh_config_import_preview",
             "ssh_config_import_apply",
         ]));
