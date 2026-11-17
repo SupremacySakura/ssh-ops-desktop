@@ -165,6 +165,30 @@ describe('terminal workspace store', () => {
     ).toBe('/srv/My App');
   });
 
+  it('treats an already-lost transport as disconnected', async () => {
+    const core = createFakeCoreClient({
+      servers: [server],
+      overrides: {
+        disconnect: async () => {
+          throw {
+            code: 'SSH_CONNECTION',
+            message: 'transport already closed',
+            retryable: true,
+          };
+        },
+      },
+    });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+
+    await useTerminalStore.getState().disconnectServer(server.id);
+
+    expect(useTerminalStore.getState().runtimes[server.id]).toMatchObject({
+      status: 'closed',
+      connection: null,
+    });
+  });
+
   it('enforces the eight-session limit before asking Core for another channel', async () => {
     const core = createFakeCoreClient({ servers: [server] });
     unlisten = await attachTerminalEvents(core);
