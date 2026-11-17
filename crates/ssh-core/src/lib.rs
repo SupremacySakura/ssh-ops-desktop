@@ -6,6 +6,7 @@ mod auth;
 mod connection;
 mod known_hosts;
 mod openssh;
+mod remote_files;
 mod russh_backend;
 mod sftp;
 mod terminal;
@@ -17,13 +18,19 @@ pub use openssh::{
     OpenSshArgs, OpenSshServer, SshConfigEntry, SshConfigFile, SshConfigImporter, SshConfigParse,
     SshConfigWarning, read_ssh_config,
 };
+pub use remote_files::{
+    FILE_DOWNLOAD_WARNING_BYTES, MAX_EDIT_WRITE_BYTES, MAX_EDITABLE_FILE_BYTES,
+    MAX_FILE_DOWNLOAD_BYTES, RemoteFileDownload, RemoteFileEntry, RemoteFileKind,
+    RemoteFileService, RemoteFileWriteResult, RemoteTextFile, RusshSftpConnector,
+    ScopedDirectoryEntry, ScopedMetadata, ScopedSftp, SftpConnector,
+};
 pub use russh_backend::{
     ConnectOutcome, ConnectionRequest, ExecOutput, HostKeyChangedPrompt, HostKeyProbe,
     HostKeyPrompt, RusshConnectionManager, RusshShellBackend,
 };
 pub use sftp::{
-    ConflictPolicy, LocalSftpAdapter, RemotePath, TransferCheckpoint, TransferFailure,
-    UploadOptions, UploadResult,
+    ConflictPolicy, LocalSftpAdapter, RemoteDirectoryPath, RemotePath, TransferCheckpoint,
+    TransferFailure, UploadOptions, UploadResult,
 };
 pub use terminal::{
     ConnectionHandle, InMemoryShellBackend, MAX_TERMINAL_SESSIONS_PER_SERVER,

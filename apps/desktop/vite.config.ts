@@ -4,15 +4,21 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
+import { monacoFreezePrototypeCompatibility } from './vite/monaco-freeze-prototype.ts';
 import { xtermFreezePrototypeCompatibility } from './vite/xterm-freeze-prototype.ts';
 
 const desktopModules = new URL('./node_modules/', import.meta.url);
 
 export default defineConfig({
   clearScreen: false,
-  plugins: [xtermFreezePrototypeCompatibility(), react(), tailwindcss()],
+  plugins: [
+    monacoFreezePrototypeCompatibility(),
+    xtermFreezePrototypeCompatibility(),
+    react(),
+    tailwindcss(),
+  ],
   optimizeDeps: {
-    exclude: ['@xterm/xterm'],
+    exclude: ['@xterm/xterm', 'monaco-editor'],
   },
   resolve: {
     alias: [

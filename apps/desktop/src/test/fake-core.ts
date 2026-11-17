@@ -7,8 +7,14 @@ import type {
   DockerContainer,
   DockerLogs,
   DockerShell,
+  FileWriteArgs,
   Group,
   MonitorSnapshot,
+  RemoteDirectoryPath,
+  RemoteDownload,
+  RemoteFileEntry,
+  RemotePath,
+  RemoteTextFile,
   Server,
   ServerCredentialInput,
   SshConfigImportPreview,
@@ -16,6 +22,11 @@ import type {
   TerminalClosedEvent,
   TerminalDataEvent,
   TerminalGapEvent,
+} from '@opspilot/contracts';
+import {
+  FileWriteArgsSchema,
+  RemoteDirectoryPathSchema,
+  RemotePathSchema,
 } from '@opspilot/contracts';
 
 import type { CoreClient } from '../api/core';
@@ -41,12 +52,19 @@ export interface FakeCoreOptions {
   dockerLogs?: Record<string, DockerLogs>;
   dockerStartedAtWarning?: string | null;
   connectOutcome?: ConnectOutcome | ((serverId: string) => ConnectOutcome);
+  files?: FakeFileSystem;
   monitorSnapshots?: MonitorSnapshot[] | ((
     connection: ConnectionHandle,
     sequence: number,
   ) => MonitorSnapshot | Promise<MonitorSnapshot>);
   sshConfigImport?: SshConfigImportPreview;
   overrides?: Partial<CoreClient>;
+}
+
+export interface FakeFileSystem {
+  entriesByDirectory?: Record<string, RemoteFileEntry[]>;
+  documents?: Record<string, RemoteTextFile>;
+  downloads?: Record<string, RemoteDownload>;
 }
 
 const readyHealth: CoreHealth = {
@@ -63,6 +81,7 @@ export function createFakeCoreClient({
   dockerLogs = {},
   dockerStartedAtWarning = null,
   connectOutcome,
+  files,
   monitorSnapshots,
   sshConfigImport,
   overrides = {},
@@ -70,6 +89,24 @@ export function createFakeCoreClient({
   const calls: CoreCall[] = [];
   let servers = initialServers.map(cloneServer);
   let groups = initialGroups.map((group) => ({ ...group }));
+  let entriesByDirectory = Object.fromEntries(
+    Object.entries(files?.entriesByDirectory ?? {}).map(([path, entries]) => [
+      path,
+      entries.map(cloneFileEntry),
+    ]),
+  ) as Record<string, RemoteFileEntry[]>;
+  let documents = Object.fromEntries(
+    Object.entries(files?.documents ?? {}).map(([path, document]) => [
+      path,
+      { ...document },
+    ]),
+  ) as Record<string, RemoteTextFile>;
+  const downloads = Object.fromEntries(
+    Object.entries(files?.downloads ?? {}).map(([path, download]) => [
+      path,
+      cloneDownload(download),
+    ]),
+  ) as Record<string, RemoteDownload>;
   let containers = initialDockerContainers.map(cloneDockerContainer);
   const connectionStateHandlers = new Set<(event: ConnectionStateEvent) => void>();
   const terminalDataHandlers = new Set<(event: TerminalDataEvent) => void>();
@@ -246,6 +283,80 @@ export function createFakeCoreClient({
         terminalSessionId,
         reason: 'closed',
       });
+    },
+    listFiles: async (connection, path) => {
+      remember(calls, 'listFiles', [connection, path]);
+      const directory = parseDirectoryPath(path);
+      return (entriesByDirectory[directory] ?? [])
+        .map(cloneFileEntry)
+        .sort(compareFileEntries);
+    },
+    readFile: async (connection, path) => {
+      remember(calls, 'readFile', [connection, path]);
+      const remotePath = parseFilePath(path);
+      const document = documents[remotePath];
+      if (!document) {
+        throw fakeError('NOT_FOUND', '远程文件不存在');
+      }
+      return { ...document };
+    },
+    writeFile: async (connection, path, content, expectedSha256) => {
+      remember(calls, 'writeFile', [connection, path, content, expectedSha256]);
+      const args = parseWriteArgs(path, content, expectedSha256);
+      const document = documents[args.path];
+      if (!document) {
+        throw fakeError('NOT_FOUND', '远程文件不存在');
+      }
+      if (document.sha256 !== args.expectedSha256) {
+        throw fakeError('CONFLICT', '远程文件已在别处修改，草稿保留');
+      }
+      const modifiedAt = currentTimestamp();
+      const sha256 = fakeSha256(args.content);
+      documents = {
+        ...documents,
+        [args.path]: {
+          ...document,
+          text: args.content,
+          sha256,
+          size: new TextEncoder().encode(args.content).byteLength,
+          modifiedAt,
+        },
+      };
+      entriesByDirectory = Object.fromEntries(
+        Object.entries(entriesByDirectory).map(([directory, entries]) => [
+          directory,
+          entries.map((entry) => (
+            entry.path === args.path
+              ? {
+                  ...entry,
+                  size: new TextEncoder().encode(args.content).byteLength,
+                  modifiedAt,
+                }
+              : entry
+          )),
+        ]),
+      );
+      return {
+        path: args.path,
+        sha256,
+        size: new TextEncoder().encode(args.content).byteLength,
+        modifiedAt,
+      };
+    },
+    downloadFile: async (connection, path) => {
+      remember(calls, 'downloadFile', [connection, path]);
+      const remotePath = parseFilePath(path);
+      const configured = downloads[remotePath];
+      if (configured) return cloneDownload(configured);
+      const document = documents[remotePath];
+      if (document) {
+        return {
+          path: remotePath,
+          bytes: Array.from(new TextEncoder().encode(document.text)),
+          sha256: document.sha256,
+        };
+      }
+      throw fakeError('NOT_FOUND', '远程文件不存在');
     },
     listDockerContainers: async (connection) => {
       remember(calls, 'listDockerContainers', [connection]);
@@ -502,6 +613,59 @@ function isCredentialInput(value: unknown): value is ServerCredentialInput {
 
 function cloneServer(server: Server): Server {
   return { ...server };
+}
+
+function cloneFileEntry(entry: RemoteFileEntry): RemoteFileEntry {
+  return { ...entry };
+}
+
+function cloneDownload(download: RemoteDownload): RemoteDownload {
+  return {
+    ...download,
+    bytes: [...download.bytes],
+  };
+}
+
+function compareFileEntries(left: RemoteFileEntry, right: RemoteFileEntry): number {
+  const directoryOrder = Number(right.kind === 'directory') - Number(left.kind === 'directory');
+  if (directoryOrder !== 0) return directoryOrder;
+  return left.name.localeCompare(right.name, 'en-US', { sensitivity: 'base' })
+    || left.name.localeCompare(right.name, 'en-US');
+}
+
+function parseDirectoryPath(path: RemoteDirectoryPath | string): RemoteDirectoryPath {
+  const parsed = RemoteDirectoryPathSchema.safeParse(path);
+  if (!parsed.success) throw fakeError('VALIDATION', '远程目录路径无效');
+  return parsed.data;
+}
+
+function parseFilePath(path: RemotePath | string): RemotePath {
+  const parsed = RemotePathSchema.safeParse(path);
+  if (!parsed.success) throw fakeError('VALIDATION', '远程文件路径无效');
+  return parsed.data;
+}
+
+function parseWriteArgs(
+  path: RemotePath | string,
+  content: string,
+  expectedSha256: string,
+): FileWriteArgs {
+  const parsed = FileWriteArgsSchema.safeParse({
+    path,
+    content,
+    expectedSha256,
+  });
+  if (!parsed.success) throw fakeError('VALIDATION', '保存内容或冲突校验值无效');
+  return parsed.data;
+}
+
+function fakeSha256(value: string): string {
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0').repeat(8);
 }
 
 function cloneSshConfigImportPreview(

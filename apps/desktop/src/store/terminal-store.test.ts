@@ -8,6 +8,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createFakeCoreClient } from '../test/fake-core';
+import { parseOsc7WorkingDirectory } from '../features/terminal/terminal-cwd';
 import {
   attachTerminalEvents,
   countOpenSessions,
@@ -127,6 +128,41 @@ describe('terminal workspace store', () => {
     expect(firstAfter?.gap).toBe(false);
     expect(secondAfter?.lastSequence).toBe(2);
     expect(secondAfter?.gap).toBe(true);
+  });
+
+  it('records validated OSC 7 cwd per live terminal session', async () => {
+    const core = createFakeCoreClient({ servers: [server] });
+    unlisten = await attachTerminalEvents(core);
+    await useTerminalStore.getState().connectServer(server.id);
+    const session = useTerminalStore.getState().runtimes[server.id]?.sessions[0];
+
+    useTerminalStore.getState().setWorkingDirectory(
+      session?.id as string,
+      parseOsc7WorkingDirectory('file://prod-web-01/srv/My%20App'),
+    );
+    expect(
+      useTerminalStore.getState().runtimes[server.id]?.sessions[0]?.cwd,
+    ).toBe('/srv/My App');
+
+    useTerminalStore.getState().setWorkingDirectory(
+      session?.id as string,
+      '/srv/../etc',
+    );
+    expect(
+      useTerminalStore.getState().runtimes[server.id]?.sessions[0]?.cwd,
+    ).toBe('/srv/My App');
+
+    core.emitTerminalClosed({
+      terminalSessionId: session?.id as string,
+      reason: 'disconnected',
+    });
+    useTerminalStore.getState().setWorkingDirectory(
+      session?.id as string,
+      '/etc',
+    );
+    expect(
+      useTerminalStore.getState().runtimes[server.id]?.sessions[0]?.cwd,
+    ).toBe('/srv/My App');
   });
 
   it('treats an already-lost transport as disconnected', async () => {

@@ -1,5 +1,6 @@
 import {
   CoreErrorSchema,
+  RemoteDirectoryPathSchema,
   type ConnectOutcome,
   type ConnectionHandle,
   type ConnectionStateEvent,
@@ -43,6 +44,7 @@ export interface TerminalSessionView {
   status: 'open' | 'closed';
   lastSequence: number;
   gap: boolean;
+  cwd: string | null;
   closeReason?: TerminalCloseReason;
   exitStatus?: number;
 }
@@ -94,6 +96,7 @@ interface TerminalStore {
   closeSession: (serverId: string, sessionId: string) => Promise<void>;
   reconnectSession: (serverId: string, sessionId: string) => Promise<void>;
   activateSession: (serverId: string, sessionId: string) => void;
+  setWorkingDirectory: (sessionId: string, directory: string | null) => void;
   resizeSession: (sessionId: string, columns: number, rows: number) => Promise<void>;
   writeSession: (sessionId: string, bytes: Uint8Array) => Promise<void>;
   disconnectServer: (serverId: string) => Promise<void>;
@@ -638,6 +641,21 @@ export const useTerminalStore = create<TerminalStore>((set, get) => ({
         : current
     ));
   },
+  setWorkingDirectory: (sessionId, directory) => {
+    if (directory === null) return;
+    const parsed = RemoteDirectoryPathSchema.safeParse(directory);
+    if (!parsed.success) return;
+    const located = locateSession(get().runtimes, sessionId);
+    if (!located) return;
+    const session = located.runtime.sessions.find(
+      (candidate) => candidate.id === sessionId,
+    );
+    if (!session || session.status !== 'open') return;
+    updateTerminalSession(set, located.serverId, sessionId, (current) => ({
+      ...current,
+      cwd: parsed.data,
+    }));
+  },
   resizeSession: async (sessionId, columns, rows) => {
     const core = get().core;
     if (!core) return;
@@ -1023,6 +1041,7 @@ function addTerminalSession(
     status: 'open',
     lastSequence: 0,
     gap: false,
+    cwd: null,
   };
   updateRuntime(set, serverId, (current) => ({
     ...current,
@@ -1064,6 +1083,7 @@ function replaceTerminalSession(
             status: 'open',
             lastSequence: 0,
             gap: false,
+            cwd: null,
             closeReason: undefined,
             exitStatus: undefined,
           }

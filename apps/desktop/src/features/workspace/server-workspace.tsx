@@ -3,6 +3,7 @@ import type {
   HostKeyPrompt,
   Server,
 } from '@opspilot/contracts';
+import { RemoteDirectoryPathSchema } from '@opspilot/contracts';
 import {
   AlertTriangle,
   Pencil,
@@ -10,19 +11,21 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import { ConfirmDialog } from '../../components/confirm-dialog';
 import { formatLastConnectedAt, useHarborStore } from '../../store/harbor-store';
+import {
+  connectionErrorMessage,
+  useTerminalStore,
+} from '../../store/terminal-store';
+import { FileBrowser } from '../files/file-browser';
+import type { FileJumpRequest } from '../files/file-browser';
 import {
   MonitorPanel,
   MonitorTopbarGauges,
 } from '../monitor/monitor-panel';
 import { useMonitorSampling } from '../monitor/use-monitor-sampling';
-import {
-  connectionErrorMessage,
-  useTerminalStore,
-} from '../../store/terminal-store';
 import { DockerPane } from '../docker/docker-pane';
 import { TerminalPane } from '../terminal/terminal-pane';
 
@@ -31,7 +34,7 @@ interface ServerWorkspaceProps {
   server: Server;
 }
 
-type WorkspaceTab = 'terminal' | 'monitor' | 'docker';
+type WorkspaceTab = 'terminal' | 'files' | 'monitor' | 'docker';
 
 export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
   const canonicalServer = useHarborStore((state) => (
@@ -45,13 +48,17 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
   const runtime = useTerminalStore((state) => state.runtimes[server.id]);
   const eventBridgeStatus = useTerminalStore((state) => state.eventBridgeStatus);
   const ensureConnected = useTerminalStore((state) => state.ensureConnected);
+  const retryServer = useTerminalStore((state) => state.retryServer);
   const trustHostKey = useTerminalStore((state) => state.trustHostKey);
   const dismissHostKey = useTerminalStore((state) => state.dismissHostKey);
+  const core = useTerminalStore((state) => state.core);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [trustChecked, setTrustChecked] = useState(false);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('terminal');
+  const [jumpRequest, setJumpRequest] = useState<FileJumpRequest | null>(null);
+  const jumpSequence = useRef(0);
   const trustCheckboxId = useId();
   const group = canonicalServer.groupId
     ? groups.find((candidate) => candidate.id === canonicalServer.groupId)
@@ -60,6 +67,24 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
   const prompt = runtime?.hostKeyPrompt ?? null;
   const changedPrompt = runtime?.hostKeyChangedPrompt ?? null;
   const credentialPending = canonicalServer.secretRef === null;
+  const fileConnectionStatus = connectionStatus === 'ready' && runtime?.connection
+    ? 'ready'
+    : connectionStatus === 'idle' || connectionStatus === 'connecting'
+      ? 'connecting'
+      : 'closed';
+
+  function jumpToFiles(cwd: string | null) {
+    const parsed = cwd === null
+      ? null
+      : RemoteDirectoryPathSchema.safeParse(cwd);
+    jumpSequence.current += 1;
+    setJumpRequest({
+      nonce: jumpSequence.current,
+      path: parsed?.success ? parsed.data : '/',
+      notice: parsed?.success ? undefined : '无法确定终端当前目录，已打开根目录',
+    });
+    setActiveTab('files');
+  }
 
   useMonitorSampling({
     active: active && !credentialPending,
@@ -160,7 +185,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
           <nav aria-label="服务器工作区视图" className="flex h-8 shrink-0 items-stretch border-b border-hairline bg-shell px-6">
             {[
               { key: 'terminal' as const, label: '终端', hint: 'SSH 终端' },
-              { key: null, label: '文件', hint: '后续议题接入' },
+              { key: 'files' as const, label: '文件', hint: 'SFTP 浏览与在线编辑' },
               { key: 'monitor' as const, label: '监控', hint: '系统监控' },
               { key: 'docker' as const, label: 'Docker', hint: 'Docker 容器' },
             ].map((tab) => (
@@ -193,11 +218,42 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
             />
           ) : (
             <>
-              <div className={activeTab === 'terminal' ? 'flex min-h-0 flex-1' : 'hidden'}>
+              <div
+                className={
+                  activeTab === 'terminal'
+                    ? 'flex min-h-0 flex-1 flex-col'
+                    : 'hidden'
+                }
+              >
                 <TerminalPane
+                  onJumpToFiles={jumpToFiles}
                   server={canonicalServer}
                   workspaceActive={active && activeTab === 'terminal'}
                 />
+              </div>
+              <div
+                className={
+                  activeTab === 'files'
+                    ? 'flex min-h-0 flex-1 flex-col'
+                    : 'hidden'
+                }
+              >
+                {core ? (
+                  <FileBrowser
+                    active={active && activeTab === 'files'}
+                    connection={runtime?.connection ?? null}
+                    connectionStatus={fileConnectionStatus}
+                    core={core}
+                    jumpRequest={jumpRequest}
+                    onReconnect={() => void retryServer(canonicalServer.id)}
+                  />
+                ) : (
+                  <div className="grid min-h-0 flex-1 place-items-center bg-paper px-8">
+                    <p className="font-mono text-[10px] text-muted">
+                      正在连接 Core，文件视图暂不可用。
+                    </p>
+                  </div>
+                )}
               </div>
               <div className={activeTab === 'docker' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
                 <DockerPane

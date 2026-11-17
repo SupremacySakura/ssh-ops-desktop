@@ -225,6 +225,30 @@
           "markdownDescription": "Enables the docker_logs command without any pre-configured scope."
         },
         {
+          "description": "Enables the file_download command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-file-download",
+          "markdownDescription": "Enables the file_download command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the file_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-file-list",
+          "markdownDescription": "Enables the file_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the file_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-file-read",
+          "markdownDescription": "Enables the file_read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the file_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-file-write",
+          "markdownDescription": "Enables the file_write command without any pre-configured scope."
+        },
+        {
           "description": "Enables the monitor_snapshot command without any pre-configured scope.",
           "type": "string",
           "const": "allow-monitor-snapshot",
@@ -367,6 +391,30 @@
           "type": "string",
           "const": "deny-docker-logs",
           "markdownDescription": "Denies the docker_logs command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the file_download command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-file-download",
+          "markdownDescription": "Denies the file_download command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the file_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-file-list",
+          "markdownDescription": "Denies the file_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the file_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-file-read",
+          "markdownDescription": "Denies the file_read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the file_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-file-write",
+          "markdownDescription": "Denies the file_write command without any pre-configured scope."
         },
         {
           "description": "Denies the monitor_snapshot command without any pre-configured scope.",

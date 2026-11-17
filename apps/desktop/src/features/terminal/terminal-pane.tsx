@@ -2,6 +2,7 @@ import type { Server } from '@opspilot/contracts';
 import {
   ClipboardPaste,
   Copy,
+  FolderOpen,
   History,
   Plus,
   RotateCw,
@@ -25,6 +26,7 @@ import { XtermViewport } from './xterm-viewport';
 import type { TerminalActions } from './xterm-viewport';
 
 interface TerminalPaneProps {
+  onJumpToFiles(cwd: string | null): void;
   server: Server;
   workspaceActive: boolean;
 }
@@ -44,7 +46,11 @@ const idleRuntime: ServerRuntime = {
   nextSessionNumber: 1,
 };
 
-export function TerminalPane({ server, workspaceActive }: TerminalPaneProps) {
+export function TerminalPane({
+  onJumpToFiles,
+  server,
+  workspaceActive,
+}: TerminalPaneProps) {
   const history = useCommandHistory();
   const runtime = useTerminalStore((state) => state.runtimes[server.id]) ?? idleRuntime;
   const eventBridgeStatus = useTerminalStore((state) => state.eventBridgeStatus);
@@ -234,6 +240,16 @@ export function TerminalPane({ server, workspaceActive }: TerminalPaneProps) {
         >
           <ClipboardPaste aria-hidden className="size-3" strokeWidth={1.5} />
           粘贴
+        </button>
+        <button
+          aria-label="跳转到当前终端目录"
+          className="inline-flex h-6 items-center gap-1.5 px-2 text-[10px] hover:bg-[#2C2A26] hover:text-paper"
+          onClick={() => onJumpToFiles(activeSession?.cwd ?? null)}
+          title={activeSession?.cwd ?? '终端尚未报告当前目录'}
+          type="button"
+        >
+          <FolderOpen aria-hidden className="size-3" strokeWidth={1.5} />
+          跳转文件
         </button>
         <button
           aria-label="搜索本地命令历史"
