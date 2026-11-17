@@ -41,6 +41,7 @@ const core = createFakeCoreClient({
   servers: scenario === 'terminal'
     || scenario === 'host-key'
     || scenario === 'host-key-changed'
+    || scenario === 'files'
     ? terminalServers
     : [],
   connectOutcome: scenario === 'host-key' || scenario === 'host-key-changed'
@@ -87,6 +88,44 @@ const core = createFakeCoreClient({
             sequence,
             bytes: ptyEchoBytes(bytes),
           });
+        },
+      }
+    : undefined,
+  files: scenario === 'files'
+    ? {
+        entriesByDirectory: {
+          '/': [{
+            name: 'etc',
+            path: '/etc',
+            kind: 'directory' as const,
+            size: 0,
+            modifiedAt: 1_700_000_000,
+            permissions: 0o755,
+          }, {
+            name: 'app.conf',
+            path: '/app.conf',
+            kind: 'file' as const,
+            size: 6,
+            modifiedAt: 1_700_000_100,
+            permissions: 0o640,
+          }],
+          '/etc': [{
+            name: 'nginx.conf',
+            path: '/etc/nginx.conf',
+            kind: 'file' as const,
+            size: 11,
+            modifiedAt: 1_700_000_200,
+            permissions: 0o644,
+          }],
+        },
+        documents: {
+          '/app.conf': {
+            path: '/app.conf',
+            text: 'hello\n',
+            sha256: '5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03',
+            size: 6,
+            modifiedAt: 1_700_000_100,
+          },
         },
       }
     : undefined,

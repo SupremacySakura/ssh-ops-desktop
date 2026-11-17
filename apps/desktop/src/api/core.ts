@@ -2,10 +2,18 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   ConnectOutcomeSchema,
+  ConnectionHandleSchema,
   ConnectionStateEventSchema,
   CoreHealthSchema,
+  FileWriteArgsSchema,
   GroupInputSchema,
   GroupSchema,
+  RemoteDirectoryPathSchema,
+  RemoteDownloadSchema,
+  RemoteFileListSchema,
+  RemoteFileWriteResultSchema,
+  RemotePathSchema,
+  RemoteTextFileSchema,
   ServerCredentialInputSchema,
   ServerInputSchema,
   ServerSchema,
@@ -22,6 +30,12 @@ import {
   type CoreHealth,
   type Group,
   type GroupInput,
+  type RemoteDownload,
+  type RemoteDirectoryPath,
+  type RemoteFileEntry,
+  type RemoteFileWriteResult,
+  type RemotePath,
+  type RemoteTextFile,
   type Server,
   type ServerCredentialInput,
   type ServerInput,
@@ -60,6 +74,24 @@ export interface CoreClient {
   writeTerminal(terminalSessionId: string, bytes: Uint8Array): Promise<void>;
   resizeTerminal(terminalSessionId: string, columns: number, rows: number): Promise<void>;
   closeTerminal(terminalSessionId: string): Promise<void>;
+  listFiles(
+    connection: ConnectionHandle,
+    path: RemoteDirectoryPath | string,
+  ): Promise<RemoteFileEntry[]>;
+  readFile(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+  ): Promise<RemoteTextFile>;
+  writeFile(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+    content: string,
+    expectedSha256: string,
+  ): Promise<RemoteFileWriteResult>;
+  downloadFile(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+  ): Promise<RemoteDownload>;
   subscribeConnectionState(handler: (event: ConnectionStateEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalData(handler: (event: TerminalDataEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalGap(handler: (event: TerminalGapEvent) => void): Promise<UnlistenFn>;
@@ -139,6 +171,33 @@ export function createTauriCoreClient(): CoreClient {
     closeTerminal: async (terminalSessionId) => {
       await invoke('terminal_close', { terminalSessionId });
     },
+    listFiles: async (connection, path) => RemoteFileListSchema.parse(
+      await invoke('file_list', {
+        connection: ConnectionHandleSchema.parse(connection),
+        path: RemoteDirectoryPathSchema.parse(path),
+      }),
+    ),
+    readFile: async (connection, path) => RemoteTextFileSchema.parse(
+      await invoke('file_read', {
+        connection: ConnectionHandleSchema.parse(connection),
+        path: RemotePathSchema.parse(path),
+      }),
+    ),
+    writeFile: async (connection, path, content, expectedSha256) => {
+      const args = FileWriteArgsSchema.parse({ path, content, expectedSha256 });
+      return RemoteFileWriteResultSchema.parse(
+        await invoke('file_write', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
+    downloadFile: async (connection, path) => RemoteDownloadSchema.parse(
+      await invoke('file_download', {
+        connection: ConnectionHandleSchema.parse(connection),
+        path: RemotePathSchema.parse(path),
+      }),
+    ),
     subscribeConnectionState: async (handler) => listen('connection:state', (event) => {
       const parsed = ConnectionStateEventSchema.safeParse(event.payload);
       if (parsed.success) handler(parsed.data);

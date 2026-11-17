@@ -4,6 +4,7 @@ import '@testing-library/jest-dom/vitest';
 
 import type { SshConfigImportPreview } from '@opspilot/contracts';
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -628,6 +629,98 @@ describe('Harbor empty shell', () => {
     expect(
       core.calls.filter((call) => call.method === 'openTerminal'),
     ).toHaveLength(1);
+  });
+
+  it('jumps from terminal to files at root with a notice and keeps the terminal mounted', async () => {
+    const server = terminalServer('prod-web-01');
+    const core = createFakeCoreClient({
+      servers: [server],
+      files: {
+        entriesByDirectory: {
+          '/': [],
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    const runtime = useTerminalStore.getState().runtimes[server.id];
+    const sessionId = runtime?.sessions[0]?.id;
+    const connection = runtime?.connection;
+    expect(sessionId).toBeTruthy();
+    expect(connection).toBeTruthy();
+    expect(screen.getByTestId(`terminal-viewport-${sessionId}`)).toBeInTheDocument();
+    expect(core.calls.some((call) => call.method === 'listFiles')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', {
+      name: '跳转到当前终端目录',
+    }));
+
+    expect(await screen.findByText(
+      '无法确定终端当前目录，已打开根目录',
+    )).toBeVisible();
+    expect(screen.getByRole('button', { name: '文件' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    expect(core.calls).toContainEqual({
+      method: 'listFiles',
+      args: [connection, '/'],
+    });
+    expect(screen.getByTestId(`terminal-viewport-${sessionId}`)).toBeInTheDocument();
+    expect(await screen.findByText('目录为空')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '终端' }));
+    expect(screen.getByRole('button', { name: '终端' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    expect(screen.getByTestId(`terminal-viewport-${sessionId}`)).toBeInTheDocument();
+    expect(
+      core.calls.filter((call) => call.method === 'listFiles'),
+    ).toHaveLength(1);
+  });
+
+  it('jumps to the terminal OSC 7 directory when it is known', async () => {
+    const server = terminalServer('prod-web-01');
+    const core = createFakeCoreClient({
+      servers: [server],
+      files: {
+        entriesByDirectory: {
+          '/etc': [],
+        },
+      },
+    });
+
+    render(<App core={core} />);
+    fireEvent.click(await screen.findByRole('button', {
+      name: /^打开服务器 prod-web-01/u,
+    }));
+    await screen.findByRole('tab', { name: '切换到 终端 1' });
+    const runtime = useTerminalStore.getState().runtimes[server.id];
+    const sessionId = runtime?.sessions[0]?.id;
+    expect(sessionId).toBeTruthy();
+    act(() => {
+      useTerminalStore.getState().setWorkingDirectory(sessionId!, '/etc');
+    });
+
+    fireEvent.click(screen.getByRole('button', {
+      name: '跳转到当前终端目录',
+    }));
+
+    expect(await screen.findByText('/etc 当前没有文件或子目录。')).toBeVisible();
+    expect(core.calls).toContainEqual({
+      method: 'listFiles',
+      args: [runtime?.connection, '/etc'],
+    });
+    expect(
+      core.calls.filter((call) => call.method === 'listFiles'),
+    ).toHaveLength(1);
+    expect(screen.queryByText('无法确定终端当前目录，已打开根目录'))
+      .not.toBeInTheDocument();
   });
 
   it('blocks an unknown host key until explicit trust, then retries the connection', async () => {

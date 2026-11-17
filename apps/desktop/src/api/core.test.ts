@@ -45,6 +45,19 @@ const importPreview = {
   existingCount: 0,
   importableCount: 1,
 } as const;
+const connection = {
+  serverId: '019c62b2-2970-7000-8000-000000000003',
+  connectionId: '019c62b2-2970-7000-8000-000000000010',
+} as const;
+const fileHash = '5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03';
+const fileEntry = {
+  name: 'app.conf',
+  path: '/srv/app/app.conf',
+  kind: 'file',
+  size: 6,
+  modifiedAt: 42,
+  permissions: 0o640,
+} as const;
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -189,5 +202,90 @@ describe('Tauri CoreClient catalog contract', () => {
         selectedRowIds: [importPreview.items[0].id],
       },
     });
+  });
+});
+
+describe('Tauri CoreClient file contract', () => {
+  it('invokes validated directory and file commands with camelCase arguments', async () => {
+    const client = createTauriCoreClient();
+    const document = {
+      path: fileEntry.path,
+      text: 'hello\n',
+      sha256: fileHash,
+      size: 6,
+      modifiedAt: 42,
+    };
+    invokeMock
+      .mockResolvedValueOnce([fileEntry])
+      .mockResolvedValueOnce(document)
+      .mockResolvedValueOnce({
+        path: fileEntry.path,
+        sha256: fileHash,
+        size: 6,
+        modifiedAt: 43,
+      })
+      .mockResolvedValueOnce({
+        path: '/srv/app/bundle.tar',
+        bytes: [1, 2, 255],
+        sha256: fileHash,
+      });
+
+    await expect(client.listFiles(connection, '//srv/./app/')).resolves.toEqual([fileEntry]);
+    await expect(client.readFile(connection, '/srv/app/app.conf')).resolves.toEqual(document);
+    await expect(client.writeFile(
+      connection,
+      '/srv/app/app.conf',
+      'hello\n',
+      fileHash,
+    )).resolves.toEqual({
+      path: fileEntry.path,
+      sha256: fileHash,
+      size: 6,
+      modifiedAt: 43,
+    });
+    await expect(client.downloadFile(connection, '/srv/app/bundle.tar')).resolves.toEqual({
+      path: '/srv/app/bundle.tar',
+      bytes: [1, 2, 255],
+      sha256: fileHash,
+    });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'file_list', {
+      connection,
+      path: '/srv/app',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'file_read', {
+      connection,
+      path: '/srv/app/app.conf',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, 'file_write', {
+      connection,
+      path: '/srv/app/app.conf',
+      content: 'hello\n',
+      expectedSha256: fileHash,
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, 'file_download', {
+      connection,
+      path: '/srv/app/bundle.tar',
+    });
+  });
+
+  it('rejects unsafe paths, missing hashes, and malformed responses before use', async () => {
+    const client = createTauriCoreClient();
+
+    await expect(client.listFiles(connection, '/srv/../etc')).rejects.toThrow();
+    await expect(client.readFile(connection, '/')).rejects.toThrow();
+    await expect(client.writeFile(
+      connection,
+      '/srv/app/app.conf',
+      'hello',
+      'not-a-hash',
+    )).rejects.toThrow();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    invokeMock.mockResolvedValueOnce([{
+      ...fileEntry,
+      permissions: 0o100_640,
+    }]);
+    await expect(client.listFiles(connection, '/srv/app')).rejects.toThrow();
   });
 });

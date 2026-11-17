@@ -2,12 +2,16 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { useEffect, useRef } from 'react';
 
-import { subscribeTerminalOutput } from '../../store/terminal-store';
+import {
+  subscribeTerminalOutput,
+  useTerminalStore,
+} from '../../store/terminal-store';
 import type { TerminalSessionView } from '../../store/terminal-store';
 import {
   commandAppearsInTerminalEcho,
   trackExecutedCommands,
 } from './command-tracking';
+import { parseOsc7WorkingDirectory } from './terminal-cwd';
 import {
   exceedsTerminalPasteLimit,
   inspectTerminalPaste,
@@ -100,6 +104,12 @@ export function XtermViewport({
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    const osc7 = terminal.parser.registerOscHandler(7, (data) => {
+      const cwd = parseOsc7WorkingDirectory(data);
+      if (cwd === null) return false;
+      useTerminalStore.getState().setWorkingDirectory(session.id, cwd);
+      return true;
+    });
     terminal.open(host);
     terminalRef.current = terminal;
     fitRef.current = fit;
@@ -241,6 +251,7 @@ export function XtermViewport({
         capture: true,
       });
       resizeObserver?.disconnect();
+      osc7.dispose();
       unsubscribeOutput();
       input.dispose();
       terminal.dispose();

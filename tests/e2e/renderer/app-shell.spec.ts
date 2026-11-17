@@ -42,6 +42,31 @@ test('xterm boots in a renderer with a frozen Object prototype', async ({ page }
   expect(pageErrors).toEqual([]);
 });
 
+test('file browser opens Monaco in a renderer with a frozen Object prototype', async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => Object.freeze(Object.prototype));
+
+  await page.goto('/?scenario=files');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  await page.getByRole('button', { name: '文件', exact: true }).click();
+
+  const table = page.getByRole('table', { name: '目录内容' });
+  await expect(table).toBeVisible();
+  await expect(table).toContainText('0640');
+  await page.getByRole('button', { name: '打开文件 app.conf' }).dblclick();
+
+  const dialog = page.getByRole('dialog', { name: '编辑 app.conf' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.monaco-editor')).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
 test('Command-K opens the command palette and runs an action', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core 已就绪');
