@@ -206,6 +206,7 @@ export function GroupManagerDialog() {
       {pendingDelete ? (
         <ConfirmDialog
           busy={catalogBusy}
+          busyLabel="正在删除…"
           confirmLabel="确认删除"
           description={
             <>

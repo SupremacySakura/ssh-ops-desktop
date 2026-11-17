@@ -191,3 +191,87 @@ describe('Tauri CoreClient catalog contract', () => {
     });
   });
 });
+
+describe('Tauri CoreClient Docker contract', () => {
+  const connection = {
+    serverId: '019c62b2-2970-7000-8000-000000000003',
+    connectionId: '019c62b2-2970-7000-8000-000000000010',
+  };
+  const containerId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const terminalSessionId = '019c62b2-2970-7000-8000-000000000011';
+  const list = {
+    containers: [{
+      id: containerId,
+      names: ['web'],
+      image: 'nginx:alpine',
+      state: 'running',
+      status: 'Up 3 hours',
+      ports: ['8080->80/tcp'],
+      startedAt: '2026-11-17T12:00:00Z',
+    }],
+    startedAtWarning: null,
+  };
+  const logs = {
+    containerId,
+    tail: 500,
+    stdout: 'request\n',
+    stderr: 'warning\n',
+  };
+
+  it('invokes list, logs, action, and exec with camelCase parameters', async () => {
+    const client = createTauriCoreClient();
+    invokeMock
+      .mockResolvedValueOnce(list)
+      .mockResolvedValueOnce(logs)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ id: terminalSessionId, connection });
+
+    await expect(client.listDockerContainers(connection)).resolves.toEqual(list);
+    await expect(client.getDockerLogs(connection, containerId, 500)).resolves.toEqual(logs);
+    await expect(client.runDockerAction(connection, containerId, 'restart')).resolves.toBeUndefined();
+    await expect(client.execDockerContainer(
+      connection,
+      containerId,
+      'bash',
+      120,
+      40,
+    )).resolves.toEqual({ id: terminalSessionId, connection });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'docker_list', { connection });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'docker_logs', {
+      connection,
+      containerId,
+      tail: 500,
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, 'docker_action', {
+      connection,
+      containerId,
+      action: 'restart',
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, 'docker_exec', {
+      connection,
+      containerId,
+      shell: 'bash',
+      columns: 120,
+      rows: 40,
+    });
+  });
+
+  it('fails closed before invoke for removed actions and non-whitelisted shells', async () => {
+    const client = createTauriCoreClient();
+
+    await expect(client.runDockerAction(
+      connection,
+      containerId,
+      'rm' as 'restart',
+    )).rejects.toThrow();
+    await expect(client.execDockerContainer(
+      connection,
+      containerId,
+      'zsh; id' as 'sh',
+      80,
+      24,
+    )).rejects.toThrow();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});

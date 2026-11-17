@@ -19,6 +19,7 @@ import {
   connectionErrorMessage,
   useTerminalStore,
 } from '../../store/terminal-store';
+import { DockerPane } from '../docker/docker-pane';
 import { TerminalPane } from '../terminal/terminal-pane';
 
 interface ServerWorkspaceProps {
@@ -44,6 +45,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [trustChecked, setTrustChecked] = useState(false);
+  const [activeTab, setActiveTab] = useState<'terminal' | 'docker'>('terminal');
   const trustCheckboxId = useId();
   const group = canonicalServer.groupId
     ? groups.find((candidate) => candidate.id === canonicalServer.groupId)
@@ -155,20 +157,27 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
 
           <nav aria-label="服务器工作区视图" className="flex h-8 shrink-0 items-stretch border-b border-hairline bg-shell px-6">
             {[
-              { label: '终端', active: true, hint: 'SSH 终端' },
-              { label: '文件', active: false, hint: '后续议题接入' },
-              { label: '监控', active: false, hint: '后续议题接入' },
-              { label: 'Docker', active: false, hint: '后续议题接入' },
+              { id: 'terminal' as const, label: '终端', hint: 'SSH 终端' },
+              { id: 'file' as const, label: '文件', hint: '后续议题接入' },
+              { id: 'monitor' as const, label: '监控', hint: '后续议题接入' },
+              { id: 'docker' as const, label: 'Docker', hint: 'Docker 容器' },
             ].map((tab) => (
               <button
-                aria-current={tab.active ? 'page' : undefined}
+                aria-current={activeTab === tab.id ? 'page' : undefined}
                 className={`border-x border-transparent px-4 text-[11px] tracking-[0.06em] ${
-                  tab.active
+                  activeTab === tab.id
                     ? 'bg-ink text-paper'
-                    : 'text-muted opacity-45'
+                    : tab.id === 'terminal' || tab.id === 'docker'
+                      ? 'text-ink hover:bg-paper'
+                      : 'text-muted opacity-45'
                 }`}
-                disabled={!tab.active}
+                disabled={tab.id === 'file' || tab.id === 'monitor'}
                 key={tab.label}
+                onClick={() => {
+                  if (tab.id === 'terminal' || tab.id === 'docker') {
+                    setActiveTab(tab.id);
+                  }
+                }}
                 title={tab.hint}
                 type="button"
               >
@@ -183,7 +192,21 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
               server={canonicalServer}
             />
           ) : (
-            <TerminalPane server={canonicalServer} workspaceActive={active} />
+            <>
+              <div className={activeTab === 'terminal' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+                <TerminalPane
+                  server={canonicalServer}
+                  workspaceActive={active && activeTab === 'terminal'}
+                />
+              </div>
+              <div className={activeTab === 'docker' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+                <DockerPane
+                  active={active && activeTab === 'docker'}
+                  onExecOpened={() => setActiveTab('terminal')}
+                  server={canonicalServer}
+                />
+              </div>
+            </>
           )}
         </section>
       </main>
@@ -203,6 +226,7 @@ export function ServerWorkspace({ active, server }: ServerWorkspaceProps) {
       {confirmingDelete ? (
         <ConfirmDialog
           busy={catalogBusy || deleting}
+          busyLabel="正在删除…"
           confirmLabel="确认删除"
           description={
             <>

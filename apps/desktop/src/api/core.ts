@@ -4,6 +4,11 @@ import {
   ConnectOutcomeSchema,
   ConnectionStateEventSchema,
   CoreHealthSchema,
+  DockerActionSchema,
+  DockerContainerIdSchema,
+  DockerContainerListSchema,
+  DockerLogsSchema,
+  DockerShellSchema,
   GroupInputSchema,
   GroupSchema,
   ServerCredentialInputSchema,
@@ -20,6 +25,10 @@ import {
   type ConnectionHandle,
   type ConnectionStateEvent,
   type CoreHealth,
+  type DockerAction,
+  type DockerContainerList,
+  type DockerLogs,
+  type DockerShell,
   type Group,
   type GroupInput,
   type Server,
@@ -60,6 +69,24 @@ export interface CoreClient {
   writeTerminal(terminalSessionId: string, bytes: Uint8Array): Promise<void>;
   resizeTerminal(terminalSessionId: string, columns: number, rows: number): Promise<void>;
   closeTerminal(terminalSessionId: string): Promise<void>;
+  listDockerContainers(connection: ConnectionHandle): Promise<DockerContainerList>;
+  getDockerLogs(
+    connection: ConnectionHandle,
+    containerId: string,
+    tail: number,
+  ): Promise<DockerLogs>;
+  runDockerAction(
+    connection: ConnectionHandle,
+    containerId: string,
+    action: DockerAction,
+  ): Promise<void>;
+  execDockerContainer(
+    connection: ConnectionHandle,
+    containerId: string,
+    shell: DockerShell,
+    columns: number,
+    rows: number,
+  ): Promise<TerminalSession>;
   subscribeConnectionState(handler: (event: ConnectionStateEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalData(handler: (event: TerminalDataEvent) => void): Promise<UnlistenFn>;
   subscribeTerminalGap(handler: (event: TerminalGapEvent) => void): Promise<UnlistenFn>;
@@ -139,6 +166,38 @@ export function createTauriCoreClient(): CoreClient {
     closeTerminal: async (terminalSessionId) => {
       await invoke('terminal_close', { terminalSessionId });
     },
+    listDockerContainers: async (connection) => DockerContainerListSchema.parse(
+      await invoke('docker_list', { connection }),
+    ),
+    getDockerLogs: async (connection, containerId, tail) => DockerLogsSchema.parse(
+      await invoke('docker_logs', {
+        connection,
+        containerId: DockerContainerIdSchema.parse(containerId),
+        tail: DockerLogsSchema.shape.tail.parse(tail),
+      }),
+    ),
+    runDockerAction: async (connection, containerId, action) => {
+      await invoke('docker_action', {
+        connection,
+        containerId: DockerContainerIdSchema.parse(containerId),
+        action: DockerActionSchema.parse(action),
+      });
+    },
+    execDockerContainer: async (
+      connection,
+      containerId,
+      shell,
+      columns,
+      rows,
+    ) => TerminalSessionSchema.parse(
+      await invoke('docker_exec', {
+        connection,
+        containerId: DockerContainerIdSchema.parse(containerId),
+        shell: DockerShellSchema.parse(shell),
+        columns,
+        rows,
+      }),
+    ),
     subscribeConnectionState: async (handler) => listen('connection:state', (event) => {
       const parsed = ConnectionStateEventSchema.safeParse(event.payload);
       if (parsed.success) handler(parsed.data);

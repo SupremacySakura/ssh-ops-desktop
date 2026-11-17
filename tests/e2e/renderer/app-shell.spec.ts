@@ -136,6 +136,57 @@ test('selecting a server opens a live xterm with sessions, history, and keepaliv
   ).toContainText('1/8');
 });
 
+test('lists Docker containers, reads both log streams, restarts, and execs into a terminal', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=docker');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  await expect(page.getByRole('tab', { name: '切换到 终端 1' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Docker' }).click();
+  const table = page.getByRole('table', { name: 'Docker 容器' });
+  await expect(table).toBeVisible();
+  await expect(table).toContainText('web');
+  await expect(table).toContainText('nginx:alpine');
+  await expect(table).toContainText('运行中');
+  await expect(table).toContainText('0.0.0.0:8080->80/tcp');
+  await expect(table).toContainText('2026-11-17');
+
+  await page.getByRole('button', { name: '查看 web 日志' }).click();
+  const logs = page.getByRole('dialog', { name: '容器日志 web' });
+  await expect(logs).toBeVisible();
+  await expect(logs.getByRole('log')).toContainText('request completed');
+  await expect(logs.getByRole('log')).toContainText('warning from stderr');
+  await expect(logs).toHaveCSS('background-color', 'rgb(20, 19, 17)');
+  await logs.getByRole('button', { name: '关闭日志' }).click();
+  await expect(logs).toHaveCount(0);
+  await expect(table).toBeVisible();
+
+  await page.getByRole('button', { name: '重启 web' }).click();
+  const confirmation = page.getByRole('alertdialog', { name: '重启容器？' });
+  await expect(confirmation).toContainText('web');
+  await confirmation.getByRole('button', { name: '确认重启' }).click();
+  await expect(page.getByText('容器已重启')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: {
+        core: { calls: Array<{ method: string }> };
+      };
+    };
+    return runtime.__harborRuntime.core.calls
+      .filter((call) => call.method === 'runDockerAction').length;
+  })).toBe(1);
+
+  await page.getByRole('button', { name: 'Exec web' }).click();
+  const dockerTab = page.getByRole('tab', { name: '切换到 终端 2' });
+  await expect(dockerTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('log', { name: '终端 2' })).toContainText(
+    'docker exec web sh',
+  );
+});
+
 test('never records interactive input that the remote pty does not echo', async ({ page }) => {
   await page.goto('/?scenario=terminal');
   await page.getByRole('button', {

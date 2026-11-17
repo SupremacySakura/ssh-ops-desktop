@@ -2,6 +2,10 @@ import type {
   ConnectOutcome,
   ConnectionStateEvent,
   CoreHealth,
+  DockerAction,
+  DockerContainer,
+  DockerLogs,
+  DockerShell,
   Group,
   Server,
   ServerCredentialInput,
@@ -31,6 +35,9 @@ export interface FakeCoreOptions {
   servers?: Server[];
   groups?: Group[];
   health?: CoreHealth;
+  dockerContainers?: DockerContainer[];
+  dockerLogs?: Record<string, DockerLogs>;
+  dockerStartedAtWarning?: string | null;
   connectOutcome?: ConnectOutcome | ((serverId: string) => ConnectOutcome);
   sshConfigImport?: SshConfigImportPreview;
   overrides?: Partial<CoreClient>;
@@ -46,6 +53,9 @@ export function createFakeCoreClient({
   servers: initialServers = [],
   groups: initialGroups = [],
   health = readyHealth,
+  dockerContainers: initialDockerContainers = [],
+  dockerLogs = {},
+  dockerStartedAtWarning = null,
   connectOutcome,
   sshConfigImport,
   overrides = {},
@@ -53,6 +63,7 @@ export function createFakeCoreClient({
   const calls: CoreCall[] = [];
   let servers = initialServers.map(cloneServer);
   let groups = initialGroups.map((group) => ({ ...group }));
+  let containers = initialDockerContainers.map(cloneDockerContainer);
   const connectionStateHandlers = new Set<(event: ConnectionStateEvent) => void>();
   const terminalDataHandlers = new Set<(event: TerminalDataEvent) => void>();
   const terminalGapHandlers = new Set<(event: TerminalGapEvent) => void>();
@@ -228,6 +239,73 @@ export function createFakeCoreClient({
         reason: 'closed',
       });
     },
+    listDockerContainers: async (connection) => {
+      remember(calls, 'listDockerContainers', [connection]);
+      return {
+        containers: containers.map(cloneDockerContainer),
+        startedAtWarning: dockerStartedAtWarning,
+      };
+    },
+    getDockerLogs: async (connection, containerId, tail) => {
+      remember(calls, 'getDockerLogs', [connection, containerId, tail]);
+      requireContainer(containers, containerId);
+      const fixture = dockerLogs[containerId];
+      return fixture
+        ? { ...fixture, tail }
+        : {
+            containerId,
+            tail,
+            stdout: 'harbor docker stdout fixture\n',
+            stderr: 'harbor docker stderr fixture\n',
+          };
+    },
+    runDockerAction: async (connection, containerId, action) => {
+      remember(calls, 'runDockerAction', [connection, containerId, action]);
+      const existing = requireContainer(containers, containerId);
+      containers = containers.map((container) => (
+        container.id === containerId
+          ? applyDockerAction(container, action)
+          : container
+      ));
+      if (action === 'restart') {
+        containers = containers.map((container) => (
+          container.id === existing.id
+            ? { ...container, startedAt: new Date().toISOString() }
+            : container
+        ));
+      }
+    },
+    execDockerContainer: async (
+      connection,
+      containerId,
+      shell: DockerShell,
+      columns,
+      rows,
+    ) => {
+      remember(calls, 'execDockerContainer', [
+        connection,
+        containerId,
+        shell,
+        columns,
+        rows,
+      ]);
+      const container = requireContainer(containers, containerId);
+      if (container.state !== 'running') {
+        throw fakeError('CONFLICT', '容器未运行，无法打开 exec 会话');
+      }
+      const session = {
+        id: crypto.randomUUID(),
+        connection,
+      };
+      emitTerminalData({
+        terminalSessionId: session.id,
+        sequence: 1,
+        bytes: Array.from(new TextEncoder().encode(
+          `docker exec ${container.names[0]} ${shell}\r\n`,
+        )),
+      });
+      return session;
+    },
     subscribeConnectionState: async (handler) => {
       connectionStateHandlers.add(handler);
       return () => connectionStateHandlers.delete(handler);
@@ -327,6 +405,49 @@ function requireGroup(groups: Group[], id: string): Group {
     throw fakeError('NOT_FOUND', '分组不存在');
   }
   return group;
+}
+
+function requireContainer(containers: DockerContainer[], id: string): DockerContainer {
+  const container = containers.find((candidate) => candidate.id === id);
+  if (!container) {
+    throw fakeError('DOCKER_CONTAINER_NOT_FOUND', '容器不存在，请刷新列表');
+  }
+  return container;
+}
+
+function applyDockerAction(
+  container: DockerContainer,
+  action: DockerAction,
+): DockerContainer {
+  switch (action) {
+    case 'start':
+      return {
+        ...container,
+        state: 'running',
+        status: 'Up less than a second',
+        startedAt: new Date().toISOString(),
+      };
+    case 'stop':
+      return {
+        ...container,
+        state: 'exited',
+        status: 'Exited (0)',
+      };
+    case 'restart':
+      return {
+        ...container,
+        state: 'running',
+        status: 'Up less than a second',
+      };
+  }
+}
+
+function cloneDockerContainer(container: DockerContainer): DockerContainer {
+  return {
+    ...container,
+    names: [...container.names],
+    ports: [...container.ports],
+  };
 }
 
 function fakeError(code: string, message: string): Error {
