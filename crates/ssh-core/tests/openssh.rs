@@ -218,6 +218,163 @@ fn ssh_config_top_level_identity_defaults_disable_direct_hosts() {
 }
 
 #[test]
+fn ssh_config_accepts_optional_equals_around_keywords() {
+    let parsed = SshConfigImporter::parse(
+        "Host=prod\n\
+           HostName=prod.example.com\n\
+           User=deploy\n\
+           Port=2222\n\
+           IdentityFile=~/.ssh/id_ed25519\n\
+         Host = staging\n\
+           HostName = staging.example.com\n\
+           User = ops\n",
+    )
+    .expect("OpenSSH keyword=value syntax should parse");
+
+    assert_eq!(parsed.entries.len(), 2);
+    assert_eq!(parsed.entries[0].alias, "prod");
+    assert_eq!(parsed.entries[0].host, "prod.example.com");
+    assert_eq!(parsed.entries[0].username, "deploy");
+    assert_eq!(parsed.entries[0].port, 2222);
+    assert_eq!(
+        parsed.entries[0].identity_file.as_deref(),
+        Some("~/.ssh/id_ed25519")
+    );
+    assert_eq!(parsed.entries[1].alias, "staging");
+    assert_eq!(parsed.entries[1].host, "staging.example.com");
+    assert_eq!(parsed.entries[1].username, "ops");
+}
+
+#[test]
+fn ssh_config_equals_syntax_cannot_bypass_proxy_fail_closed() {
+    let parsed = SshConfigImporter::parse(
+        "Host=proxied\n\
+           HostName=proxied.example.com\n\
+           User=deploy\n\
+           ProxyJump=bastion\n\
+         Host direct\n\
+           HostName=direct.example.com\n\
+           User=deploy\n",
+    )
+    .expect("proxy semantics should remain visible");
+
+    assert_eq!(parsed.entries.len(), 2);
+    assert!(!parsed.entries[0].importable);
+    assert_eq!(parsed.entries[0].unsupported_directives, ["ProxyJump"]);
+    assert!(
+        parsed.entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("ProxyJump"))
+    );
+}
+
+#[test]
+fn ssh_config_unterminated_wildcard_semantics_disable_explicit_hosts() {
+    let parsed = SshConfigImporter::parse(
+        "Host *\n\
+           ProxyCommand \"unterminated\n\
+         Host direct\n\
+           HostName direct.example.com\n\
+           User deploy\n",
+    )
+    .expect("a malformed wildcard directive must not hide its global risk");
+
+    assert_eq!(parsed.entries.len(), 1);
+    assert_eq!(parsed.entries[0].alias, "direct");
+    assert!(!parsed.entries[0].importable);
+    assert!(
+        parsed.entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("文件级配置"))
+    );
+}
+
+#[test]
+fn ssh_config_unterminated_match_does_not_release_the_previous_host() {
+    let parsed = SshConfigImporter::parse(
+        "Host prod\n\
+           HostName prod.example.com\n\
+           User deploy\n\
+         Match \"unterminated\n\
+         Host direct\n\
+           HostName direct.example.com\n\
+           User deploy\n",
+    )
+    .expect("an unterminated Match must only isolate its preceding Host");
+
+    assert_eq!(parsed.entries.len(), 2);
+    assert_eq!(parsed.entries[0].alias, "prod");
+    assert!(!parsed.entries[0].importable);
+    assert_eq!(parsed.entries[1].alias, "direct");
+    assert!(parsed.entries[1].importable);
+}
+
+#[test]
+fn ssh_config_repeated_aliases_do_not_bypass_merged_host_semantics() {
+    let parsed = SshConfigImporter::parse(
+        "Host prod\n\
+           HostName prod.example.com\n\
+           User deploy\n\
+         Host prod\n\
+           ProxyJump bastion\n\
+           User deploy\n",
+    )
+    .expect("repeated Host blocks must remain visible");
+
+    assert_eq!(parsed.entries.len(), 2);
+    assert!(parsed.entries.iter().all(|entry| !entry.importable));
+    assert!(parsed.entries.iter().all(|entry| {
+        entry
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("重复定义"))
+    }));
+}
+
+#[test]
+fn ssh_config_repeated_alias_blocks_fail_closed_when_an_earlier_block_is_incomplete() {
+    let parsed = SshConfigImporter::parse(
+        "Host prod\n\
+           HostName prod.example.com\n\
+         Host prod\n\
+           User deploy\n",
+    )
+    .expect("an incomplete block must still reserve its alias");
+
+    assert_eq!(parsed.entries.len(), 1);
+    assert_eq!(parsed.entries[0].alias, "prod");
+    assert!(!parsed.entries[0].importable);
+    assert!(
+        parsed.entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("重复定义"))
+    );
+}
+
+#[test]
+fn ssh_config_does_not_emit_blank_identity_file_hints() {
+    let parsed = SshConfigImporter::parse(
+        "Host prod\n\
+           HostName prod.example.com\n\
+           User deploy\n\
+           IdentityFile \" \"\n",
+    )
+    .expect("a blank identity hint should not fail the host");
+
+    assert_eq!(parsed.entries.len(), 1);
+    assert_eq!(parsed.entries[0].identity_file, None);
+    assert!(
+        parsed.entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("IdentityFile"))
+    );
+}
+
+#[test]
 fn ssh_config_reports_each_unpersisted_directive_without_disabling_metadata_import() {
     let parsed = SshConfigImporter::parse(
         "Host prod\n\
