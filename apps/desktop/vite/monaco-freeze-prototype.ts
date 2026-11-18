@@ -1,9 +1,8 @@
 import type { Plugin } from 'vite';
 
 // Tauri 的 freezePrototype 会冻结 Object.prototype。Monaco 的 TS 命名空间对象
-// （var X; (function (X) { ... X.toString = toString; })(X ||= {})）在严格模式下
-// 给继承自冻结原型的 toString 赋值会直接抛 TypeError；Monarch 分词器的
-// arrayToHash 用普通对象当哈希表，关键词里含 "constructor" 等原型属性名时同样抛错。
+// 在严格模式下给继承自冻结原型的 toString 赋值会直接抛 TypeError；Monarch
+// 分词器还会把普通对象当哈希表，关键词里含 "constructor" 等原型属性名时同样抛错。
 // 与 xterm 兼容层同理做构建期改写，目标字符串变化时直接报错以便跟进升级。
 interface PatchTarget {
   readonly replacement: string;
@@ -57,7 +56,7 @@ const PATCHES: readonly PatchTarget[] = [
 export function monacoFreezePrototypeCompatibility(): Plugin {
   return {
     enforce: 'pre',
-    name: 'opspilot-monaco-freeze-prototype-compatibility',
+    name: 'harbor-monaco-freeze-prototype-compatibility',
     transform(code, id) {
       const normalizedId = id.replaceAll('\\', '/');
       const moduleId = normalizedId.split('?', 1)[0];

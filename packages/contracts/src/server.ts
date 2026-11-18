@@ -2,90 +2,73 @@ import { z } from 'zod';
 
 import { IdSchema } from './ids.js';
 
-const hasControlCharacter = (value: string): boolean => [...value].some((character) => {
-  const codePoint = character.codePointAt(0) ?? 0;
-  return codePoint < 32 || codePoint === 127;
-});
-
-const TrimmedRequiredTextSchema = z.string()
-  .trim()
-  .min(1)
-  .refine((value) => !hasControlCharacter(value), {
+export const RequiredTextSchema = z.string().trim().min(1)
+  .refine((value) => !/[\u0000-\u001f\u007f]/u.test(value), {
     message: 'must not contain control characters',
   });
+export const ServerHostSchema = RequiredTextSchema
+  .refine((value) => !value.includes('://') && !/\s/u.test(value), {
+    message: 'must be a hostname without a URL scheme or whitespace',
+  });
+export const ServerUserSchema = RequiredTextSchema.refine((value) => !/\s/u.test(value), {
+  message: 'must not contain whitespace',
+});
 
-export const ServerEnvironmentSchema = z.enum([
-  'development',
-  'staging',
-  'production',
-  'other',
-]);
+export const ServerAuthTypeSchema = z.enum(['password', 'key']);
 
-export const ServerAuthTypeSchema = z.enum([
-  'password',
-  'private_key',
-  'ssh_agent',
-  'certificate',
-]);
-
-export const ServerHostSchema = TrimmedRequiredTextSchema
-  .refine((value) => !value.includes('://'), {
-    message: 'must be a host, not a URL',
-  })
-  .transform((value) => value.toLowerCase());
-
-export const ServerPortSchema = z.int().min(1).max(65_535);
-
-export const ServerInputSchema = z.object({
-  name: TrimmedRequiredTextSchema,
-  host: ServerHostSchema,
-  port: ServerPortSchema,
-  username: TrimmedRequiredTextSchema,
-  environment: ServerEnvironmentSchema,
-  authType: ServerAuthTypeSchema,
-  groupId: IdSchema.optional(),
-  tagIds: z.array(IdSchema),
-}).strict();
-
-export const ServerSummarySchema = ServerInputSchema.extend({
+export const ServerSchema = z.object({
   id: IdSchema,
-  lastConnectedAt: z.iso.datetime({ offset: true }).optional(),
+  name: RequiredTextSchema,
+  host: ServerHostSchema,
+  port: z.int().min(1).max(65_535),
+  user: ServerUserSchema,
+  authType: ServerAuthTypeSchema,
+  secretRef: RequiredTextSchema.nullable(),
+  groupId: IdSchema.nullable().optional(),
+  favorite: z.boolean(),
+  lastConnectedAt: z.int().nonnegative().nullable().optional(),
+  createdAt: z.int().nonnegative(),
 }).strict();
 
-export const ServerDeleteRequestSchema = z.object({
-  serverId: IdSchema,
-  confirmed: z.literal(true),
-}).strict();
-
-export const ServerCredentialSetRequestSchema = z.object({
-  serverId: IdSchema,
-  secret: z.string().min(1).max(64 * 1024),
-}).strict();
-
-export const ServerGroupInputSchema = z.object({
-  name: TrimmedRequiredTextSchema,
+export const GroupSchema = z.object({
+  id: IdSchema,
+  name: RequiredTextSchema,
   sortOrder: z.int(),
 }).strict();
 
-export const ServerGroupSchema = ServerGroupInputSchema.extend({
-  id: IdSchema,
+export const ServerInputSchema = z.object({
+  name: RequiredTextSchema,
+  host: ServerHostSchema,
+  port: z.int().min(1, '端口必须在 1–65535 之间').max(65_535, '端口必须在 1–65535 之间'),
+  user: ServerUserSchema,
+  authType: ServerAuthTypeSchema,
+  groupId: IdSchema.nullable().optional(),
+  favorite: z.boolean(),
 }).strict();
 
-export const ServerTagInputSchema = z.object({
-  name: TrimmedRequiredTextSchema,
+export const ServerCredentialInputSchema = z.object({
+  credential: z.string().min(1, '密码或私钥不能为空'),
 }).strict();
 
-export const ServerTagSchema = ServerTagInputSchema.extend({
-  id: IdSchema,
+export const ServerSaveOutcomeSchema = z.object({
+  server: ServerSchema,
+  warning: RequiredTextSchema.nullable(),
 }).strict();
 
-export type ServerEnvironment = z.infer<typeof ServerEnvironmentSchema>;
+export const ServerDeleteOutcomeSchema = z.object({
+  warning: RequiredTextSchema.nullable(),
+}).strict();
+
+export const GroupInputSchema = z.object({
+  name: RequiredTextSchema,
+  sortOrder: z.int(),
+}).strict();
+
 export type ServerAuthType = z.infer<typeof ServerAuthTypeSchema>;
+export type Server = z.infer<typeof ServerSchema>;
+export type Group = z.infer<typeof GroupSchema>;
 export type ServerInput = z.infer<typeof ServerInputSchema>;
-export type ServerSummary = z.infer<typeof ServerSummarySchema>;
-export type ServerDeleteRequest = z.infer<typeof ServerDeleteRequestSchema>;
-export type ServerCredentialSetRequest = z.infer<typeof ServerCredentialSetRequestSchema>;
-export type ServerGroupInput = z.infer<typeof ServerGroupInputSchema>;
-export type ServerGroup = z.infer<typeof ServerGroupSchema>;
-export type ServerTagInput = z.infer<typeof ServerTagInputSchema>;
-export type ServerTag = z.infer<typeof ServerTagSchema>;
+export type ServerCredentialInput = z.infer<typeof ServerCredentialInputSchema>;
+export type ServerSaveOutcome = z.infer<typeof ServerSaveOutcomeSchema>;
+export type ServerDeleteOutcome = z.infer<typeof ServerDeleteOutcomeSchema>;
+export type GroupInput = z.infer<typeof GroupInputSchema>;

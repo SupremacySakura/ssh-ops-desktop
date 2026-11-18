@@ -1,116 +1,118 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
-use opspilot_audit::{AuditWriter, Redactor};
 use opspilot_persistence::Database;
+use opspilot_remote_adapters::{CpuSampleStore, RemoteExecutor, SystemMonitor};
 use opspilot_secrets::{KeyringSecretStore, SecretStore};
-use tauri::{AppHandle, Manager};
+use opspilot_ssh_core::{
+    ConnectionHandle, RemoteFileService, RusshConnectionManager, RusshSftpConnector,
+    RusshShellBackend, TerminalManager,
+};
 use tokio::sync::Mutex;
 
-mod agent;
+use self::file::FileOperations;
+use self::ssh_config_import::SshConfigPreviewRegistry;
+
+mod catalog;
+mod clipboard;
 mod connection;
 mod docker;
 mod file;
 mod health;
-mod model;
-mod nginx;
-mod operation;
-mod project;
-mod server;
-mod system;
-mod task;
+mod monitor;
+mod ssh_config_import;
+mod terminal;
 
-pub(crate) use agent::{
-    agent_catalog, agent_run_start, agent_run_status, agent_status, agent_thread_create,
-    agent_thread_list,
-};
-pub(crate) use connection::{
-    connection_connect, connection_disconnect, connection_trust_host_key, terminal_close,
-    terminal_open, terminal_resize, terminal_write, tunnel_close, tunnel_list, tunnel_open,
-};
-pub(crate) use docker::{
-    docker_container_exec, docker_container_list, docker_container_logs, docker_container_stats,
-    docker_version,
-};
-pub(crate) use file::{file_download, file_list, file_read};
-pub(crate) use health::core_health;
-pub(crate) use model::{
-    model_profile_delete, model_profile_list, model_profile_save, model_profile_test_connection,
-};
-pub(crate) use nginx::{nginx_discover, nginx_read};
-pub(crate) use operation::{
-    operation_approve, operation_prepare, operation_reject, operation_status,
-};
-pub(crate) use project::{project_create, project_detect, project_list};
-pub(crate) use server::{
+pub(crate) use catalog::{
     server_create, server_credential_set, server_delete, server_group_create, server_group_delete,
-    server_group_list, server_group_update, server_import_apply, server_import_preview,
-    server_list, server_tag_create, server_tag_delete, server_tag_list, server_tag_update,
-    server_update,
+    server_group_list, server_group_update, server_list, server_update,
 };
-pub(crate) use system::{system_metrics, system_ports, system_probe, system_services};
-pub(crate) use task::{audit_list, task_events_since, task_list};
+pub(crate) use clipboard::clipboard_read_text;
+pub(crate) use connection::{connection_connect, connection_disconnect, connection_trust_host_key};
+pub(crate) use docker::{docker_action, docker_exec, docker_list, docker_logs};
+pub(crate) use file::{
+    file_delete, file_download, file_list, file_mkdir, file_read, file_rename, file_upload,
+    file_write,
+};
+pub(crate) use health::core_health;
+pub(crate) use monitor::monitor_snapshot;
+pub(crate) use ssh_config_import::{ssh_config_import_apply, ssh_config_import_preview};
+pub(crate) use terminal::{terminal_close, terminal_open, terminal_resize, terminal_write};
 
 #[derive(Clone)]
 pub(crate) struct CoreServices<S = KeyringSecretStore> {
     pub(crate) database: Database,
     pub(crate) secret_store: Arc<S>,
-    pub(crate) audit_writer: AuditWriter,
-    pub(crate) import_previews: Arc<Mutex<server::ImportPreviewStore>>,
-    pub(crate) operation_gateway: opspilot_task_engine::SqliteOperationGateway,
-    pub(crate) connection_manager: opspilot_ssh_core::RusshConnectionManager<S>,
-    pub(crate) terminal_backend: opspilot_ssh_core::RusshShellBackend<S>,
-    pub(crate) terminal_manager:
-        opspilot_ssh_core::TerminalManager<opspilot_ssh_core::RusshShellBackend<S>>,
-    pub(crate) tunnel_manager: opspilot_ssh_core::TunnelManager<S>,
-    pub(crate) agent_sidecar: Arc<Mutex<Option<opspilot_agent_bridge::AgentSidecar>>>,
-    pub(crate) agent_unavailable_reason: Arc<Mutex<Option<String>>>,
-    pub(crate) agent_tools: opspilot_agent_bridge::ToolRegistry,
+    pub(crate) connection_manager: RusshConnectionManager<S>,
+    pub(crate) terminal_manager: TerminalManager<RusshShellBackend<S>>,
+    pub(crate) file_operations: Arc<dyn FileOperations>,
+    pub(crate) monitor: SystemMonitor<RemoteExecutor<S>>,
+    connection_sequences: Arc<Mutex<HashMap<opspilot_domain::Id, u64>>>,
+    pub(crate) ssh_config_path: Option<PathBuf>,
+    pub(crate) ssh_config_previews: Arc<StdMutex<SshConfigPreviewRegistry>>,
 }
 
 impl<S> CoreServices<S>
 where
-    S: SecretStore + 'static,
+    S: SecretStore + Send + Sync + 'static,
 {
     pub(crate) fn new(database: Database, secret_store: S) -> Self {
         let secret_store = Arc::new(secret_store);
-        let connection_manager = opspilot_ssh_core::RusshConnectionManager::new(
+        let connection_manager = RusshConnectionManager::new(
             database.clone(),
             secret_store.clone(),
-            std::time::Duration::from_secs(5 * 60),
+            Duration::from_secs(5 * 60),
         );
-        let operation_gateway =
-            operation::operation_gateway_with_remote(database.clone(), connection_manager.clone())
-                .expect("built-in operation catalog must be valid");
-        let agent_tools = opspilot_agent_bridge::ToolRegistry::new(
-            Arc::new(operation_gateway.clone()),
-            operation::agent_tool_descriptors(),
-        )
-        .expect("built-in Agent tool catalog must be valid");
-        let terminal_backend =
-            opspilot_ssh_core::RusshShellBackend::new(connection_manager.clone());
-        let terminal_manager = opspilot_ssh_core::TerminalManager::new(terminal_backend.clone());
-        let tunnel_manager = opspilot_ssh_core::TunnelManager::new(connection_manager.clone());
+        let terminal_manager =
+            TerminalManager::new(RusshShellBackend::new(connection_manager.clone()));
+        let file_operations = Arc::new(RemoteFileService::new(Arc::new(RusshSftpConnector::new(
+            connection_manager.clone(),
+        ))));
+        let monitor = SystemMonitor::new(
+            RemoteExecutor::new(connection_manager.clone()),
+            CpuSampleStore::default(),
+        );
         Self {
-            audit_writer: AuditWriter::new(database.clone(), Redactor::default()),
             database,
             secret_store,
-            import_previews: Arc::new(Mutex::new(server::ImportPreviewStore::default())),
-            operation_gateway,
             connection_manager,
-            terminal_backend,
             terminal_manager,
-            tunnel_manager,
-            agent_sidecar: Arc::new(Mutex::new(None)),
-            agent_unavailable_reason: Arc::new(Mutex::new(Some(
-                "Agent Sidecar runtime has not started".to_owned(),
-            ))),
-            agent_tools,
+            file_operations,
+            monitor,
+            connection_sequences: Arc::new(Mutex::new(HashMap::new())),
+            ssh_config_path: None,
+            ssh_config_previews: Arc::new(StdMutex::new(SshConfigPreviewRegistry::default())),
         }
     }
-}
 
-pub(super) fn services(app: &AppHandle) -> CoreServices<KeyringSecretStore> {
-    app.state::<CoreServices<KeyringSecretStore>>()
-        .inner()
-        .clone()
+    pub(crate) async fn next_connection_sequence(&self, server_id: opspilot_domain::Id) -> u64 {
+        let mut sequences = self.connection_sequences.lock().await;
+        let sequence = sequences.entry(server_id).or_insert(0);
+        *sequence = sequence.saturating_add(1);
+        *sequence
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        if self.terminal_manager.close_all().await.is_err() {
+            self.terminal_manager.discard_all().await;
+        }
+        self.connection_manager.disconnect_all().await;
+    }
+
+    pub(crate) async fn register_connection(
+        &self,
+        connection: &ConnectionHandle,
+    ) -> Result<(), opspilot_domain::CoreError> {
+        self.terminal_manager.register_connection(connection).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_ssh_config_path(mut self, path: PathBuf) -> Self {
+        self.ssh_config_path = Some(path);
+        self
+    }
 }

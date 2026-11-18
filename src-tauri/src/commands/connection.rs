@@ -1,204 +1,172 @@
-use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use opspilot_audit::AuditEvent;
-use opspilot_domain::{AuthType, CoreError, CoreErrorCode, Id};
+use async_trait::async_trait;
+use opspilot_domain::{AuthType, CoreError, CoreErrorCode, Id, Server};
 use opspilot_persistence::ServerRepository;
-use opspilot_secrets::SecretRef;
+use opspilot_secrets::{SecretRef, SecretStore};
 use opspilot_ssh_core::{
-    ActiveTunnel, AuthRequest, ConnectOutcome, ConnectionHandle, ConnectionRequest, HostEndpoint,
-    PtySize, TerminalSession, TunnelDirection, TunnelRule,
+    AuthRequest, ConnectOutcome, ConnectionHandle, ConnectionRequest, HostEndpoint,
+    RusshConnectionManager,
 };
-use serde::Deserialize;
-use tauri::{AppHandle, Emitter};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
 
-use super::services;
+use super::CoreServices;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum ConnectionAuthInput {
-    Password,
-    PrivateKey {
-        private_key_path: PathBuf,
-    },
-    SshAgent,
-    Certificate {
-        certificate_path: PathBuf,
-        private_key_path: PathBuf,
-        expected_principal: String,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ConnectionConnectRequest {
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionStateEvent {
     server_id: Id,
-    auth: ConnectionAuthInput,
+    connection_id: Option<Id>,
+    sequence: u64,
+    state: ConnectionState,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct HostKeyTrustRequest {
-    server_id: Id,
-    verification_id: Id,
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum ConnectionState {
+    Connecting,
+    Ready,
+    Closed,
+    Error {
+        code: CoreErrorCode,
+        message: String,
+        retryable: bool,
+    },
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct TerminalOpenRequest {
-    connection: ConnectionHandle,
-    columns: u32,
-    rows: u32,
+#[async_trait]
+pub(super) trait ConnectionAttempt {
+    async fn connect(&self, request: ConnectionRequest) -> Result<ConnectOutcome, CoreError>;
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct TerminalWriteRequest {
-    terminal_session_id: Id,
-    bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct TerminalResizeRequest {
-    terminal_session_id: Id,
-    columns: u32,
-    rows: u32,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct TunnelOpenRequest {
-    connection: ConnectionHandle,
-    direction: TunnelDirection,
-    bind_host: Option<String>,
-    bind_port: u16,
-    target_host: Option<String>,
-    target_port: Option<u16>,
-    public_bind_confirmed: bool,
-}
-
-pub(super) fn into_auth_request(
-    expected: AuthType,
-    input: ConnectionAuthInput,
-    stored_secret: Option<SecretRef>,
-) -> Result<AuthRequest, CoreError> {
-    match (expected, input) {
-        (AuthType::Password, ConnectionAuthInput::Password) => Ok(AuthRequest::Password {
-            secret_ref: stored_secret.ok_or_else(|| {
-                CoreError::new(
-                    CoreErrorCode::Validation,
-                    "password authentication requires a credential configured for this server",
-                    false,
-                )
-            })?,
-        }),
-        (AuthType::PrivateKey, ConnectionAuthInput::PrivateKey { private_key_path }) => {
-            Ok(AuthRequest::PrivateKey {
-                path: private_key_path,
-                passphrase_ref: stored_secret,
-            })
-        }
-        (AuthType::SshAgent, ConnectionAuthInput::SshAgent) => Ok(AuthRequest::SshAgent),
-        (
-            AuthType::Certificate,
-            ConnectionAuthInput::Certificate {
-                certificate_path,
-                private_key_path,
-                expected_principal,
-            },
-        ) => Ok(AuthRequest::Certificate {
-            certificate_path,
-            private_key_path,
-            passphrase_ref: stored_secret,
-            expected_principal,
-        }),
-        _ => Err(CoreError::new(
-            CoreErrorCode::Validation,
-            "connection authentication kind does not match the server profile",
-            false,
-        )),
+#[async_trait]
+impl<S> ConnectionAttempt for RusshConnectionManager<S>
+where
+    S: SecretStore + 'static,
+{
+    async fn connect(&self, request: ConnectionRequest) -> Result<ConnectOutcome, CoreError> {
+        RusshConnectionManager::connect(self, request).await
     }
+}
+
+pub(super) fn connection_auth(server: &Server) -> Result<AuthRequest, CoreError> {
+    let secret_ref = SecretRef::from_persisted(server.require_secret_ref()?.to_owned())?;
+    Ok(match server.auth_type {
+        AuthType::Password => AuthRequest::Password { secret_ref },
+        AuthType::Key => AuthRequest::PrivateKeyContent { secret_ref },
+    })
+}
+
+pub(super) fn server_endpoint(server: &Server) -> Result<HostEndpoint, CoreError> {
+    HostEndpoint::try_new(server.id, &server.host, u32::from(server.port))
+}
+
+pub(super) async fn connect_server_at<S, A>(
+    services: &CoreServices<S>,
+    attempt: &A,
+    server_id: Id,
+    connected_at: i64,
+) -> Result<ConnectOutcome, CoreError>
+where
+    S: SecretStore + Send + Sync + 'static,
+    A: ConnectionAttempt,
+{
+    let repository = ServerRepository::new(services.database.clone());
+    let server = repository.get(server_id).await?;
+    let request = ConnectionRequest::try_new(
+        server_endpoint(&server)?,
+        &server.user,
+        connection_auth(&server)?,
+    )?;
+    let outcome = attempt.connect(request).await?;
+    if let ConnectOutcome::Ready { connection } = &outcome {
+        if let Err(error) = services.register_connection(connection).await {
+            cleanup_connection(services, connection).await;
+            return Err(error);
+        }
+        if let Err(error) = repository.mark_connected(server.id, connected_at).await {
+            cleanup_connection(services, connection).await;
+            return Err(error);
+        }
+    }
+    Ok(outcome)
+}
+
+async fn cleanup_connection<S>(services: &CoreServices<S>, connection: &ConnectionHandle)
+where
+    S: SecretStore + Send + Sync + 'static,
+{
+    let _ = services.terminal_manager.close_connection(connection).await;
+    let _ = services.connection_manager.disconnect(connection).await;
 }
 
 #[tauri::command]
 pub(crate) async fn connection_connect(
     app: AppHandle,
-    request: ConnectionConnectRequest,
+    server_id: Id,
 ) -> Result<ConnectOutcome, CoreError> {
-    let services = services(&app);
-    let server = ServerRepository::new(services.database.clone())
-        .get(request.server_id)
-        .await?;
-    let endpoint = HostEndpoint::try_new(server.id, &server.host, u32::from(server.port))?;
-    let stored_secret = ServerRepository::new(services.database.clone())
-        .connection_secret_ref(server.id)
-        .await?;
-    let auth = into_auth_request(server.auth_type, request.auth, stored_secret)?;
-    let outcome = services
-        .connection_manager
-        .connect(ConnectionRequest::try_new(
-            endpoint,
-            &server.username,
-            auth,
-        )?)
-        .await;
-    let (result, detail) = match &outcome {
+    let services = core_services(&app);
+    emit_connection_state_event(
+        &app,
+        &services,
+        server_id,
+        None,
+        ConnectionState::Connecting,
+    )
+    .await;
+    let result = connect_server_at(
+        &services,
+        &services.connection_manager,
+        server_id,
+        unix_timestamp()?,
+    )
+    .await;
+
+    match &result {
         Ok(ConnectOutcome::Ready { connection }) => {
-            let _ = app.emit(
-                "connection:state",
-                serde_json::json!({
-                    "serverId": connection.server_id(),
-                    "connectionId": connection.connection_id(),
-                    "sequence": 1,
-                    "state": { "kind": "ready" },
-                }),
-            );
-            ("success", "ready")
-        }
-        Ok(ConnectOutcome::HostKeyRequired { .. }) => ("pending", "host_key_required"),
-        Ok(ConnectOutcome::HostKeyChanged { .. }) => ("blocked", "host_key_changed"),
-        Err(_) => ("failed", "connection_error"),
-    };
-    services
-        .audit_writer
-        .append(
-            AuditEvent::new(
-                "connection.connect",
-                "server",
-                result,
-                serde_json::json!({ "state": detail }),
+            emit_connection_state_event(
+                &app,
+                &services,
+                server_id,
+                Some(connection.connection_id()),
+                ConnectionState::Ready,
             )
-            .with_server_id(server.id.to_string()),
-        )
-        .await?;
-    outcome
+            .await;
+        }
+        Ok(ConnectOutcome::HostKeyRequired { .. }) => {}
+        Ok(ConnectOutcome::HostKeyChanged { .. }) => {}
+        Err(error) => {
+            emit_connection_state_event(
+                &app,
+                &services,
+                server_id,
+                None,
+                ConnectionState::Error {
+                    code: error.code(),
+                    message: connection_state_message(error.code()).to_owned(),
+                    retryable: error.is_retryable(),
+                },
+            )
+            .await;
+        }
+    }
+    result
 }
 
 #[tauri::command]
 pub(crate) async fn connection_trust_host_key(
     app: AppHandle,
-    request: HostKeyTrustRequest,
+    server_id: Id,
+    verification_id: Id,
 ) -> Result<(), CoreError> {
-    let services = services(&app);
+    let services = core_services(&app);
     let server = ServerRepository::new(services.database.clone())
-        .get(request.server_id)
+        .get(server_id)
         .await?;
-    let endpoint = HostEndpoint::try_new(server.id, &server.host, u32::from(server.port))?;
     services
         .connection_manager
-        .trust_host_key(request.verification_id, &endpoint)
-        .await?;
-    services
-        .audit_writer
-        .append(
-            AuditEvent::new(
-                "connection.host_key_trust",
-                "server",
-                "success",
-                serde_json::json!({ "verificationId": request.verification_id }),
-            )
-            .with_server_id(server.id.to_string()),
-        )
+        .trust_host_key(verification_id, &server_endpoint(&server)?)
         .await
 }
 
@@ -207,129 +175,442 @@ pub(crate) async fn connection_disconnect(
     app: AppHandle,
     connection: ConnectionHandle,
 ) -> Result<(), CoreError> {
-    let services = services(&app);
-    services.connection_manager.disconnect(&connection).await?;
-    let _ = app.emit(
-        "connection:state",
-        serde_json::json!({
-            "serverId": connection.server_id(),
-            "connectionId": connection.connection_id(),
-            "sequence": 2,
-            "state": { "kind": "closed" },
-        }),
-    );
-    Ok(())
-}
+    let services = core_services(&app);
+    match services
+        .terminal_manager
+        .close_connection(&connection)
+        .await
+    {
+        Ok(_) => {}
+        Err(error) if error.code() == CoreErrorCode::NotFound => {}
+        Err(error) if error.code() == CoreErrorCode::Conflict => return Err(error),
+        Err(_) => {
+            // The transport teardown below is authoritative for a dead PTY.
+        }
+    }
+    let disconnect_result = services.connection_manager.disconnect(&connection).await;
+    if matches!(
+        &disconnect_result,
+        Err(error) if error.code() == CoreErrorCode::Conflict
+    ) {
+        return disconnect_result;
+    }
 
-#[tauri::command]
-pub(crate) async fn terminal_open(
-    app: AppHandle,
-    request: TerminalOpenRequest,
-) -> Result<TerminalSession, CoreError> {
-    let services = services(&app);
+    // close() may fail once the transport is already gone. Once disconnect has
+    // been attempted, no terminal state may remain to occupy a per-server slot.
     services
         .terminal_manager
-        .open(
-            request.connection,
-            PtySize::try_new(request.columns, request.rows)?,
-        )
-        .await
+        .discard_connection(&connection)
+        .await;
+    emit_connection_state_event(
+        &app,
+        &services,
+        connection.server_id(),
+        Some(connection.connection_id()),
+        ConnectionState::Closed,
+    )
+    .await;
+    disconnect_result
 }
 
-#[tauri::command]
-pub(crate) async fn terminal_write(
-    app: AppHandle,
-    request: TerminalWriteRequest,
-) -> Result<(), CoreError> {
-    if request.bytes.len() > 1024 * 1024 {
-        return Err(CoreError::new(
-            CoreErrorCode::Validation,
-            "terminal write exceeds the 1 MiB IPC limit",
+async fn emit_connection_state_event(
+    app: &AppHandle,
+    services: &CoreServices,
+    server_id: Id,
+    connection_id: Option<Id>,
+    state: ConnectionState,
+) {
+    let sequence = services.next_connection_sequence(server_id).await;
+    let _ = app.emit(
+        "connection:state",
+        ConnectionStateEvent {
+            server_id,
+            connection_id,
+            sequence,
+            state,
+        },
+    );
+}
+
+fn core_services(app: &AppHandle) -> CoreServices {
+    app.state::<CoreServices>().inner().clone()
+}
+
+fn unix_timestamp() -> Result<i64, CoreError> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_error| {
+            CoreError::new(CoreErrorCode::Internal, "系统时间无效，无法建立连接", false)
+        })?
+        .as_secs();
+    i64::try_from(seconds).map_err(|_error| {
+        CoreError::new(
+            CoreErrorCode::Internal,
+            "系统时间超出支持范围，无法建立连接",
             false,
-        ));
-    }
-    services(&app)
-        .terminal_manager
-        .write(request.terminal_session_id, &request.bytes)
-        .await
-}
-
-#[tauri::command]
-pub(crate) async fn terminal_resize(
-    app: AppHandle,
-    request: TerminalResizeRequest,
-) -> Result<(), CoreError> {
-    services(&app)
-        .terminal_manager
-        .resize(
-            request.terminal_session_id,
-            PtySize::try_new(request.columns, request.rows)?,
         )
-        .await
+    })
 }
 
-#[tauri::command]
-pub(crate) async fn terminal_close(
-    app: AppHandle,
-    terminal_session_id: Id,
-) -> Result<(), CoreError> {
-    services(&app)
-        .terminal_manager
-        .close(terminal_session_id)
-        .await
-}
-
-#[tauri::command]
-pub(crate) async fn tunnel_open(
-    app: AppHandle,
-    request: TunnelOpenRequest,
-) -> Result<ActiveTunnel, CoreError> {
-    let services = services(&app);
-    let rule = TunnelRule::try_new(
-        request.direction,
-        request.bind_host.as_deref(),
-        request.bind_port,
-        request.target_host.as_deref(),
-        request.target_port,
-        request.public_bind_confirmed,
-    )?;
-    services.tunnel_manager.open(request.connection, rule).await
-}
-
-#[tauri::command]
-pub(crate) async fn tunnel_close(app: AppHandle, tunnel_id: Id) -> Result<(), CoreError> {
-    services(&app).tunnel_manager.close(tunnel_id).await
-}
-
-#[tauri::command]
-pub(crate) async fn tunnel_list(app: AppHandle) -> Vec<ActiveTunnel> {
-    services(&app).tunnel_manager.list().await
+fn connection_state_message(code: CoreErrorCode) -> &'static str {
+    match code {
+        CoreErrorCode::Validation => "连接参数无效，请检查服务器配置",
+        CoreErrorCode::NotFound => "服务器不存在或已被删除",
+        CoreErrorCode::Conflict => "服务器状态已变化，请刷新后重试",
+        CoreErrorCode::Cancelled => "连接已取消",
+        CoreErrorCode::Timeout => "连接超时，请检查网络后重试",
+        CoreErrorCode::CapabilityUnavailable => "当前环境不支持该连接能力",
+        CoreErrorCode::SecretUnavailable => "该服务器的凭据不可用，请重新配置",
+        CoreErrorCode::SshConnection => "无法建立 SSH 连接，请检查网络与服务器状态",
+        CoreErrorCode::SshAuthentication => "SSH 认证失败，请检查用户名与凭据",
+        CoreErrorCode::SshHostKeyUnknown => "服务器主机指纹未知，需要先确认信任",
+        CoreErrorCode::SshHostKeyChanged => "服务器主机指纹已变化，连接已阻断",
+        CoreErrorCode::RemotePermission => "远程操作权限不足",
+        CoreErrorCode::RemoteCommand => "远程命令执行失败",
+        CoreErrorCode::RemoteParse => "远程返回内容无法解析",
+        CoreErrorCode::DockerNotInstalled => "远程服务器未安装 Docker",
+        CoreErrorCode::DockerPermissionDenied => "当前用户无权访问 Docker",
+        CoreErrorCode::DockerDaemonUnavailable => "Docker 服务不可用",
+        CoreErrorCode::DockerContainerNotFound => "容器不存在或已被删除",
+        CoreErrorCode::DockerShellUnavailable => "容器内没有可用的 shell",
+        CoreErrorCode::Internal => "本地服务发生错误，请稍后重试",
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use opspilot_domain::{AuthType, CoreErrorCode};
-    use opspilot_secrets::SecretRef;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
-    use super::{ConnectionAuthInput, into_auth_request};
+    use async_trait::async_trait;
+    use opspilot_domain::{
+        AuthType, CoreError, CoreErrorCode, Id, ServerInput as DomainServerInput,
+    };
+    use opspilot_persistence::{Database, ServerRepository};
+    use opspilot_secrets::{MemorySecretStore, SecretKind, SecretStore, SecretValue};
+    use opspilot_ssh_core::{ConnectOutcome, ConnectionHandle, ConnectionRequest, HostKeyPrompt};
 
-    #[test]
-    fn auth_input_must_match_server_auth_type_and_never_contains_plaintext() {
-        let request = into_auth_request(
+    use super::super::CoreServices;
+    use super::{ConnectionAttempt, connect_server_at, connection_auth};
+
+    #[derive(Clone)]
+    struct FakeAttempt {
+        outcome: Result<ConnectOutcome, CoreError>,
+    }
+
+    #[async_trait]
+    impl ConnectionAttempt for FakeAttempt {
+        async fn connect(&self, _request: ConnectionRequest) -> Result<ConnectOutcome, CoreError> {
+            self.outcome.clone()
+        }
+    }
+
+    struct CountingAttempt {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ConnectionAttempt for CountingAttempt {
+        async fn connect(&self, _request: ConnectionRequest) -> Result<ConnectOutcome, CoreError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ConnectOutcome::HostKeyRequired {
+                prompt: HostKeyPrompt {
+                    verification_id: Id::new(),
+                    algorithm: "ssh-ed25519".to_owned(),
+                    sha256: "SHA256:fixture".to_owned(),
+                    expires_at: "2026-01-01T00:00:00.000Z".to_owned(),
+                },
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn marks_a_server_connected_only_after_ready_and_never_after_blocked_outcomes() {
+        let database = Database::open(":memory:").await.unwrap();
+        let store = MemorySecretStore::default();
+        let services = CoreServices::new(database, store);
+        let server = create_server(&services, AuthType::Password).await;
+
+        let ready_attempt = FakeAttempt {
+            outcome: Ok(ConnectOutcome::Ready {
+                connection: ConnectionHandle::new(server.id, Id::new()),
+            }),
+        };
+        connect_server_at(&services, &ready_attempt, server.id, 1_700_000_100)
+            .await
+            .unwrap();
+        assert_eq!(
+            ServerRepository::new(services.database.clone())
+                .get(server.id)
+                .await
+                .unwrap()
+                .last_connected_at,
+            Some(1_700_000_100)
+        );
+
+        let second = create_server(&services, AuthType::Key).await;
+        let host_key_attempt = FakeAttempt {
+            outcome: Ok(ConnectOutcome::HostKeyRequired {
+                prompt: HostKeyPrompt {
+                    verification_id: Id::new(),
+                    algorithm: "ssh-ed25519".to_owned(),
+                    sha256: "SHA256:fixture".to_owned(),
+                    expires_at: "2026-01-01T00:00:00.000Z".to_owned(),
+                },
+            }),
+        };
+        connect_server_at(&services, &host_key_attempt, second.id, 1_700_000_200)
+            .await
+            .unwrap();
+        assert_eq!(
+            ServerRepository::new(services.database.clone())
+                .get(second.id)
+                .await
+                .unwrap()
+                .last_connected_at,
+            None
+        );
+
+        let third = create_server(&services, AuthType::Password).await;
+        let failure_attempt = FakeAttempt {
+            outcome: Err(CoreError::new(
+                CoreErrorCode::SshAuthentication,
+                "fixture authentication failed",
+                false,
+            )),
+        };
+        assert!(
+            connect_server_at(&services, &failure_attempt, third.id, 1_700_000_300)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            ServerRepository::new(services.database.clone())
+                .get(third.id)
+                .await
+                .unwrap()
+                .last_connected_at,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_registration_conflict_does_not_mark_the_server_or_retain_a_second_binding() {
+        let database = Database::open(":memory:").await.unwrap();
+        let services = CoreServices::new(database, MemorySecretStore::default());
+        let first = create_server(&services, AuthType::Password).await;
+        let second = create_server(&services, AuthType::Password).await;
+        let connection_id = Id::new();
+        let first_handle = ConnectionHandle::new(first.id, connection_id);
+        let second_handle = ConnectionHandle::new(second.id, connection_id);
+
+        connect_server_at(
+            &services,
+            &FakeAttempt {
+                outcome: Ok(ConnectOutcome::Ready {
+                    connection: first_handle.clone(),
+                }),
+            },
+            first.id,
+            1_700_000_100,
+        )
+        .await
+        .unwrap();
+        let error = connect_server_at(
+            &services,
+            &FakeAttempt {
+                outcome: Ok(ConnectOutcome::Ready {
+                    connection: second_handle.clone(),
+                }),
+            },
+            second.id,
+            1_700_000_200,
+        )
+        .await
+        .expect_err("one connection id cannot be registered for two servers");
+
+        assert_eq!(error.code(), CoreErrorCode::Conflict);
+        assert!(
+            services
+                .terminal_manager
+                .is_connection_registered(&first_handle)
+                .await
+        );
+        assert!(
+            !services
+                .terminal_manager
+                .is_connection_registered(&second_handle)
+                .await
+        );
+        assert_eq!(
+            ServerRepository::new(services.database.clone())
+                .get(second.id)
+                .await
+                .unwrap()
+                .last_connected_at,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pending_credential_fails_before_connection_attempt_or_timestamp_update() {
+        let database = Database::open(":memory:").await.unwrap();
+        let services = CoreServices::new(database, MemorySecretStore::default());
+        let input = DomainServerInput::try_new(
+            "pending",
+            "pending.example.com",
+            22,
+            "deploy",
             AuthType::Password,
-            ConnectionAuthInput::Password,
-            Some(SecretRef::from_persisted("keyring-ref").unwrap()),
+            None,
+            None,
+            false,
         )
         .unwrap();
-        assert!(format!("{request:?}").contains("Password"));
-        assert!(!format!("{request:?}").contains("plaintext"));
+        let server = ServerRepository::new(services.database.clone())
+            .create(&input, 1_700_000_000)
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
 
-        let error = into_auth_request(
-            AuthType::SshAgent,
-            ConnectionAuthInput::Password,
-            Some(SecretRef::from_persisted("keyring-ref").unwrap()),
+        let error = connect_server_at(
+            &services,
+            &CountingAttempt {
+                calls: calls.clone(),
+            },
+            server.id,
+            1_700_000_100,
         )
-        .expect_err("auth kind mismatch must fail closed");
-        assert_eq!(error.code(), CoreErrorCode::Validation);
+        .await
+        .expect_err("a server without a Keychain reference must not attempt authentication");
+
+        assert_eq!(error.code(), CoreErrorCode::SecretUnavailable);
+        assert_eq!(
+            error.message(),
+            "该服务器的凭据尚未配置，请先补充密码或私钥"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            ServerRepository::new(services.database.clone())
+                .get(server.id)
+                .await
+                .unwrap()
+                .last_connected_at,
+            None
+        );
+    }
+
+    #[test]
+    fn server_credentials_resolve_as_keyring_material_not_webview_auth() {
+        let server = opspilot_domain::Server {
+            id: Id::new(),
+            name: "prod".to_owned(),
+            host: "prod.example.com".to_owned(),
+            port: 22,
+            user: "deploy".to_owned(),
+            auth_type: AuthType::Key,
+            secret_ref: Some("secret-ref-fixture".to_owned()),
+            group_id: None,
+            favorite: false,
+            last_connected_at: None,
+            created_at: 1_700_000_000,
+        };
+
+        let auth = connection_auth(&server).unwrap();
+        assert!(matches!(
+            auth,
+            opspilot_ssh_core::AuthRequest::PrivateKeyContent { .. }
+        ));
+        assert!(format!("{auth:?}").contains("PrivateKeyContent"));
+        assert!(!format!("{auth:?}").contains("private-key-material"));
+    }
+
+    #[test]
+    fn connection_state_events_serialize_with_the_shared_camel_case_contract() {
+        let server_id = Id::new();
+        let connection_id = Id::new();
+        let message = super::connection_state_message(CoreErrorCode::SshHostKeyChanged);
+        assert_eq!(
+            serde_json::to_value(super::ConnectionStateEvent {
+                server_id,
+                connection_id: None,
+                sequence: 4,
+                state: super::ConnectionState::Error {
+                    code: CoreErrorCode::SshHostKeyChanged,
+                    message: message.to_owned(),
+                    retryable: false,
+                },
+            })
+            .unwrap(),
+            serde_json::json!({
+                "serverId": server_id,
+                "connectionId": null,
+                "sequence": 4,
+                "state": {
+                    "kind": "error",
+                    "code": "SSH_HOST_KEY_CHANGED",
+                    "message": "服务器主机指纹已变化，连接已阻断",
+                    "retryable": false,
+                },
+            })
+        );
+        assert_eq!(
+            super::connection_state_message(CoreErrorCode::SshAuthentication),
+            "SSH 认证失败，请检查用户名与凭据"
+        );
+        assert_eq!(
+            serde_json::to_value(super::ConnectionStateEvent {
+                server_id,
+                connection_id: Some(connection_id),
+                sequence: 5,
+                state: super::ConnectionState::Ready,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "serverId": server_id,
+                "connectionId": connection_id,
+                "sequence": 5,
+                "state": { "kind": "ready" },
+            })
+        );
+    }
+
+    async fn create_server<S>(
+        services: &CoreServices<S>,
+        auth_type: AuthType,
+    ) -> opspilot_domain::Server
+    where
+        S: SecretStore + Send + Sync + 'static,
+    {
+        let secret_ref = services
+            .secret_store
+            .put(
+                if auth_type == AuthType::Password {
+                    SecretKind::Password
+                } else {
+                    SecretKind::PrivateKey
+                },
+                Id::new(),
+                SecretValue::new("credential-fixture"),
+            )
+            .await
+            .unwrap();
+        let input = DomainServerInput::try_new(
+            "fixture",
+            &format!("{}.example.com", Id::new()),
+            22,
+            "deploy",
+            auth_type,
+            Some(secret_ref.as_str()),
+            None,
+            false,
+        )
+        .unwrap();
+        ServerRepository::new(services.database.clone())
+            .create(&input, 1_700_000_000)
+            .await
+            .unwrap()
     }
 }

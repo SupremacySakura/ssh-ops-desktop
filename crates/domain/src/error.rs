@@ -20,11 +20,11 @@ pub enum CoreErrorCode {
     RemotePermission,
     RemoteCommand,
     RemoteParse,
-    ApprovalRequired,
-    ApprovalMismatch,
-    ToolScopeViolation,
-    ModelUnavailable,
-    SidecarUnavailable,
+    DockerNotInstalled,
+    DockerPermissionDenied,
+    DockerDaemonUnavailable,
+    DockerContainerNotFound,
+    DockerShellUnavailable,
     Internal,
 }
 
@@ -45,11 +45,11 @@ impl fmt::Display for CoreErrorCode {
             Self::RemotePermission => "REMOTE_PERMISSION",
             Self::RemoteCommand => "REMOTE_COMMAND",
             Self::RemoteParse => "REMOTE_PARSE",
-            Self::ApprovalRequired => "APPROVAL_REQUIRED",
-            Self::ApprovalMismatch => "APPROVAL_MISMATCH",
-            Self::ToolScopeViolation => "TOOL_SCOPE_VIOLATION",
-            Self::ModelUnavailable => "MODEL_UNAVAILABLE",
-            Self::SidecarUnavailable => "SIDECAR_UNAVAILABLE",
+            Self::DockerNotInstalled => "DOCKER_NOT_INSTALLED",
+            Self::DockerPermissionDenied => "DOCKER_PERMISSION_DENIED",
+            Self::DockerDaemonUnavailable => "DOCKER_DAEMON_UNAVAILABLE",
+            Self::DockerContainerNotFound => "DOCKER_CONTAINER_NOT_FOUND",
+            Self::DockerShellUnavailable => "DOCKER_SHELL_UNAVAILABLE",
             Self::Internal => "INTERNAL",
         };
 

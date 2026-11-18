@@ -11,6 +11,7 @@ process.env.no_proxy = process.env.NO_PROXY;
 export default defineConfig({
   testDir: './tests/e2e/renderer',
   outputDir: 'test-results/renderer',
+  workers: process.env.CI === 'true' ? 2 : undefined,
   reporter: [
     ['list'],
     ['html', { open: 'never', outputFolder: 'playwright-report/renderer' }],
@@ -20,8 +21,8 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'pnpm --filter @opspilot/desktop exec vite ../../tests/e2e/renderer/fixture --host 127.0.0.1 --port 1421 --strictPort',
-    reuseExistingServer: process.env.CI !== 'true',
+    command: 'pnpm --filter @opspilot/desktop exec vite ../../tests/e2e/renderer/fixture --config vite.config.ts --host 127.0.0.1 --port 1421 --strictPort',
+    reuseExistingServer: false,
     url: 'http://127.0.0.1:1421',
   },
   projects: [

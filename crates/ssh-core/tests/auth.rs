@@ -29,6 +29,33 @@ async fn resolves_password_only_inside_the_rust_secret_boundary() {
     assert!(!format!("{resolved:?}").contains("fixture-password-never-log"));
 }
 
+#[tokio::test]
+async fn private_key_material_is_read_from_the_secret_store_without_a_temp_file() {
+    let store = MemorySecretStore::default();
+    let secret_ref = store
+        .put(
+            SecretKind::PrivateKey,
+            Id::new(),
+            SecretValue::new("fixture-openssh-private-key-never-log"),
+        )
+        .await
+        .expect("private-key fixture should be stored");
+    let resolver = AuthResolver::new(&store);
+
+    let resolved = resolver
+        .resolve(AuthRequest::PrivateKeyContent { secret_ref })
+        .await
+        .expect("private-key material should resolve");
+
+    match &resolved {
+        ResolvedAuth::PrivateKeyContent { key } => {
+            assert_eq!(key.expose(), "fixture-openssh-private-key-never-log");
+        }
+        other => panic!("expected private-key content auth, got {other:?}"),
+    }
+    assert!(!format!("{resolved:?}").contains("fixture-openssh-private-key-never-log"));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn rejects_world_writable_private_key_files_before_reading_them() {

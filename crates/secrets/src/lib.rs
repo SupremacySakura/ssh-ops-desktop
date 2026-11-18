@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! System credential boundary for OpsPilot.
+//! System credential boundary for Harbor.
 
 use std::fmt;
 
@@ -20,7 +20,6 @@ pub enum SecretKind {
     Password,
     PrivateKey,
     Passphrase,
-    ModelApiKey,
     Certificate,
 }
 
@@ -30,7 +29,6 @@ impl SecretKind {
             Self::Password => "password",
             Self::PrivateKey => "private_key",
             Self::Passphrase => "passphrase",
-            Self::ModelApiKey => "model_api_key",
             Self::Certificate => "certificate",
         }
     }

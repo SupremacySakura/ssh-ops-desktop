@@ -1,5 +1,0 @@
-{
-  "code": "TOOL_SCOPE_VIOLATION",
-  "message": "tool target is outside the run scope",
-  "retryable": false
-}

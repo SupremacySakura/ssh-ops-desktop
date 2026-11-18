@@ -4,8 +4,9 @@ use zeroize::Zeroizing;
 
 use crate::{SecretKind, SecretRef, SecretStore, SecretStoreReadiness, SecretValue};
 
-const SERVICE: &str = "com.opspilot.desktop";
-const READINESS_ACCOUNT: &str = "__opspilot_readiness_probe__";
+pub const SERVICE: &str = "com.harbor.desktop";
+pub const READINESS_ACCOUNT: &str = "__harbor_readiness_probe__";
+pub const LEGACY_SERVICE: &str = "com.opspilot.desktop";
 
 /// SecretStore backed by the operating system credential manager.
 #[derive(Clone, Copy, Debug, Default)]
@@ -40,22 +41,14 @@ impl SecretStore for KeyringSecretStore {
 
     async fn get(&self, secret_ref: &SecretRef) -> Result<SecretValue, CoreError> {
         let account = secret_ref.as_str().to_owned();
-        let value = run_keyring(move || {
-            let entry = keyring::Entry::new(SERVICE, &account)?;
-            entry.get_password()
-        })
-        .await?;
+        let value = read_with_legacy_migration(&account).await?;
 
         Ok(SecretValue::new(value))
     }
 
     async fn delete(&self, secret_ref: &SecretRef) -> Result<(), CoreError> {
         let account = secret_ref.as_str().to_owned();
-        run_keyring(move || {
-            let entry = keyring::Entry::new(SERVICE, &account)?;
-            classify_delete(entry.delete_credential())
-        })
-        .await
+        delete_from_services(&account).await
     }
 }
 
@@ -87,6 +80,92 @@ fn classify_delete(result: keyring::Result<()>) -> keyring::Result<()> {
     }
 }
 
+async fn read_with_legacy_migration(account: &str) -> Result<String, CoreError> {
+    let account = account.to_owned();
+    let mut current = read_password(SERVICE, account.clone()).await?;
+    match migration_plan(current.is_some()) {
+        ReadPlan::Current => current.take().ok_or_else(secret_missing),
+        ReadPlan::Legacy => {
+            let Some(value) = read_password(LEGACY_SERVICE, account.clone()).await? else {
+                return Err(secret_missing());
+            };
+            let _ = migrate_to_current(&account, &value).await;
+            Ok(value)
+        }
+    }
+}
+
+async fn delete_from_services(account: &str) -> Result<(), CoreError> {
+    let mut first_error = None;
+    for service in delete_order() {
+        let service_account = account.to_owned();
+        let result = run_keyring(move || {
+            let entry = keyring::Entry::new(service, &service_account)?;
+            classify_delete(entry.delete_credential())
+        })
+        .await;
+        if let Err(error) = result
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn delete_order() -> &'static [&'static str] {
+    &[SERVICE, LEGACY_SERVICE]
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadPlan {
+    Current,
+    Legacy,
+}
+
+fn migration_plan(current_exists: bool) -> ReadPlan {
+    if current_exists {
+        ReadPlan::Current
+    } else {
+        ReadPlan::Legacy
+    }
+}
+
+async fn read_password(
+    service: &'static str,
+    account: String,
+) -> Result<Option<String>, CoreError> {
+    run_keyring(move || {
+        let entry = keyring::Entry::new(service, &account)?;
+        match entry.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error),
+        }
+    })
+    .await
+}
+
+async fn migrate_to_current(account: &str, value: &str) -> Result<(), CoreError> {
+    let migration_account = account.to_owned();
+    let migration_value = Zeroizing::new(value.to_owned());
+    run_keyring(move || {
+        let entry = keyring::Entry::new(SERVICE, &migration_account)?;
+        entry.set_password(migration_value.as_str())?;
+        let legacy = keyring::Entry::new(LEGACY_SERVICE, &migration_account)?;
+        classify_delete(legacy.delete_credential())
+    })
+    .await
+}
+
+fn secret_missing() -> CoreError {
+    CoreError::new(
+        CoreErrorCode::SecretUnavailable,
+        "系统凭据库中未找到该凭据",
+        false,
+    )
+}
+
 async fn run_keyring<T, F>(operation: F) -> Result<T, CoreError>
 where
     T: Send + 'static,
@@ -94,17 +173,17 @@ where
 {
     tokio::task::spawn_blocking(operation)
         .await
-        .map_err(|error| {
+        .map_err(|_error| {
             CoreError::new(
                 CoreErrorCode::Internal,
-                format!("system credential task failed: {error}"),
+                "系统凭据任务执行失败，请稍后重试",
                 false,
             )
         })?
-        .map_err(|error| {
+        .map_err(|_error| {
             CoreError::new(
                 CoreErrorCode::SecretUnavailable,
-                format!("system credential operation failed: {error}"),
+                "系统凭据库不可用，请检查系统凭据设置",
                 false,
             )
         })
@@ -112,7 +191,24 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_delete, classify_readiness_probe};
+    use super::{
+        LEGACY_SERVICE, READINESS_ACCOUNT, ReadPlan, SERVICE, classify_delete,
+        classify_readiness_probe, delete_order, migration_plan,
+    };
+
+    #[test]
+    fn current_service_wins_and_legacy_is_only_a_fallback() {
+        assert_eq!(migration_plan(true), ReadPlan::Current);
+        assert_eq!(migration_plan(false), ReadPlan::Legacy);
+        assert_ne!(SERVICE, LEGACY_SERVICE);
+        assert_eq!(delete_order(), [SERVICE, LEGACY_SERVICE]);
+    }
+
+    #[test]
+    fn readiness_probe_uses_only_the_current_service() {
+        assert_eq!(READINESS_ACCOUNT, "__harbor_readiness_probe__");
+        assert!(!READINESS_ACCOUNT.contains("opspilot"));
+    }
 
     #[test]
     fn missing_delete_entry_is_already_complete() {

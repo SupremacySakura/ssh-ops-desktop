@@ -1,195 +1,384 @@
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
-  ApprovalRequestSchema,
-  type AuditRecord,
-  type ApprovalProof,
-  type ApprovalRequest,
+  ClipboardTextSchema,
+  ConnectOutcomeSchema,
+  ConnectionHandleSchema,
+  ConnectionStateEventSchema,
+  CoreHealthSchema,
+  DockerActionSchema,
+  DockerContainerIdSchema,
+  DockerContainerListSchema,
+  DockerLogsSchema,
+  DockerShellSchema,
+  FileDeleteArgsSchema,
+  FileMkdirArgsSchema,
+  FileRenameArgsSchema,
+  FileUploadArgsSchema,
+  FileWriteArgsSchema,
+  GroupInputSchema,
+  GroupSchema,
+  MonitorSnapshotSchema,
+  RemoteDirectoryPathSchema,
+  RemoteDownloadSchema,
+  RemoteFileListSchema,
+  RemoteFileMutationResultSchema,
+  RemoteRenameResultSchema,
+  RemoteFileWriteResultSchema,
+  RemotePathSchema,
+  RemoteTextFileSchema,
+  RemoteUploadOutcomeSchema,
+  ServerCredentialInputSchema,
+  ServerDeleteOutcomeSchema,
+  ServerInputSchema,
+  ServerSaveOutcomeSchema,
+  ServerSchema,
+  SshConfigImportApplyInputSchema,
+  SshConfigImportPreviewSchema,
+  SshConfigImportResultSchema,
+  TerminalClosedSchema,
+  TerminalDataSchema,
+  TerminalGapSchema,
+  TerminalSessionSchema,
   type ConnectOutcome,
-  type ConnectionRequest,
   type ConnectionHandle,
-  type FileListRequest,
-  type FileDownloadRequest,
-  type FileReadRequest,
-  type DockerContainer,
-  type DockerStats,
-  type DockerVersion,
-  AgentRunStartInput,
-  AgentRunSummary,
-  AgentThreadSummary,
-  AgentToolDescriptor,
-  ModelProfileInput,
-  ModelProfileSummary,
-  type LinuxMetrics,
-  type ListeningPort,
-  type OperationPrepareResult,
-  type OperationTaskRef,
-  ProjectSummary,
-  type ProjectDetection,
-  type ProjectInput,
-  type RemoteFileContent,
-  type RemoteFileDownload,
+  type ConnectionStateEvent,
+  type CoreHealth,
+  type DockerAction,
+  type DockerContainerList,
+  type DockerLogs,
+  type DockerShell,
+  type FileUploadArgs,
+  type Group,
+  type GroupInput,
+  type MonitorSnapshot,
+  type RemoteDownload,
+  type RemoteDirectoryPath,
   type RemoteFileEntry,
-  ServerSummary,
-  type ServerCredentialSetRequest,
-  type ServerDeleteRequest,
-  type ServerGroup,
-  type ServerGroupInput,
-  type ServerImportApplyRequest,
-  type ServerImportApplyResult,
-  type ServerImportPreview,
-  type ServerImportPreviewRequest,
+  type RemoteFileMutationResult,
+  type RemoteRenameResult,
+  type RemoteFileWriteResult,
+  type RemotePath,
+  type RemoteTextFile,
+  type RemoteUploadFile,
+  type RemoteUploadOutcome,
+  type Server,
+  type ServerCredentialInput,
+  type ServerDeleteOutcome,
   type ServerInput,
-  TerminalDataEventSchema,
+  type ServerSaveOutcome,
+  type SshConfigImportApplyInput,
+  type SshConfigImportPreview,
+  type SshConfigImportResult,
+  type TerminalClosedEvent,
   type TerminalDataEvent,
+  type TerminalGapEvent,
   type TerminalSession,
-  type TaskEvent,
-  type SystemService,
-  type OsRelease,
-  ToolCall,
 } from '@opspilot/contracts';
-
-export interface CoreHealth {
-  version: string;
-  databaseReady: boolean;
-  secretStoreReady: boolean;
-}
-
-export interface AgentAvailability {
-  agentAvailable: boolean;
-  reason?: string;
-}
 
 export interface CoreClient {
   health(): Promise<CoreHealth>;
-  servers?(): Promise<ServerSummary[]>;
-  createServer?(input: ServerInput): Promise<ServerSummary>;
-  updateServer?(serverId: string, input: ServerInput): Promise<ServerSummary>;
-  deleteServer?(request: ServerDeleteRequest): Promise<void>;
-  setServerCredential?(request: ServerCredentialSetRequest): Promise<void>;
-  serverGroups?(): Promise<ServerGroup[]>;
-  createServerGroup?(input: ServerGroupInput): Promise<ServerGroup>;
-  previewServerImport?(request: ServerImportPreviewRequest): Promise<ServerImportPreview>;
-  applyServerImport?(request: ServerImportApplyRequest): Promise<ServerImportApplyResult>;
-  connect?(request: ConnectionRequest): Promise<ConnectOutcome>;
-  trustHostKey?(serverId: string, verificationId: string): Promise<void>;
-  openTerminal?(connection: ConnectionHandle, columns: number, rows: number): Promise<TerminalSession>;
-  writeTerminal?(terminalSessionId: string, bytes: number[]): Promise<void>;
-  resizeTerminal?(terminalSessionId: string, columns: number, rows: number): Promise<void>;
-  closeTerminal?(terminalSessionId: string): Promise<void>;
-  subscribeTerminalData?(handler: (event: TerminalDataEvent) => void): Promise<() => void>;
-  subscribeTerminalGap?(handler: (missed: number) => void): Promise<() => void>;
-  listFiles?(request: FileListRequest): Promise<RemoteFileEntry[]>;
-  readFile?(request: FileReadRequest): Promise<RemoteFileContent>;
-  downloadFile?(request: FileDownloadRequest): Promise<RemoteFileDownload>;
-  systemProbe?(connection: ConnectionHandle): Promise<OsRelease>;
-  systemMetrics?(connection: ConnectionHandle): Promise<LinuxMetrics>;
-  systemPorts?(connection: ConnectionHandle): Promise<ListeningPort[]>;
-  systemServices?(connection: ConnectionHandle): Promise<SystemService[]>;
-  dockerVersion?(connection: ConnectionHandle): Promise<DockerVersion>;
-  dockerContainers?(connection: ConnectionHandle, includeStopped: boolean): Promise<DockerContainer[]>;
-  dockerLogs?(connection: ConnectionHandle, container: string, tail: number): Promise<string>;
-  dockerStats?(connection: ConnectionHandle, container: string): Promise<DockerStats>;
-  openDockerExec?(connection: ConnectionHandle, container: string, columns: number, rows: number): Promise<TerminalSession>;
-  nginxDiscover?(connection: ConnectionHandle): Promise<string>;
-  nginxRead?(connection: ConnectionHandle, path: string): Promise<number[]>;
-  detectProject?(connection: ConnectionHandle, rootPath: string): Promise<ProjectDetection>;
-  createProject?(input: ProjectInput): Promise<ProjectSummary>;
-  tasks?(limit?: number): Promise<TaskEvent[]>;
-  audits?(limit?: number): Promise<AuditRecord[]>;
-  projects?(serverId: string): Promise<ProjectSummary[]>;
-  agentStatus?(): Promise<AgentAvailability>;
-  agentThreads?(): Promise<AgentThreadSummary[]>;
-  modelProfiles?(): Promise<ModelProfileSummary[]>;
-  saveModelProfile?(input: ModelProfileInput): Promise<ModelProfileSummary>;
-  deleteModelProfile?(profileId: string): Promise<void>;
-  testModelProfile?(profileId: string): Promise<void>;
-  agentCatalog?(): Promise<AgentToolDescriptor[]>;
-  createAgentThread?(title: string): Promise<AgentThreadSummary>;
-  startAgentRun?(input: AgentRunStartInput): Promise<AgentRunSummary>;
-  subscribeAgentApproval?(handler: (request: ApprovalRequest) => void): Promise<() => void>;
-  approveOperation?(proof: ApprovalProof): Promise<OperationTaskRef>;
-  rejectOperation?(approvalId: string): Promise<void>;
-  prepareOperation?(call: ToolCall): Promise<OperationPrepareResult>;
+  readClipboardText(): Promise<string>;
+  listServers(): Promise<Server[]>;
+  createServer(input: ServerInput, credential: ServerCredentialInput): Promise<Server>;
+  updateServer(
+    id: string,
+    input: ServerInput,
+    credential?: ServerCredentialInput,
+  ): Promise<ServerSaveOutcome>;
+  deleteServer(id: string): Promise<ServerDeleteOutcome>;
+  setServerCredential(id: string, input: ServerCredentialInput): Promise<ServerSaveOutcome>;
+  listGroups(): Promise<Group[]>;
+  createGroup(input: GroupInput): Promise<Group>;
+  updateGroup(id: string, input: GroupInput): Promise<Group>;
+  deleteGroup(id: string): Promise<void>;
+  connect(serverId: string): Promise<ConnectOutcome>;
+  trustHostKey(serverId: string, verificationId: string): Promise<void>;
+  disconnect(connection: ConnectionHandle): Promise<void>;
+  openTerminal(
+    connection: ConnectionHandle,
+    columns: number,
+    rows: number,
+  ): Promise<TerminalSession>;
+  writeTerminal(
+    connection: ConnectionHandle,
+    terminalSessionId: string,
+    bytes: Uint8Array,
+  ): Promise<void>;
+  resizeTerminal(
+    connection: ConnectionHandle,
+    terminalSessionId: string,
+    columns: number,
+    rows: number,
+  ): Promise<void>;
+  closeTerminal(connection: ConnectionHandle, terminalSessionId: string): Promise<void>;
+  listFiles(
+    connection: ConnectionHandle,
+    path: RemoteDirectoryPath | string,
+  ): Promise<RemoteFileEntry[]>;
+  readFile(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+  ): Promise<RemoteTextFile>;
+  writeFile(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+    content: string,
+    expectedSha256: string,
+  ): Promise<RemoteFileWriteResult>;
+  downloadFile(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+  ): Promise<RemoteDownload>;
+  uploadFiles(
+    connection: ConnectionHandle,
+    directory: RemoteDirectoryPath | string,
+    files: RemoteUploadFile[],
+  ): Promise<RemoteUploadOutcome>;
+  createDirectory(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+  ): Promise<RemoteFileMutationResult>;
+  renameFile(
+    connection: ConnectionHandle,
+    sourcePath: RemotePath | string,
+    targetPath: RemotePath | string,
+  ): Promise<RemoteRenameResult>;
+  deleteFile(
+    connection: ConnectionHandle,
+    path: RemotePath | string,
+  ): Promise<RemoteFileMutationResult>;
+  listDockerContainers(connection: ConnectionHandle): Promise<DockerContainerList>;
+  getDockerLogs(
+    connection: ConnectionHandle,
+    containerId: string,
+    tail: number,
+  ): Promise<DockerLogs>;
+  runDockerAction(
+    connection: ConnectionHandle,
+    containerId: string,
+    action: DockerAction,
+  ): Promise<void>;
+  execDockerContainer(
+    connection: ConnectionHandle,
+    containerId: string,
+    shell: DockerShell,
+    columns: number,
+    rows: number,
+  ): Promise<TerminalSession>;
+  monitorSnapshot(connection: ConnectionHandle): Promise<MonitorSnapshot>;
+  subscribeConnectionState(handler: (event: ConnectionStateEvent) => void): Promise<UnlistenFn>;
+  subscribeTerminalData(handler: (event: TerminalDataEvent) => void): Promise<UnlistenFn>;
+  subscribeTerminalGap(handler: (event: TerminalGapEvent) => void): Promise<UnlistenFn>;
+  subscribeTerminalClosed(handler: (event: TerminalClosedEvent) => void): Promise<UnlistenFn>;
+  previewSshConfigImport(): Promise<SshConfigImportPreview>;
+  applySshConfigImport(input: SshConfigImportApplyInput): Promise<SshConfigImportResult>;
 }
 
 export function createTauriCoreClient(): CoreClient {
   return {
-    health: () => invoke<CoreHealth>('core_health'),
-    servers: () => invoke<ServerSummary[]>('server_list'),
-    createServer: (input) => invoke<ServerSummary>('server_create', { input }),
-    updateServer: (serverId, input) => invoke<ServerSummary>('server_update', { serverId, input }),
-    deleteServer: (request) => invoke('server_delete', { request }),
-    setServerCredential: (request) => invoke('server_credential_set', { request }),
-    serverGroups: () => invoke<ServerGroup[]>('server_group_list'),
-    createServerGroup: (input) => invoke<ServerGroup>('server_group_create', { input }),
-    previewServerImport: (request) => invoke<ServerImportPreview>('server_import_preview', { request }),
-    applyServerImport: (request) => invoke<ServerImportApplyResult>('server_import_apply', { request }),
-    connect: (request) => invoke<ConnectOutcome>('connection_connect', { request }),
-    trustHostKey: (serverId, verificationId) => invoke('connection_trust_host_key', {
-      request: { serverId, verificationId },
+    health: async () => CoreHealthSchema.parse(await invoke('core_health')),
+    readClipboardText: async () => ClipboardTextSchema.parse(
+      await invoke('clipboard_read_text'),
+    ),
+    listServers: async () => (
+      ServerSchema.array().parse(await invoke('server_list'))
+    ),
+    createServer: async (input, credential) => ServerSchema.parse(
+      await invoke('server_create', {
+        input: ServerInputSchema.parse(input),
+        credential: ServerCredentialInputSchema.parse(credential),
+      }),
+    ),
+    updateServer: async (id, input, credential) => ServerSaveOutcomeSchema.parse(
+      await invoke('server_update', {
+        id,
+        input: ServerInputSchema.parse(input),
+        credential: credential === undefined
+          ? null
+          : ServerCredentialInputSchema.parse(credential),
+      }),
+    ),
+    deleteServer: async (id) => {
+      return ServerDeleteOutcomeSchema.parse(await invoke('server_delete', { id }));
+    },
+    setServerCredential: async (id, input) => ServerSaveOutcomeSchema.parse(
+      await invoke('server_credential_set', {
+        id,
+        input: ServerCredentialInputSchema.parse(input),
+      }),
+    ),
+    listGroups: async () => GroupSchema.array().parse(
+      await invoke('server_group_list'),
+    ),
+    createGroup: async (input) => GroupSchema.parse(
+      await invoke('server_group_create', {
+        input: GroupInputSchema.parse(input),
+      }),
+    ),
+    updateGroup: async (id, input) => GroupSchema.parse(
+      await invoke('server_group_update', {
+        id,
+        input: GroupInputSchema.parse(input),
+      }),
+    ),
+    deleteGroup: async (id) => {
+      await invoke('server_group_delete', { id });
+    },
+    connect: async (serverId) => ConnectOutcomeSchema.parse(
+      await invoke('connection_connect', { serverId }),
+    ),
+    trustHostKey: async (serverId, verificationId) => {
+      await invoke('connection_trust_host_key', { serverId, verificationId });
+    },
+    disconnect: async (connection) => {
+      await invoke('connection_disconnect', { connection });
+    },
+    openTerminal: async (connection, columns, rows) => TerminalSessionSchema.parse(
+      await invoke('terminal_open', { connection, columns, rows }),
+    ),
+    writeTerminal: async (connection, terminalSessionId, bytes) => {
+      await invoke('terminal_write', {
+        connection: ConnectionHandleSchema.parse(connection),
+        terminalSessionId,
+        bytes: Array.from(bytes),
+      });
+    },
+    resizeTerminal: async (connection, terminalSessionId, columns, rows) => {
+      await invoke('terminal_resize', {
+        connection: ConnectionHandleSchema.parse(connection),
+        terminalSessionId,
+        columns,
+        rows,
+      });
+    },
+    closeTerminal: async (connection, terminalSessionId) => {
+      await invoke('terminal_close', {
+        connection: ConnectionHandleSchema.parse(connection),
+        terminalSessionId,
+      });
+    },
+    listFiles: async (connection, path) => RemoteFileListSchema.parse(
+      await invoke('file_list', {
+        connection: ConnectionHandleSchema.parse(connection),
+        path: RemoteDirectoryPathSchema.parse(path),
+      }),
+    ),
+    readFile: async (connection, path) => RemoteTextFileSchema.parse(
+      await invoke('file_read', {
+        connection: ConnectionHandleSchema.parse(connection),
+        path: RemotePathSchema.parse(path),
+      }),
+    ),
+    writeFile: async (connection, path, content, expectedSha256) => {
+      const args = FileWriteArgsSchema.parse({ path, content, expectedSha256 });
+      return RemoteFileWriteResultSchema.parse(
+        await invoke('file_write', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
+    downloadFile: async (connection, path) => RemoteDownloadSchema.parse(
+      await invoke('file_download', {
+        connection: ConnectionHandleSchema.parse(connection),
+        path: RemotePathSchema.parse(path),
+      }),
+    ),
+    uploadFiles: async (connection, directory, files) => {
+      const args: FileUploadArgs = FileUploadArgsSchema.parse({ directory, files });
+      return RemoteUploadOutcomeSchema.parse(
+        await invoke('file_upload', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
+    createDirectory: async (connection, path) => {
+      const args = FileMkdirArgsSchema.parse({ path });
+      return RemoteFileMutationResultSchema.parse(
+        await invoke('file_mkdir', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
+    renameFile: async (connection, sourcePath, targetPath) => {
+      const args = FileRenameArgsSchema.parse({ sourcePath, targetPath });
+      return RemoteRenameResultSchema.parse(
+        await invoke('file_rename', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
+    deleteFile: async (connection, path) => {
+      const args = FileDeleteArgsSchema.parse({ path });
+      return RemoteFileMutationResultSchema.parse(
+        await invoke('file_delete', {
+          connection: ConnectionHandleSchema.parse(connection),
+          ...args,
+        }),
+      );
+    },
+    listDockerContainers: async (connection) => DockerContainerListSchema.parse(
+      await invoke('docker_list', { connection }),
+    ),
+    getDockerLogs: async (connection, containerId, tail) => DockerLogsSchema.parse(
+      await invoke('docker_logs', {
+        connection,
+        containerId: DockerContainerIdSchema.parse(containerId),
+        tail: DockerLogsSchema.shape.tail.parse(tail),
+      }),
+    ),
+    runDockerAction: async (connection, containerId, action) => {
+      await invoke('docker_action', {
+        connection,
+        containerId: DockerContainerIdSchema.parse(containerId),
+        action: DockerActionSchema.parse(action),
+      });
+    },
+    execDockerContainer: async (
+      connection,
+      containerId,
+      shell,
+      columns,
+      rows,
+    ) => TerminalSessionSchema.parse(
+      await invoke('docker_exec', {
+        connection,
+        containerId: DockerContainerIdSchema.parse(containerId),
+        shell: DockerShellSchema.parse(shell),
+        columns,
+        rows,
+      }),
+    ),
+    monitorSnapshot: async (connection) => MonitorSnapshotSchema.parse(
+      await invoke('monitor_snapshot', { connection }),
+    ),
+    subscribeConnectionState: async (handler) => listen('connection:state', (event) => {
+      const parsed = ConnectionStateEventSchema.safeParse(event.payload);
+      if (parsed.success) handler(parsed.data);
     }),
-    openTerminal: (connection, columns, rows) => invoke<TerminalSession>('terminal_open', {
-      request: { connection, columns, rows },
-    }),
-    writeTerminal: (terminalSessionId, bytes) => invoke('terminal_write', {
-      request: { terminalSessionId, bytes },
-    }),
-    resizeTerminal: (terminalSessionId, columns, rows) => invoke('terminal_resize', {
-      request: { terminalSessionId, columns, rows },
-    }),
-    closeTerminal: (terminalSessionId) => invoke('terminal_close', { terminalSessionId }),
     subscribeTerminalData: async (handler) => listen('terminal:data', (event) => {
-      const parsed = TerminalDataEventSchema.safeParse(event.payload);
+      const parsed = TerminalDataSchema.safeParse(event.payload);
       if (parsed.success) handler(parsed.data);
     }),
-    subscribeTerminalGap: async (handler) => listen<{ missed: number }>('terminal:gap', (event) => {
-      if (Number.isSafeInteger(event.payload?.missed) && event.payload.missed > 0) handler(event.payload.missed);
-    }),
-    listFiles: (request) => invoke<RemoteFileEntry[]>('file_list', { request }),
-    readFile: (request) => invoke<RemoteFileContent>('file_read', { request }),
-    downloadFile: (request) => invoke<RemoteFileDownload>('file_download', { request }),
-    systemProbe: (connection) => invoke<OsRelease>('system_probe', { connection }),
-    systemMetrics: (connection) => invoke<LinuxMetrics>('system_metrics', { connection }),
-    systemPorts: (connection) => invoke<ListeningPort[]>('system_ports', { connection }),
-    systemServices: (connection) => invoke<SystemService[]>('system_services', { connection }),
-    dockerVersion: (connection) => invoke<DockerVersion>('docker_version', { connection }),
-    dockerContainers: (connection, includeStopped) => invoke<DockerContainer[]>('docker_container_list', {
-      request: { connection, includeStopped },
-    }),
-    dockerLogs: (connection, container, tail) => invoke<string>('docker_container_logs', {
-      request: { connection, container, tail },
-    }),
-    dockerStats: (connection, container) => invoke<DockerStats>('docker_container_stats', {
-      request: { connection, container },
-    }),
-    openDockerExec: (connection, container, columns, rows) => invoke<TerminalSession>('docker_container_exec', {
-      request: { connection, container, columns, rows },
-    }),
-    nginxDiscover: (connection) => invoke<string>('nginx_discover', { connection }),
-    nginxRead: (connection, path) => invoke<number[]>('nginx_read', { request: { connection, path } }),
-    detectProject: (connection, rootPath) => invoke<ProjectDetection>('project_detect', {
-      request: { connection, rootPath },
-    }),
-    createProject: (request) => invoke<ProjectSummary>('project_create', { request }),
-    tasks: (limit) => invoke<TaskEvent[]>('task_list', { limit }),
-    audits: (limit) => invoke<AuditRecord[]>('audit_list', { limit }),
-    projects: (serverId) => invoke<ProjectSummary[]>('project_list', { serverId }),
-    agentStatus: () => invoke<AgentAvailability>('agent_status'),
-    agentThreads: () => invoke<AgentThreadSummary[]>('agent_thread_list'),
-    modelProfiles: () => invoke<ModelProfileSummary[]>('model_profile_list'),
-    saveModelProfile: (request) => invoke<ModelProfileSummary>('model_profile_save', { request }),
-    deleteModelProfile: (profileId) => invoke('model_profile_delete', { profileId }),
-    testModelProfile: (profileId) => invoke('model_profile_test_connection', { profileId }),
-    agentCatalog: () => invoke<AgentToolDescriptor[]>('agent_catalog'),
-    createAgentThread: (title) => invoke<AgentThreadSummary>('agent_thread_create', { title }),
-    startAgentRun: (request) => invoke<AgentRunSummary>('agent_run_start', { request }),
-    subscribeAgentApproval: async (handler) => listen('agent:approval_required', (event) => {
-      const parsed = ApprovalRequestSchema.safeParse(event.payload);
+    subscribeTerminalGap: async (handler) => listen('terminal:gap', (event) => {
+      const parsed = TerminalGapSchema.safeParse(event.payload);
       if (parsed.success) handler(parsed.data);
     }),
-    approveOperation: (proof) => invoke<OperationTaskRef>('operation_approve', { proof }),
-    rejectOperation: (approvalId) => invoke('operation_reject', { approvalId }),
-    prepareOperation: (call) => invoke<OperationPrepareResult>('operation_prepare', { call }),
+    subscribeTerminalClosed: async (handler) => listen('terminal:closed', (event) => {
+      const parsed = TerminalClosedSchema.safeParse(event.payload);
+      if (parsed.success) handler(parsed.data);
+    }),
+    previewSshConfigImport: async () => SshConfigImportPreviewSchema.parse(
+      await invoke('ssh_config_import_preview'),
+    ),
+    applySshConfigImport: async (input) => SshConfigImportResultSchema.parse(
+      await invoke('ssh_config_import_apply', {
+        input: SshConfigImportApplyInputSchema.parse(input),
+      }),
+    ),
   };
 }

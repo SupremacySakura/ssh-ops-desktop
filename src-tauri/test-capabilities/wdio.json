@@ -1,7 +1,0 @@
-{
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "wdio-native-e2e",
-  "description": "Debug-only WebdriverIO access for the native Tauri smoke test.",
-  "windows": ["main"],
-  "permissions": ["wdio:default", "wdio-webdriver:default"]
-}

@@ -17,11 +17,11 @@ use russh::{
 use russh_sftp::client::SftpSession;
 use serde::Serialize;
 use tokio::sync::{Mutex, broadcast};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 use crate::{
     AuthRequest, AuthResolver, ConnectionHandle, HostEndpoint, HostKeyDecision, HostKeyVerifier,
-    HostPublicKey, PtySize, ResolvedAuth, ShellBackend, TerminalData,
+    HostPublicKey, PtySize, ResolvedAuth, SHELL_EVENT_CHANNEL_CAPACITY, ShellBackend, ShellEvent,
+    ShellEventReceiver,
 };
 
 #[derive(Debug)]
@@ -71,18 +71,24 @@ pub struct HostKeyPrompt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
+pub struct HostKeyChangedPrompt {
+    pub verification_id: Id,
+    pub expected_sha256: String,
+    pub actual_sha256: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ConnectOutcome {
-    Ready {
-        connection: ConnectionHandle,
-    },
-    HostKeyRequired {
-        prompt: HostKeyPrompt,
-    },
-    HostKeyChanged {
-        expected_sha256: String,
-        actual_sha256: String,
-    },
+    Ready { connection: ConnectionHandle },
+    HostKeyRequired { prompt: HostKeyPrompt },
+    HostKeyChanged { prompt: HostKeyChangedPrompt },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,10 +132,16 @@ impl client::Handler for ClientHandler {
 
 type SharedClient = Arc<Mutex<Handle<ClientHandler>>>;
 
+#[derive(Clone)]
+struct RegisteredClient {
+    server_id: Id,
+    client: SharedClient,
+}
+
 pub struct RusshConnectionManager<S> {
     verifier: HostKeyVerifier,
     secret_store: Arc<S>,
-    clients: Arc<Mutex<HashMap<Id, SharedClient>>>,
+    clients: Arc<Mutex<HashMap<Id, RegisteredClient>>>,
 }
 
 impl<S> Clone for RusshConnectionManager<S> {
@@ -195,10 +207,13 @@ where
             ));
         }
         let connection = ConnectionHandle::new(request.endpoint.server_id(), Id::new());
-        self.clients
-            .lock()
-            .await
-            .insert(connection.connection_id(), Arc::new(Mutex::new(client)));
+        self.clients.lock().await.insert(
+            connection.connection_id(),
+            RegisteredClient {
+                server_id: connection.server_id(),
+                client: Arc::new(Mutex::new(client)),
+            },
+        );
         Ok(ConnectOutcome::Ready { connection })
     }
 
@@ -211,13 +226,23 @@ where
     }
 
     pub async fn disconnect(&self, connection: &ConnectionHandle) -> Result<(), CoreError> {
-        let client = self
-            .clients
-            .lock()
-            .await
-            .remove(&connection.connection_id());
-        if let Some(client) = client {
-            client
+        let registered = {
+            let mut clients = self.clients.lock().await;
+            match clients.get(&connection.connection_id()) {
+                Some(registered) if registered.server_id != connection.server_id() => {
+                    return Err(CoreError::new(
+                        CoreErrorCode::Conflict,
+                        "SSH connection handle does not match its registered server",
+                        false,
+                    ));
+                }
+                Some(_) => clients.remove(&connection.connection_id()),
+                None => None,
+            }
+        };
+        if let Some(registered) = registered {
+            registered
+                .client
                 .lock()
                 .await
                 .disconnect(Disconnect::ByApplication, "closed by user", "en")
@@ -241,10 +266,10 @@ where
             .map_err(|error| ssh_error("start SFTP subsystem", error, true))?;
         SftpSession::new(channel.into_stream())
             .await
-            .map_err(|error| {
+            .map_err(|_error| {
                 CoreError::new(
                     CoreErrorCode::CapabilityUnavailable,
-                    format!("failed to initialize SFTP subsystem: {error}"),
+                    "远程文件子系统初始化失败",
                     true,
                 )
             })
@@ -328,7 +353,7 @@ where
     }
 
     async fn client(&self, connection: &ConnectionHandle) -> Result<SharedClient, CoreError> {
-        let client = self
+        let registered = self
             .clients
             .lock()
             .await
@@ -341,66 +366,33 @@ where
                     false,
                 )
             })?;
-        if client.lock().await.is_closed() {
+        if registered.server_id != connection.server_id() {
+            return Err(CoreError::new(
+                CoreErrorCode::Conflict,
+                "SSH connection handle does not match its registered server",
+                false,
+            ));
+        }
+        if registered.client.lock().await.is_closed() {
             return Err(CoreError::new(
                 CoreErrorCode::SshConnection,
                 "SSH connection is closed",
                 true,
             ));
         }
-        Ok(client)
+        Ok(registered.client)
     }
 
-    pub(crate) async fn pipe_direct_tcpip(
-        &self,
-        connection: &ConnectionHandle,
-        mut local: TcpStream,
-        target_host: &str,
-        target_port: u16,
-        originator: std::net::SocketAddr,
-    ) -> Result<(), CoreError> {
-        let client = self.client(connection).await?;
-        let channel = client
-            .lock()
-            .await
-            .channel_open_direct_tcpip(
-                target_host,
-                u32::from(target_port),
-                originator.ip().to_string(),
-                u32::from(originator.port()),
-            )
-            .await
-            .map_err(|error| ssh_error("open direct TCP/IP channel", error, true))?;
-        let mut remote = channel.into_stream();
-        tokio::io::copy_bidirectional(&mut local, &mut remote)
-            .await
-            .map_err(|error| ssh_error("forward tunnel traffic", error, true))?;
-        remote
-            .shutdown()
-            .await
-            .map_err(|error| ssh_error("close tunnel stream", error, false))?;
-        Ok(())
-    }
-
-    pub async fn open_streamlocal(
-        &self,
-        connection: &ConnectionHandle,
-        socket_path: &crate::RemoteSocketPath,
-    ) -> Result<russh::ChannelStream<Msg>, CoreError> {
-        let client = self.client(connection).await?;
-        let channel = client
-            .lock()
-            .await
-            .channel_open_direct_streamlocal(socket_path.as_str())
-            .await
-            .map_err(|error| {
-                CoreError::new(
-                    CoreErrorCode::CapabilityUnavailable,
-                    format!("server does not support direct streamlocal channels: {error}"),
-                    false,
-                )
-            })?;
-        Ok(channel.into_stream())
+    pub async fn disconnect_all(&self) {
+        let clients = std::mem::take(&mut *self.clients.lock().await);
+        for registered in clients.into_values() {
+            let _ = registered
+                .client
+                .lock()
+                .await
+                .disconnect(Disconnect::ByApplication, "application closing", "en")
+                .await;
+        }
     }
 
     #[doc(hidden)]
@@ -448,16 +440,15 @@ async fn authenticate(
                 passphrase.as_ref().map(|secret| secret.expose()),
             )
             .map_err(|_| authentication_error("SSH private key could not be loaded"))?;
-            let hash = client
-                .best_supported_rsa_hash()
-                .await
-                .map_err(|error| ssh_error("negotiate SSH key algorithm", error, false))?
-                .flatten();
-            client
-                .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
-                .await
-                .map_err(|error| ssh_error("authenticate with private key", error, false))?
-                .success()
+            authenticate_private_key(client, username, key).await?
+        }
+        ResolvedAuth::PrivateKeyContent { key: key_material } => {
+            let key = russh::keys::decode_secret_key(key_material.expose(), None).map_err(|_| {
+                authentication_error(
+                    "SSH private key could not be parsed; encrypted keys are not supported in the keyring credential format",
+                )
+            })?;
+            authenticate_private_key(client, username, key).await?
         }
         ResolvedAuth::Certificate {
             certificate_path,
@@ -481,6 +472,23 @@ async fn authenticate(
         }
         ResolvedAuth::SshAgent => authenticate_agent(client, username).await?,
     })
+}
+
+async fn authenticate_private_key(
+    client: &mut Handle<ClientHandler>,
+    username: &str,
+    key: russh::keys::PrivateKey,
+) -> Result<bool, CoreError> {
+    let hash = client
+        .best_supported_rsa_hash()
+        .await
+        .map_err(|error| ssh_error("negotiate SSH key algorithm", error, false))?
+        .flatten();
+    Ok(client
+        .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
+        .await
+        .map_err(|error| ssh_error("authenticate with private key", error, false))?
+        .success())
 }
 
 async fn authenticate_agent(
@@ -584,20 +592,25 @@ fn host_decision_to_outcome(
             },
         }),
         HostKeyDecision::Changed {
+            verification_id,
             expected_sha256,
             actual_sha256,
+            expires_at,
         } => Ok(ConnectOutcome::HostKeyChanged {
-            expected_sha256,
-            actual_sha256,
+            prompt: HostKeyChangedPrompt {
+                verification_id,
+                expected_sha256,
+                actual_sha256,
+                expires_at: DateTime::<Utc>::from(expires_at)
+                    .to_rfc3339_opts(SecondsFormat::Millis, true),
+            },
         }),
     }
 }
 
 pub struct RusshShellBackend<S> {
     manager: RusshConnectionManager<S>,
-    channels: Arc<Mutex<HashMap<Id, ChannelWriteHalf<Msg>>>>,
-    sequences: Arc<Mutex<HashMap<Id, u64>>>,
-    output: broadcast::Sender<TerminalData>,
+    channels: Arc<Mutex<HashMap<Id, Arc<ChannelWriteHalf<Msg>>>>>,
 }
 
 impl<S> Clone for RusshShellBackend<S> {
@@ -605,8 +618,6 @@ impl<S> Clone for RusshShellBackend<S> {
         Self {
             manager: self.manager.clone(),
             channels: self.channels.clone(),
-            sequences: self.sequences.clone(),
-            output: self.output.clone(),
         }
     }
 }
@@ -616,17 +627,10 @@ where
     S: SecretStore + 'static,
 {
     pub fn new(manager: RusshConnectionManager<S>) -> Self {
-        let (output, _) = broadcast::channel(512);
         Self {
             manager,
             channels: Arc::new(Mutex::new(HashMap::new())),
-            sequences: Arc::new(Mutex::new(HashMap::new())),
-            output,
         }
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<TerminalData> {
-        self.output.subscribe()
     }
 
     async fn open_channel(
@@ -635,7 +639,7 @@ where
         connection: &ConnectionHandle,
         size: PtySize,
         command: Option<&crate::TerminalCommand>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<ShellEventReceiver, CoreError> {
         let client = self.manager.client(connection).await?;
         let channel = client
             .lock()
@@ -647,8 +651,8 @@ where
             .request_pty(
                 true,
                 "xterm-256color",
-                u32::from(size.columns),
-                u32::from(size.rows),
+                u32::from(size.columns()),
+                u32::from(size.rows()),
                 0,
                 0,
                 &[],
@@ -667,35 +671,36 @@ where
                 .map_err(|error| ssh_error("start terminal shell", error, false))?;
         }
         let (mut reader, writer) = channel.split();
-        self.channels.lock().await.insert(session_id, writer);
-        self.sequences.lock().await.insert(session_id, 0);
-        let output = self.output.clone();
-        let sequences = self.sequences.clone();
+        let (events, receiver) = broadcast::channel(SHELL_EVENT_CHANNEL_CAPACITY);
+        self.channels
+            .lock()
+            .await
+            .insert(session_id, Arc::new(writer));
+        let channels = self.channels.clone();
         tokio::spawn(async move {
+            let mut exit_status = None;
             while let Some(message) = reader.wait().await {
-                let bytes = match message {
+                let event = match message {
                     ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
-                        data.to_vec()
+                        ShellEvent::Data {
+                            bytes: data.to_vec(),
+                        }
                     }
+                    ChannelMsg::ExitStatus {
+                        exit_status: status,
+                    } => {
+                        exit_status = Some(status);
+                        continue;
+                    }
+                    ChannelMsg::Close => break,
                     _ => continue,
                 };
-                let sequence = {
-                    let mut sequences = sequences.lock().await;
-                    let Some(sequence) = sequences.get_mut(&session_id) else {
-                        break;
-                    };
-                    *sequence = sequence.saturating_add(1);
-                    *sequence
-                };
-                let _ = output.send(TerminalData {
-                    terminal_session_id: session_id,
-                    sequence,
-                    bytes,
-                });
+                let _ = events.send(event);
             }
-            sequences.lock().await.remove(&session_id);
+            channels.lock().await.remove(&session_id);
+            let _ = events.send(ShellEvent::Closed { exit_status });
         });
-        Ok(())
+        Ok(receiver)
     }
 }
 
@@ -709,7 +714,7 @@ where
         session_id: Id,
         connection: &ConnectionHandle,
         size: PtySize,
-    ) -> Result<(), CoreError> {
+    ) -> Result<ShellEventReceiver, CoreError> {
         self.open_channel(session_id, connection, size, None).await
     }
 
@@ -719,20 +724,25 @@ where
         connection: &ConnectionHandle,
         size: PtySize,
         command: &crate::TerminalCommand,
-    ) -> Result<(), CoreError> {
+    ) -> Result<ShellEventReceiver, CoreError> {
         self.open_channel(session_id, connection, size, Some(command))
             .await
     }
 
     async fn write(&self, session_id: Id, bytes: &[u8]) -> Result<(), CoreError> {
-        let channels = self.channels.lock().await;
-        let channel = channels.get(&session_id).ok_or_else(|| {
-            CoreError::new(
-                CoreErrorCode::NotFound,
-                "terminal channel was not found",
-                false,
-            )
-        })?;
+        let channel = self
+            .channels
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::new(
+                    CoreErrorCode::NotFound,
+                    "terminal channel was not found",
+                    false,
+                )
+            })?;
         channel
             .data_bytes(bytes.to_vec())
             .await
@@ -740,29 +750,35 @@ where
     }
 
     async fn resize(&self, session_id: Id, size: PtySize) -> Result<(), CoreError> {
-        let channels = self.channels.lock().await;
-        let channel = channels.get(&session_id).ok_or_else(|| {
-            CoreError::new(
-                CoreErrorCode::NotFound,
-                "terminal channel was not found",
-                false,
-            )
-        })?;
+        let channel = self
+            .channels
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| {
+                CoreError::new(
+                    CoreErrorCode::NotFound,
+                    "terminal channel was not found",
+                    false,
+                )
+            })?;
         channel
-            .window_change(u32::from(size.columns), u32::from(size.rows), 0, 0)
+            .window_change(u32::from(size.columns()), u32::from(size.rows()), 0, 0)
             .await
             .map_err(|error| ssh_error("resize terminal PTY", error, true))
     }
 
     async fn close(&self, session_id: Id) -> Result<(), CoreError> {
-        if let Some(channel) = self.channels.lock().await.remove(&session_id) {
+        let channel = self.channels.lock().await.get(&session_id).cloned();
+        if let Some(channel) = channel {
             let _ = channel.eof().await;
             channel
                 .close()
                 .await
                 .map_err(|error| ssh_error("close terminal channel", error, false))?;
+            self.channels.lock().await.remove(&session_id);
         }
-        self.sequences.lock().await.remove(&session_id);
         Ok(())
     }
 }
@@ -783,14 +799,19 @@ fn append_bounded(target: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn authentication_error(message: &str) -> CoreError {
-    CoreError::new(CoreErrorCode::SshAuthentication, message, false)
+fn authentication_error(_message: &str) -> CoreError {
+    CoreError::new(
+        CoreErrorCode::SshAuthentication,
+        "SSH 认证失败，请检查用户名与凭据",
+        false,
+    )
 }
 
 fn ssh_error(context: &str, error: impl std::fmt::Display, retryable: bool) -> CoreError {
+    let _ = (context, error);
     CoreError::new(
         CoreErrorCode::SshConnection,
-        format!("failed to {context}: {error}"),
+        "SSH 连接操作失败，请检查网络与服务器状态后重试",
         retryable,
     )
 }

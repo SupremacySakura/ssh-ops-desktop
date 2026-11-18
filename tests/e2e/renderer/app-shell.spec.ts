@@ -1,68 +1,655 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
-test('renderer fixture shows Core readiness without a native Tauri runtime', async ({ page }) => {
+const EDITOR_LOAD_TIMEOUT = 15_000;
+
+const pageErrors = new WeakMap<Page, string[]>();
+
+test.beforeEach(({ page }) => {
+  const errors: string[] = [];
+  pageErrors.set(page, errors);
+  page.on('pageerror', (error) => errors.push(error.message));
+});
+
+test.afterEach(({ page }) => {
+  expect(pageErrors.get(page) ?? []).toEqual([]);
+});
+
+test('Harbor empty shell renders the calibrated foundation', async ({ page }) => {
   await page.goto('/');
 
-  await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
-  await expect(page.locator('.app-shell')).toHaveCSS('display', 'grid');
-  await expect(page.locator('.sidebar')).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.72)');
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'HARBOR', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('searchbox', { name: '搜索服务器' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '还没有服务器' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '未选择服务器' })).toBeVisible();
   await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core 已就绪');
-  await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core renderer-fixture');
+
+  const aside = page.locator('aside');
+  await expect(aside).toHaveCSS('background-color', 'rgb(233, 230, 223)');
+  await expect(aside).toHaveCSS('width', '300px');
+  await expect(page.locator('body')).toHaveCSS('font-family', /Inter Tight/u);
   await expect.poll(() => page.evaluate(() => '__TAURI_INTERNALS__' in window)).toBe(false);
 });
 
-test('primary navigation exposes every desktop MVP workspace', async ({ page }) => {
+test('legacy OpsPilot entry points are absent', async ({ page }) => {
   await page.goto('/');
-  const workspaces = [
-    ['服务器', '服务器'],
-    ['终端', '终端'],
-    ['AI Agent', 'AI Agent'],
-    ['项目', '项目'],
-    ['文件', '文件'],
-    ['Docker', 'Docker'],
-    ['Nginx', 'Nginx'],
-    ['任务与日志', '任务与日志'],
-    ['设置', '设置'],
-    ['仪表盘', '仪表盘'],
-  ] as const;
+  await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core 已就绪');
 
-  for (const [navigationLabel, heading] of workspaces) {
-    await page.getByRole('button', { exact: true, name: navigationLabel }).click();
-    await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible();
+  for (const legacyLabel of ['AI Agent', '项目', 'Nginx', '任务与日志', '设置']) {
+    await expect(page.getByText(legacyLabel)).toHaveCount(0);
   }
 });
 
-test('real renderer boots when Tauri freezes Object.prototype', async ({ page }) => {
+test('xterm boots in a renderer with a frozen Object prototype', async ({ page }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.addInitScript(() => Object.freeze(Object.prototype));
 
-  await page.goto('/#terminal');
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
 
-  await expect(page.getByRole('heading', { name: '终端' })).toBeVisible();
-  await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core 已就绪');
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  await expect(page.locator('.xterm')).toBeVisible();
   expect(pageErrors).toEqual([]);
 });
 
-test('theme toggle switches data-theme and sidebar collapse persists', async ({ page }) => {
+test('file browser opens Monaco in a renderer with a frozen Object prototype', async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => Object.freeze(Object.prototype));
+
+  await page.goto('/?scenario=files');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  await page.getByRole('button', { name: '文件', exact: true }).click();
+
+  const table = page.getByRole('table', { name: '目录内容' });
+  await expect(table).toBeVisible();
+  await expect(table).toContainText('0640');
+  await page.getByRole('button', { name: '打开文件 app.conf' }).dblclick();
+
+  const dialog = page.getByRole('dialog', { name: '编辑 app.conf' });
+  await expect(dialog).toBeVisible({ timeout: EDITOR_LOAD_TIMEOUT });
+  await expect(dialog.locator('.monaco-editor'))
+    .toBeVisible({ timeout: EDITOR_LOAD_TIMEOUT });
+  expect(pageErrors).toEqual([]);
+});
+
+test('file browser uploads, creates, renames, deletes, and rejects overwrite', async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => Object.freeze(Object.prototype));
+
+  await page.goto('/?scenario=files');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  await page.getByRole('button', { name: '文件', exact: true }).click();
+  await expect(page.getByRole('table', { name: '目录内容' })).toBeVisible();
+
+  await page.getByLabel('选择上传文件').setInputFiles({
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('harbor upload\n'),
+  });
+  const upload = page.getByRole('dialog', { name: '上传文件到 /' });
+  await expect(upload).toContainText('notes.txt');
+  await upload.getByRole('button', { name: '确认上传' }).click();
+  await expect(page.getByText(/已上传 1 个文件/u)).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开文件 notes.txt' })).toBeVisible();
+
+  await page.getByLabel('选择上传文件').setInputFiles({
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('replacement\n'),
+  });
+  const conflict = page.getByRole('dialog', { name: '上传文件到 /' });
+  await conflict.getByRole('button', { name: '确认上传' }).click();
+  await expect(conflict.getByRole('alert')).toContainText('已存在');
+  await expect(
+    conflict.getByRole('button', { name: '关闭', exact: true }),
+  ).toBeVisible();
+  await conflict.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(page.getByRole('row', { name: /notes\.txt/u })).toContainText('14 B');
+
+  await page.getByRole('button', { name: '新建文件夹' }).click();
+  const mkdir = page.getByRole('dialog', { name: '新建文件夹' });
+  await mkdir.getByLabel('文件夹名称').fill('release');
+  await mkdir.getByRole('button', { name: '创建文件夹' }).click();
+  await expect(page.getByText('已创建 /release')).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开目录 release' })).toBeVisible();
+
+  await page.getByRole('button', { name: '重命名 notes.txt' }).click();
+  const rename = page.getByRole('dialog', { name: '重命名 notes.txt' });
+  await rename.getByLabel('新名称').fill('renamed.txt');
+  await rename.getByRole('button', { name: '确认重命名' }).click();
+  await expect(page.getByText(
+    '已将 /notes.txt 重命名为 /renamed.txt',
+  )).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开文件 renamed.txt' })).toBeVisible();
+
+  await page.getByRole('button', { name: '删除 renamed.txt' }).click();
+  const confirm = page.getByRole('alertdialog', { name: '删除文件' });
+  await expect(confirm.getByRole('button', { name: '取消' })).toBeFocused();
+  await confirm.getByRole('button', { name: '确认删除' }).click();
+  await expect(page.getByText('已删除 /renamed.txt')).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开文件 renamed.txt' })).toHaveCount(0);
+
+  expect(pageErrors).toEqual([]);
+});
+
+test('Command-K opens the command palette and runs an action', async ({ page }) => {
   await page.goto('/');
-  await expect(page.locator('html')).toHaveAttribute('data-theme', /light|dark/);
+  await expect(page.getByRole('status', { name: 'Core 状态' })).toContainText('Core 已就绪');
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+KeyK' : 'Control+KeyK');
 
-  await page.getByRole('button', { name: '切换到深色模式' }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
+  const palette = page.getByRole('dialog', { name: '命令面板' });
+  await expect(palette).toBeVisible();
+  const search = palette.getByRole('searchbox', { name: '搜索服务器或命令' });
+  await expect(search).toBeFocused();
+  await expect(palette.getByRole('option', { name: /从 SSH Config 导入/u })).toHaveCount(1);
 
-  await page.getByRole('button', { name: '切换到浅色模式' }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await search.fill('添加');
+  await search.press('Enter');
+  await expect(page.getByRole('dialog', { name: '添加服务器' })).toBeVisible();
 
-  // 收起侧边栏：宽度收窄且导航按钮保留
-  const sidebar = page.locator('.sidebar');
-  await expect(sidebar).toHaveCSS('width', '240px');
-  await page.getByRole('button', { name: '收起侧边栏' }).click();
-  await expect(sidebar).toHaveCSS('width', '72px');
-  await expect(page.getByRole('button', { name: '仪表盘' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '添加服务器' })).toHaveCount(0);
+});
 
-  // 刷新后保持收起
-  await page.reload();
-  await expect(page.locator('.sidebar')).toHaveCSS('width', '72px');
+test('selecting a server opens a live xterm with sessions, history, and keepalive', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+
+  const firstTerminal = page.getByRole('log', { name: '终端 1' });
+  await expect(firstTerminal).toBeVisible();
+  await expect(firstTerminal).toContainText('harbor renderer fixture');
+  await expect(page.locator('.xterm')).toHaveCSS(
+    'font-family',
+    /IBM Plex Mono/u,
+  );
+  await expect(firstTerminal).toHaveCSS('background-color', 'rgb(20, 19, 17)');
+
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
+  await page.keyboard.type('echo harbor-history');
+  await page.keyboard.press('Enter');
+  await expect(firstTerminal).toContainText('echo harbor-history');
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    }).__harborRuntime;
+    runtime.core.readClipboardText = async () => 'echo pasted';
+  });
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  await expect(firstTerminal).toContainText('echo pasted');
+
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    }).__harborRuntime;
+    runtime.core.readClipboardText = async () => (
+      'echo multiline-one\necho multiline-two'
+    );
+  });
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  const declinedDialog = page.getByRole('alertdialog', { name: '粘贴多行内容？' });
+  await expect(declinedDialog).toBeVisible();
+  await expect(declinedDialog).toContainText('2 行');
+  await declinedDialog.getByRole('button', { name: '取消' }).click();
+  await expect(firstTerminal).not.toContainText('echo multiline-one');
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  const acceptedDialog = page.getByRole('alertdialog', { name: '粘贴多行内容？' });
+  await expect(acceptedDialog).toBeVisible();
+  await acceptedDialog.getByRole('button', { name: '仍然粘贴' }).click();
+  await expect(firstTerminal).toContainText('echo multiline-one');
+  await expect(firstTerminal).toContainText('echo multiline-two');
+  await page.keyboard.press('Control+KeyR');
+
+  const history = page.getByRole('dialog', { name: '命令历史' });
+  await expect(history).toBeVisible();
+  await history.getByRole('searchbox', { name: '搜索命令历史' }).fill('harbor');
+  await expect(history.getByRole('option', {
+    name: /echo harbor-history/u,
+  })).toBeVisible();
+  await history.getByRole('searchbox', { name: '搜索命令历史' }).press('Enter');
+  await expect(history).toHaveCount(0);
+
+  await page.getByRole('button', { name: '新增终端会话' }).click();
+  await expect(page.getByRole('tab', { name: '切换到 终端 2' })).toBeVisible();
+  await expect(page.getByLabel('终端会话数量')).toContainText('2/8');
+  await page.getByRole('button', { name: '关闭会话 终端 2' }).click();
+  await expect(page.getByRole('tab', { name: '切换到 终端 2' })).toHaveCount(0);
+  await expect(page.getByLabel('终端会话数量')).toContainText('1/8');
+
+  await page.getByRole('button', { name: /^打开服务器 dev-box/u }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  await page.getByRole('button', { name: /^打开服务器 prod-web-01/u }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'echo harbor-history',
+  );
+  await expect(
+    page.locator('main:visible').getByLabel('终端会话数量'),
+  ).toContainText('1/8');
+});
+
+test('lists Docker containers, reads both log streams, restarts, and execs into a terminal', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=docker');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  await expect(page.getByRole('tab', { name: '切换到 终端 1' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Docker' }).click();
+  const table = page.getByRole('table', { name: 'Docker 容器' });
+  await expect(table).toBeVisible();
+  await expect(table).toContainText('web');
+  await expect(table).toContainText('nginx:alpine');
+  await expect(table).toContainText('运行中');
+  await expect(table).toContainText('0.0.0.0:8080->80/tcp');
+  await expect(table).toContainText('2026-11-17');
+
+  await page.getByRole('button', { name: '查看 web 日志' }).click();
+  const logs = page.getByRole('dialog', { name: '容器日志 web' });
+  await expect(logs).toBeVisible();
+  await expect(logs.getByRole('log')).toContainText('request completed');
+  await expect(logs.getByRole('log')).toContainText('warning from stderr');
+  await expect(logs).toHaveCSS('background-color', 'rgb(20, 19, 17)');
+  await logs.getByRole('button', { name: '关闭日志' }).click();
+  await expect(logs).toHaveCount(0);
+  await expect(table).toBeVisible();
+
+  await page.getByRole('button', { name: '重启 web' }).click();
+  const confirmation = page.getByRole('alertdialog', { name: '重启容器？' });
+  await expect(confirmation).toContainText('web');
+  await confirmation.getByRole('button', { name: '确认重启' }).click();
+  await expect(
+    page.locator('[data-workspace-panel="docker"]').getByText('容器已重启'),
+  ).toBeVisible();
+  await expect(table).toContainText('Up less than a second');
+  await expect(table).not.toContainText('2026-11-17 12:00:00 UTC');
+  await expect.poll(() => page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: {
+        core: { calls: Array<{ method: string }> };
+      };
+    };
+    return runtime.__harborRuntime.core.calls
+      .filter((call) => call.method === 'runDockerAction').length;
+  })).toBe(1);
+
+  await page.getByRole('button', { name: 'Exec web' }).click();
+  const dockerTab = page.getByRole('tab', { name: '切换到 终端 2' });
+  await expect(dockerTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('log', { name: '终端 2' })).toContainText(
+    'docker exec web sh',
+  );
+});
+
+test('never records interactive input that the remote pty does not echo', async ({ page }) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  const terminal = page.getByRole('log', { name: '终端 1' });
+  await expect(terminal).toBeVisible();
+
+  await page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: {
+        core: {
+          emitTerminalData(event: {
+            terminalSessionId: string;
+            sequence: number;
+            bytes: number[];
+          }): void;
+          writeTerminal: () => Promise<void>;
+        };
+        terminalStore: {
+          getState(): {
+            runtimes: Record<string, {
+              sessions: Array<{ id: string }>;
+            }>;
+          };
+        };
+      };
+    };
+    const state = runtime.__harborRuntime;
+    const session = Object.values(state.terminalStore.getState().runtimes)
+      .flatMap((entry) => entry.sessions)[0];
+    if (!session) throw new Error('missing fixture session');
+    state.core.writeTerminal = async () => undefined;
+    state.core.emitTerminalData({
+      terminalSessionId: session.id,
+      sequence: 2,
+      bytes: Array.from(new TextEncoder().encode('[sudo] password for deploy: ')),
+    });
+  });
+  await expect(terminal).toContainText('[sudo] password for deploy:');
+
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
+  await page.keyboard.type('deploy');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(150);
+  await page.keyboard.press('Control+KeyR');
+
+  const history = page.getByRole('dialog', { name: '命令历史' });
+  await expect(history).toBeVisible();
+  await history.getByRole('searchbox', { name: '搜索命令历史' }).fill('deploy');
+  await expect(history.getByRole('option')).toHaveCount(0);
+});
+
+test('routes native paste through an in-app confirmation and sends one keyboard paste', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  const terminal = page.getByRole('log', { name: '终端 1' });
+  await expect(terminal).toBeVisible();
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
+
+  const dispatchNativePaste = (text: string) => page.evaluate((value) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', value);
+    const textarea = document.querySelector(
+      '[data-workspace-panel="terminal"]:not(.hidden) .xterm-helper-textarea',
+    );
+    if (!(textarea instanceof HTMLElement)) {
+      throw new Error('missing xterm textarea');
+    }
+    textarea.dispatchEvent(new ClipboardEvent('paste', {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: data,
+    }));
+  }, text);
+
+  await dispatchNativePaste('echo native-one\necho native-two');
+  const declinedDialog = page.getByRole('alertdialog', { name: '粘贴多行内容？' });
+  await expect(declinedDialog).toBeVisible();
+  await expect(declinedDialog).toContainText('2 行');
+  await declinedDialog.getByRole('button', { name: '取消' }).click();
+  await expect(terminal).not.toContainText('echo native-one');
+
+  await dispatchNativePaste('echo native-one\necho native-two');
+  const acceptedDialog = page.getByRole('alertdialog', { name: '粘贴多行内容？' });
+  await expect(acceptedDialog).toBeVisible();
+  await acceptedDialog.getByRole('button', { name: '仍然粘贴' }).click();
+  await expect(terminal).toContainText('echo native-one');
+  await expect(terminal).toContainText('echo native-two');
+
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    }).__harborRuntime;
+    runtime.core.readClipboardText = async () => 'echo keyboard-paste';
+  });
+  await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
+    .focus();
+  await page.evaluate(() => {
+    const textarea = document.querySelector(
+      '[data-workspace-panel="terminal"]:not(.hidden) .xterm-helper-textarea',
+    );
+    if (!(textarea instanceof HTMLElement)) {
+      throw new Error('missing xterm textarea');
+    }
+    for (const type of ['keydown', 'keyup']) {
+      textarea.dispatchEvent(new KeyboardEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        key: 'v',
+      }));
+    }
+  });
+  await expect(terminal).toContainText('echo keyboard-paste');
+  await expect.poll(async () => (
+    await terminal.locator('.xterm-rows').evaluate(
+      (element, command) => element.textContent?.split(command).length - 1,
+      'echo keyboard-paste',
+    )
+  )).toBe(1);
+});
+
+test('reads the native Core clipboard first and falls back to the WebView', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  const terminal = page.getByRole('log', { name: '终端 1' });
+  await expect(terminal).toBeVisible();
+
+  await page.evaluate(() => {
+    const state = window as unknown as {
+      __webClipboardReads: number;
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    };
+    state.__webClipboardReads = 0;
+    Object.defineProperty(navigator.clipboard, 'readText', {
+      configurable: true,
+      value: async () => {
+        state.__webClipboardReads += 1;
+        return 'echo web-clipboard';
+      },
+    });
+    state.__harborRuntime.core.readClipboardText = async () => 'echo core-clipboard';
+  });
+
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  await expect(terminal).toContainText('echo core-clipboard');
+  await expect(page.getByText('已粘贴')).toBeVisible();
+  expect(await page.evaluate(() => (
+    window as unknown as { __webClipboardReads: number }
+  ).__webClipboardReads)).toBe(0);
+
+  await page.evaluate(() => {
+    const state = window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    };
+    state.__harborRuntime.core.readClipboardText = async () => {
+      throw new Error('native clipboard unavailable');
+    };
+    Object.defineProperty(navigator.clipboard, 'readText', {
+      configurable: true,
+      value: async () => 'echo web-fallback',
+    });
+  });
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  await expect(terminal).toContainText('echo web-fallback');
+
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    }).__harborRuntime;
+    runtime.core.readClipboardText = async () => 'echo core-keyboard';
+    const textarea = document.querySelector(
+      '[data-workspace-panel="terminal"]:not(.hidden) .xterm-helper-textarea',
+    );
+    if (!(textarea instanceof HTMLElement)) {
+      throw new Error('missing xterm textarea');
+    }
+    textarea.focus();
+    for (const type of ['keydown', 'keyup']) {
+      textarea.dispatchEvent(new KeyboardEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        key: 'v',
+      }));
+    }
+  });
+  await expect(terminal).toContainText('echo core-keyboard');
+});
+
+test('editing a connected endpoint closes the old SSH identity first', async ({ page }) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+  const oldConnectionId = await page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: {
+        harborStore: {
+          getState(): {
+            servers: Array<{ id: string }>;
+          };
+        };
+        terminalStore: {
+          getState(): {
+            runtimes: Record<string, {
+              connection: { connectionId: string } | null;
+            }>;
+          };
+        };
+      };
+    };
+    return runtime.__harborRuntime.terminalStore
+      .getState()
+      .runtimes['019c62b2-2970-7000-8000-000000000101']
+      ?.connection?.connectionId;
+  });
+
+  await page.getByRole('button', { name: '编辑服务器' }).click();
+  const dialog = page.getByRole('dialog', { name: '编辑服务器' });
+  await dialog.getByLabel('主机').fill('replacement.example.com');
+  await dialog.getByLabel('用户名').fill('replacement');
+  await dialog.getByRole('button', { name: '保存服务器' }).click();
+
+  await expect.poll(() => page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: {
+        core: {
+          calls: Array<{ method: string }>;
+        };
+        terminalStore: {
+          getState(): {
+            runtimes: Record<string, {
+              connection: { connectionId: string } | null;
+              connectionIdentity: string | null;
+            }>;
+          };
+        };
+      };
+    };
+    const state = runtime.__harborRuntime;
+    return {
+      connects: state.core.calls.filter((call) => call.method === 'connect').length,
+      disconnects: state.core.calls.filter((call) => call.method === 'disconnect').length,
+      connectionId: state.terminalStore.getState()
+        .runtimes['019c62b2-2970-7000-8000-000000000101']
+        ?.connection?.connectionId,
+    };
+  })).toEqual({
+    connects: 2,
+    disconnects: 1,
+    connectionId: expect.not.stringMatching(oldConnectionId ?? '^$'),
+  });
+  await expect(page.getByRole('log', { name: '终端 1' })).toBeVisible();
+});
+
+test('unknown host keys require explicit trust and a closed session can reconnect', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=host-key');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+
+  const hostKeyDialog = page.getByRole('dialog', {
+    name: '首次连接，核对主机指纹',
+  });
+  await expect(hostKeyDialog).toBeVisible();
+  await expect(hostKeyDialog).toContainText('SHA256:rendererFixtureHostKey');
+  const trust = hostKeyDialog.getByRole('button', {
+    name: '信任并以 SSH 连接',
+  });
+  await expect(trust).toBeDisabled();
+  await hostKeyDialog.getByLabel(
+    '我已通过独立渠道核对上述 SHA-256 主机指纹。',
+  ).check();
+  await trust.click();
+
+  await expect(hostKeyDialog).toHaveCount(0);
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'harbor renderer fixture',
+  );
+
+  await page.evaluate(() => {
+    const runtime = window as unknown as {
+      __harborRuntime: { disconnectFirstSession(): void };
+    };
+    runtime.__harborRuntime.disconnectFirstSession();
+  });
+  await expect(page.getByRole('heading', {
+    name: 'SSH 连接已断开',
+  })).toBeVisible();
+  await page.getByRole('button', { name: '重连会话' }).click();
+  await expect(page.getByRole('heading', { name: 'SSH 连接已断开' })).toHaveCount(0);
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'harbor renderer fixture',
+  );
+});
+
+test('changed host keys stay blocked until explicit fingerprint replacement', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=host-key-changed');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+
+  const hostKeyDialog = page.getByRole('dialog', {
+    name: '主机指纹已变化，重新核对',
+  });
+  await expect(hostKeyDialog).toBeVisible();
+  await expect(hostKeyDialog).toContainText('SHA256:rendererFixtureOldHostKey');
+  await expect(hostKeyDialog).toContainText('SHA256:rendererFixtureNewHostKey');
+  const trust = hostKeyDialog.getByRole('button', {
+    name: '确认变化并连接',
+  });
+  await expect(trust).toBeDisabled();
+  await hostKeyDialog.getByLabel(
+    '我已确认服务器密钥确实发生变更，并核对了当前 SHA-256 指纹。',
+  ).check();
+  await trust.click();
+
+  await expect(hostKeyDialog).toHaveCount(0);
+  await expect(page.getByRole('log', { name: '终端 1' })).toContainText(
+    'harbor renderer fixture',
+  );
 });
