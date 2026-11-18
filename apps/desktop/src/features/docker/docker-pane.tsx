@@ -309,6 +309,7 @@ export function DockerPane({ active, onExecOpened, server }: DockerPaneProps) {
           busy={execBusy}
           container={shellChoice}
           error={execError ? dockerErrorMessage(execError) : null}
+          key={shellChoice.id}
           onCancel={() => {
             setShellChoice(null);
             setExecError(null);
@@ -749,11 +750,6 @@ function DockerShellDialog({
     },
     active,
   );
-
-  useEffect(() => {
-    setShell('/bin/sh');
-    setShellError(null);
-  }, [active, container.id]);
 
   function submitShell() {
     const parsed = DockerShellSchema.safeParse(shell);
