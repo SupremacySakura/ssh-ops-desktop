@@ -7,4 +7,4 @@
 - 当前产品范围与验收标准以 GitHub issue #1 为准；当前实现以 `src-tauri/build.rs`、`src-tauri/src/lib.rs` 与 `crates/*` 为准；当前视觉以 `apps/desktop/DESIGN.md` 为准。
 - 旧 AI、Task Engine、Audit、Project、Nginx 站点与 native E2E 已移除，不得按归档文档恢复。
 
-对应的旧设计页在 `design/archive/`，当前唯一视觉参考稿是 `design/harbor-calibrated-panel.html`。
+旧 OpsPilot 静态设计页已随归档清理删除；当前唯一视觉参考稿是 `design/harbor-calibrated-panel.html`。
