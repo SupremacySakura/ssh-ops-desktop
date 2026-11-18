@@ -84,7 +84,7 @@
 
 ## CI 边界
 
-- CI 使用 `macos-14` 与 `windows-2025` 原生 runner、Node 24、固定 pnpm 10.15.0 和 `rust-toolchain.toml` 中的 Rust 1.97.1。
+- CI 使用 `macos-15` 与 `windows-2025` 原生 runner、Node 24、固定 pnpm 10.15.0 和 `rust-toolchain.toml` 中的 Rust 1.97.1。
 - `GITHUB_TOKEN` 只具有 `contents: read`；workflow 不读取仓库 secrets，不执行签名、notarization、发布或部署。
 - 缓存键绑定 `pnpm-lock.yaml`、`Cargo.lock` 与 `rust-toolchain.toml`，并按操作系统与架构隔离。
 - 缓存只包含 pnpm store 与 Cargo registry/git checkout；不缓存 `node_modules`、应用数据目录、系统凭据库、`.env`、签名证书或打包密钥。
