@@ -1,5 +1,5 @@
 import { AlertTriangle, X } from 'lucide-react';
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 
 import { useDialogFocusTrap } from './use-dialog-focus-trap';
 
@@ -15,6 +15,7 @@ interface ConfirmDialogProps {
   onCancel: () => void;
   onConfirm: () => void;
   title: string;
+  tone?: 'danger' | 'warning';
 }
 
 export function ConfirmDialog({
@@ -29,9 +30,12 @@ export function ConfirmDialog({
   onCancel,
   onConfirm,
   title,
+  tone = 'danger',
 }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const sectionRef = useRef<HTMLElement>(null);
+  const warning = tone === 'warning';
+  const titleId = useId();
 
   useDialogFocusTrap(sectionRef, {
     active,
@@ -52,7 +56,7 @@ export function ConfirmDialog({
     >
       <section
         aria-busy={busy}
-        aria-labelledby="confirm-dialog-title"
+        aria-labelledby={titleId}
         aria-modal="true"
         className="w-[440px] border border-ink bg-shell"
         ref={sectionRef}
@@ -60,14 +64,24 @@ export function ConfirmDialog({
         tabIndex={-1}
       >
         <header className="flex items-start gap-3 border-b border-hairline px-5 py-4">
-          <span className="mt-0.5 grid size-8 shrink-0 place-items-center border border-danger text-danger">
+          <span
+            className={`mt-0.5 grid size-8 shrink-0 place-items-center border ${
+              warning ? 'border-warning text-warning' : 'border-danger text-danger'
+            }`}
+          >
             <AlertTriangle aria-hidden className="size-4" strokeWidth={1.5} />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="font-mono text-[9px] tracking-[0.16em] text-danger">DANGER ACTION</p>
+            <p
+              className={`font-mono text-[9px] tracking-[0.16em] ${
+                warning ? 'text-warning' : 'text-danger'
+              }`}
+            >
+              {warning ? 'CONFIRM ACTION' : 'DANGER ACTION'}
+            </p>
             <h2
               className="mt-1 text-[18px] font-semibold tracking-[-0.01em] text-ink"
-              id="confirm-dialog-title"
+              id={titleId}
             >
               {title}
             </h2>
@@ -103,7 +117,9 @@ export function ConfirmDialog({
             {cancelLabel}
           </button>
           <button
-            className="h-8 bg-danger px-4 text-[11px] font-medium text-paper disabled:opacity-40"
+            className={`h-8 px-4 text-[11px] font-medium text-paper disabled:opacity-40 ${
+              warning ? 'bg-warning' : 'bg-danger'
+            }`}
             disabled={busy || confirmDisabled}
             onClick={onConfirm}
             type="button"

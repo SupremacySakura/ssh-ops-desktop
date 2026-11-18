@@ -63,6 +63,7 @@ export interface FakeCoreOptions {
   servers?: Server[];
   groups?: Group[];
   health?: CoreHealth;
+  clipboardText?: string;
   terminalEcho?: boolean;
   terminalOsc7?: boolean;
   persistence?: FakeCorePersistence;
@@ -113,6 +114,7 @@ export function createFakeCoreClient({
   servers: initialServers = [],
   groups: initialGroups = [],
   health = readyHealth,
+  clipboardText = '',
   terminalEcho = false,
   terminalOsc7 = false,
   persistence,
@@ -184,6 +186,10 @@ export function createFakeCoreClient({
     health: async () => {
       remember(calls, 'health', []);
       return health;
+    },
+    readClipboardText: async () => {
+      remember(calls, 'readClipboardText', []);
+      return clipboardText;
     },
     listServers: async () => {
       remember(calls, 'listServers', []);

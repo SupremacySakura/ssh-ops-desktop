@@ -1,6 +1,6 @@
 # Harbor 安全边界
 
-本文记录当前 Harbor 已实现的权限边界，以及后续功能不得绕过的约束。当前已实现服务器目录、SSH Config 导入、SSH 连接、终端、SFTP 文件（含写操作）、系统监控与 Docker 管理；命令面共 **32** 个，以 `src-tauri/build.rs` 的 manifest 为准。
+本文记录当前 Harbor 已实现的权限边界，以及后续功能不得绕过的约束。当前已实现服务器目录、SSH Config 导入、SSH 连接、终端、SFTP 文件（含写操作）、系统监控与 Docker 管理；命令面共 **33** 个，以 `src-tauri/build.rs` 的 manifest 为准。
 
 ## 信任区域
 
@@ -13,9 +13,10 @@
 
 ## WebView 与 IPC
 
-- 主窗口 capability 只授予显式生成的 32 个命令权限：`core_health`、服务器/分组目录、SSH Config 导入、连接、终端、文件（列表/读取/写入/下载/上传/新建目录/重命名/删除）、监控快照与 Docker（列表/日志/操作/exec），以及 terminal/connection 事件桥所需的 `core:event:allow-listen`、`core:event:allow-unlisten`；不包含 `core:event:default`、`shell:*`、`fs:*`、HTTP 通配权限或远程 URL 访问能力。
+- 主窗口 capability 只授予显式生成的 33 个命令权限：`core_health`、`clipboard_read_text`、服务器/分组目录、SSH Config 导入、连接、终端、文件（列表/读取/写入/下载/上传/新建目录/重命名/删除）、监控快照与 Docker（列表/日志/操作/exec），以及 terminal/connection 事件桥所需的 `core:event:allow-listen`、`core:event:allow-unlisten`；不包含 `core:event:default`、`shell:*`、`fs:*`、HTTP 通配权限或远程 URL 访问能力。
 - 应用 command 同时在 `src-tauri/build.rs` 的 manifest、`src-tauri/src/lib.rs` 的 invoke handler、权限文件与主窗口 capability 中显式注册。
 - `core_health` 只返回版本、数据库 readiness 和凭据库 readiness；不返回数据库路径、环境变量、系统凭据名称或后端错误详情。
+- `clipboard_read_text` 只在用户显式粘贴时读取系统文本剪贴板，内容仅返回给终端视图，不写日志、SQLite 或事件；超过 4 MiB 时拒绝，空剪贴板返回空字符串。
 - React 只依赖 `CoreClient` 接口；Tauri `invoke` 被限制在适配器内。IPC 拒绝时 UI 按 `CoreError.code` 映射中文文案；`INTERNAL`、`REMOTE_PARSE`、`REMOTE_COMMAND` 与非 `CoreError` 一律使用固定文案，不向用户暴露原始后端错误。`VALIDATION`/`CONFLICT` 仅当消息本身是中文时才展示。
 
 新增 command 时，WebView 输入必须在 Rust 边界重新校验。写入、删除、重命名等危险操作必须由前端原生确认对话框把关；不要恢复旧 OperationGateway、审批、任务或审计链。

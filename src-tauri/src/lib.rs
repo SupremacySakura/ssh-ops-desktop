@@ -3,12 +3,13 @@
 use std::fs;
 
 use commands::{
-    CoreServices, connection_connect, connection_disconnect, connection_trust_host_key,
-    core_health, docker_action, docker_exec, docker_list, docker_logs, file_delete, file_download,
-    file_list, file_mkdir, file_read, file_rename, file_upload, file_write, monitor_snapshot,
-    server_create, server_credential_set, server_delete, server_group_create, server_group_delete,
-    server_group_list, server_group_update, server_list, server_update, ssh_config_import_apply,
-    ssh_config_import_preview, terminal_close, terminal_open, terminal_resize, terminal_write,
+    CoreServices, clipboard_read_text, connection_connect, connection_disconnect,
+    connection_trust_host_key, core_health, docker_action, docker_exec, docker_list, docker_logs,
+    file_delete, file_download, file_list, file_mkdir, file_read, file_rename, file_upload,
+    file_write, monitor_snapshot, server_create, server_credential_set, server_delete,
+    server_group_create, server_group_delete, server_group_list, server_group_update, server_list,
+    server_update, ssh_config_import_apply, ssh_config_import_preview, terminal_close,
+    terminal_open, terminal_resize, terminal_write,
 };
 use opspilot_persistence::Database;
 use opspilot_secrets::KeyringSecretStore;
@@ -49,6 +50,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             core_health,
+            clipboard_read_text,
             server_list,
             server_create,
             server_update,

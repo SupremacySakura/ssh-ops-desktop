@@ -94,6 +94,19 @@ beforeEach(() => {
 });
 
 describe('Tauri CoreClient catalog contract', () => {
+  it('reads the native clipboard through the typed command', async () => {
+    const client = createTauriCoreClient();
+    invokeMock
+      .mockResolvedValueOnce('echo harbor')
+      .mockResolvedValueOnce(42);
+
+    await expect(client.readClipboardText()).resolves.toBe('echo harbor');
+    await expect(client.readClipboardText()).rejects.toThrow();
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'clipboard_read_text');
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'clipboard_read_text');
+  });
+
   it('parses server and group responses from their command boundaries', async () => {
     const client = createTauriCoreClient();
     invokeMock

@@ -11,22 +11,30 @@ import {
   commandAppearsInTerminalEcho,
   trackExecutedCommands,
 } from './command-tracking';
+import { readTerminalClipboard } from './clipboard';
 import { parseOsc7WorkingDirectory } from './terminal-cwd';
 import {
   exceedsTerminalPasteLimit,
   inspectTerminalPaste,
 } from './paste-guard';
 
+export interface PasteConfirmation {
+  bytes: number;
+  lines: number;
+  text: string;
+}
+
 export type PasteOutcome =
   | { kind: 'pasted' }
   | { kind: 'empty' }
   | { kind: 'too-large'; bytes: number }
-  | { kind: 'confirmation-cancelled' }
+  | { kind: 'confirmation-required'; confirmation: PasteConfirmation }
   | { kind: 'unavailable' };
 
 export interface TerminalActions {
   copy(): Promise<boolean>;
   paste(): Promise<PasteOutcome>;
+  pasteText(text: string): PasteOutcome;
   insertCommand(command: string): void;
   focus(): void;
 }
@@ -36,6 +44,7 @@ interface XtermViewportProps {
   onCommand(command: string): void;
   onInput(bytes: Uint8Array): void;
   onOpenHistory(): void;
+  onPasteOutcome(outcome: PasteOutcome): void;
   onRegisterActions(sessionId: string, actions: TerminalActions | null): void;
   onResize(columns: number, rows: number): void;
   session: TerminalSessionView;
@@ -46,6 +55,7 @@ export function XtermViewport({
   onCommand,
   onInput,
   onOpenHistory,
+  onPasteOutcome,
   onRegisterActions,
   onResize,
   session,
@@ -56,12 +66,14 @@ export function XtermViewport({
   const onCommandRef = useRef(onCommand);
   const onInputRef = useRef(onInput);
   const onOpenHistoryRef = useRef(onOpenHistory);
+  const onPasteOutcomeRef = useRef(onPasteOutcome);
   const onRegisterActionsRef = useRef(onRegisterActions);
   const onResizeRef = useRef(onResize);
   const statusRef = useRef(session.status);
   onCommandRef.current = onCommand;
   onInputRef.current = onInput;
   onOpenHistoryRef.current = onOpenHistory;
+  onPasteOutcomeRef.current = onPasteOutcome;
   onRegisterActionsRef.current = onRegisterActions;
   onResizeRef.current = onResize;
   statusRef.current = session.status;
@@ -157,34 +169,43 @@ export function XtermViewport({
       if (!selection) return false;
       return writeClipboardText(selection);
     };
-    const pasteText = (text: string): PasteOutcome => {
+    const commitPaste = (text: string): PasteOutcome => {
       if (statusRef.current !== 'open') return { kind: 'unavailable' };
-      if (text.length === 0) return { kind: 'empty' };
-
-      const inspection = inspectTerminalPaste(text);
-      if (exceedsTerminalPasteLimit(text)) {
-        return {
-          kind: 'too-large',
-          bytes: inspection.bytes,
-        };
-      }
-      if (
-        inspection.requiresConfirmation
-        && !window.confirm(
-          `剪贴板内容包含 ${inspection.lines} 行或控制字符（${inspection.bytes} 字节），`
-          + '粘贴到远程终端后可能立即执行。仍要发送吗？',
-        )
-      ) {
-        return { kind: 'confirmation-cancelled' };
-      }
       terminal.paste(text);
       terminal.focus();
       return { kind: 'pasted' };
     };
+    const preparePaste = (text: string): PasteOutcome => {
+      if (statusRef.current !== 'open') return { kind: 'unavailable' };
+      if (text.length === 0) return { kind: 'empty' };
+      const inspection = inspectTerminalPaste(text);
+      if (exceedsTerminalPasteLimit(text)) {
+        return { kind: 'too-large', bytes: inspection.bytes };
+      }
+      if (inspection.requiresConfirmation) {
+        return {
+          kind: 'confirmation-required',
+          confirmation: {
+            bytes: inspection.bytes,
+            lines: inspection.lines,
+            text,
+          },
+        };
+      }
+      return commitPaste(text);
+    };
     const paste = async (): Promise<PasteOutcome> => {
       if (statusRef.current !== 'open') return { kind: 'unavailable' };
-      const text = await readClipboardText();
-      return text === null ? { kind: 'unavailable' } : pasteText(text);
+      const core = useTerminalStore.getState().core;
+      const text = await readTerminalClipboard({
+        readCoreClipboard: core
+          ? () => core.readClipboardText()
+          : undefined,
+        readWebClipboard: navigator.clipboard?.readText
+          ? () => navigator.clipboard.readText()
+          : undefined,
+      });
+      return text === null ? { kind: 'unavailable' } : preparePaste(text);
     };
     const insertCommand = (command: string) => {
       if (statusRef.current !== 'open') return;
@@ -197,7 +218,7 @@ export function XtermViewport({
       event.preventDefault();
       event.stopPropagation();
       const text = event.clipboardData?.getData('text/plain');
-      if (text !== undefined) pasteText(text);
+      if (text !== undefined) onPasteOutcomeRef.current(preparePaste(text));
     };
     terminal.element?.addEventListener('paste', handleNativePaste, {
       capture: true,
@@ -225,7 +246,7 @@ export function XtermViewport({
       }
       if (key === 'v') {
         event.preventDefault();
-        void paste();
+        void paste().then((outcome) => onPasteOutcomeRef.current(outcome));
         return false;
       }
       return true;
@@ -240,6 +261,7 @@ export function XtermViewport({
     onRegisterActionsRef.current(session.id, {
       copy,
       paste,
+      pasteText: commitPaste,
       insertCommand,
       focus: () => terminal.focus(),
     });
@@ -305,14 +327,6 @@ async function writeClipboardText(value: string): Promise<boolean> {
     const copied = document.execCommand('copy');
     textarea.remove();
     return copied;
-  }
-}
-
-async function readClipboardText(): Promise<string | null> {
-  try {
-    return await navigator.clipboard.readText();
-  } catch {
-    return null;
   }
 }
 

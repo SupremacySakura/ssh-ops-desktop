@@ -6,7 +6,7 @@
 
 Harbor 是一款本地优先的纯 SSH 桌面运维台：Tauri 2 承载 React 19 前端，Rust Core 负责 SSH/SFTP、系统凭据与 SQLite 持久化。产品以服务器为唯一一等公民，同一工作区内提供终端、文件、监控与 Docker 四个视图。
 
-Harbor v1 的服务器目录、连接、终端、文件、监控与 Docker 已接线；Tauri 命令面共 **32** 个，以 `src-tauri/build.rs` 的 manifest 为准。工作区内四个 Tab 始终挂载，切换 Tab 或服务器不销毁终端、文件与监控状态。旧 OpsPilot 的已删除子系统见 `docs/adr/0001-remove-ai-and-task-engine.md`，不得恢复。
+Harbor v1 的服务器目录、连接、终端、文件、监控与 Docker 已接线；Tauri 命令面共 **33** 个，以 `src-tauri/build.rs` 的 manifest 为准。工作区内四个 Tab 始终挂载，切换 Tab 或服务器不销毁终端、文件与监控状态。旧 OpsPilot 的已删除子系统见 `docs/adr/0001-remove-ai-and-task-engine.md`，不得恢复。
 
 ## 技术栈
 

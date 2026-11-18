@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { ConfirmDialog } from '../../components/confirm-dialog';
 import {
   countOpenSessions,
   MAX_TERMINAL_SESSIONS,
@@ -23,12 +24,20 @@ import type {
 import { useCommandHistory } from './command-history';
 import { CommandHistoryPalette } from './command-history-palette';
 import { XtermViewport } from './xterm-viewport';
-import type { TerminalActions } from './xterm-viewport';
+import type {
+  PasteConfirmation,
+  PasteOutcome,
+  TerminalActions,
+} from './xterm-viewport';
 
 interface TerminalPaneProps {
   onJumpToFiles(cwd: string | null): void;
   server: Server;
   workspaceActive: boolean;
+}
+
+interface PendingPaste extends PasteConfirmation {
+  sessionId: string;
 }
 
 const idleRuntime: ServerRuntime = {
@@ -65,6 +74,7 @@ export function TerminalPane({
   const actionsRef = useRef(new Map<string, TerminalActions>());
   const [historyOpen, setHistoryOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
 
   const activeSession = runtime.sessions.find(
     (session) => session.id === runtime.activeSessionId,
@@ -105,10 +115,11 @@ export function TerminalPane({
     setNotice(copied ? '已复制选中内容' : '先选中要复制的终端文本');
   }
 
-  async function pasteClipboard() {
-    if (!activeSession) return;
-    const result = await actionsRef.current.get(activeSession.id)?.paste();
-    switch (result?.kind) {
+  const showPasteOutcome = useCallback((
+    sessionId: string,
+    result: PasteOutcome,
+  ) => {
+    switch (result.kind) {
       case 'pasted':
         setNotice('已粘贴');
         break;
@@ -118,12 +129,23 @@ export function TerminalPane({
       case 'too-large':
         setNotice('粘贴内容超过 1 MiB，未发送');
         break;
-      case 'confirmation-cancelled':
-        setNotice('已取消粘贴');
+      case 'confirmation-required':
+        setPendingPaste({ sessionId, ...result.confirmation });
         break;
-      default:
+      case 'unavailable':
         setNotice('无法读取剪贴板');
+        break;
     }
+  }, []);
+
+  async function pasteClipboard() {
+    if (!activeSession) return;
+    const result = await actionsRef.current.get(activeSession.id)?.paste();
+    if (result) showPasteOutcome(activeSession.id, result);
+  }
+
+  function focusSession(sessionId: string) {
+    requestAnimationFrame(() => actionsRef.current.get(sessionId)?.focus());
   }
 
   return (
@@ -308,6 +330,7 @@ export function TerminalPane({
             onCommand={recordCommand}
             onInput={(bytes) => void writeSession(session.id, bytes)}
             onOpenHistory={() => setHistoryOpen(true)}
+            onPasteOutcome={(outcome) => showPasteOutcome(session.id, outcome)}
             onRegisterActions={registerActions}
             onResize={(columns, rows) => void resizeSession(session.id, columns, rows)}
             onReconnect={() => void reconnectSession(server.id, session.id)}
@@ -339,6 +362,35 @@ export function TerminalPane({
           serverName={server.name}
         />
       </div>
+
+      {pendingPaste ? (
+        <ConfirmDialog
+          confirmLabel="仍然粘贴"
+          description={(
+            <>
+              剪贴板内容包含 {pendingPaste.lines} 行或控制字符
+              （{pendingPaste.bytes} 字节），粘贴到远程终端后可能立即执行。
+            </>
+          )}
+          onCancel={() => {
+            const sessionId = pendingPaste.sessionId;
+            setPendingPaste(null);
+            setNotice('已取消粘贴');
+            focusSession(sessionId);
+          }}
+          onConfirm={() => {
+            const sessionId = pendingPaste.sessionId;
+            const outcome = actionsRef.current
+              .get(sessionId)
+              ?.pasteText(pendingPaste.text);
+            setPendingPaste(null);
+            if (outcome) showPasteOutcome(sessionId, outcome);
+            focusSession(sessionId);
+          }}
+          title="粘贴多行内容？"
+          tone="warning"
+        />
+      ) : null}
     </div>
   );
 }
@@ -349,6 +401,7 @@ interface TerminalSessionPanelProps {
   onCommand(command: string): void;
   onInput(bytes: Uint8Array): void;
   onOpenHistory(): void;
+  onPasteOutcome(outcome: PasteOutcome): void;
   onReconnect(): void;
   onRegisterActions(sessionId: string, actions: TerminalActions | null): void;
   onResize(columns: number, rows: number): void;
@@ -362,6 +415,7 @@ function TerminalSessionPanel({
   onCommand,
   onInput,
   onOpenHistory,
+  onPasteOutcome,
   onReconnect,
   onRegisterActions,
   onResize,
@@ -380,6 +434,7 @@ function TerminalSessionPanel({
         onCommand={onCommand}
         onInput={onInput}
         onOpenHistory={onOpenHistory}
+        onPasteOutcome={onPasteOutcome}
         onRegisterActions={onRegisterActions}
         onResize={onResize}
         session={session}

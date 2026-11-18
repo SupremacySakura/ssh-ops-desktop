@@ -6,7 +6,7 @@
 
 ## Context
 
-Issue #1 的实现决策列出了 `sftp_stat`、`system_*`（含 OS 信息）与 `credentials_read/delete`，并要求 Docker exec “不新增独立命令：复用终端 `open_command`”。实际交付的命令面是 32 个，与规格有四处差异。
+Issue #1 的实现决策列出了 `sftp_stat`、`system_*`（含 OS 信息）与 `credentials_read/delete`，并要求 Docker exec “不新增独立命令：复用终端 `open_command`”。本 ADR 记录时的命令面是 32 个，与规格有四处差异。
 
 ## Decision
 
@@ -31,7 +31,7 @@ Issue #1 的实现决策列出了 `sftp_stat`、`system_*`（含 OS 信息）与
 
 ## Consequences
 
-- 命令面保持 32 个；`tests/integration/command-surface.test.ts` 与 capability 是唯一事实源；
+- 命令面以 `tests/integration/command-surface.test.ts` 与 capability 为唯一事实源；后续终端剪贴板修复新增 `clipboard_read_text`，当前为 33 个；
 - 规格中的 `sftp_stat`、`system_*`、`credentials_*` 视为已由现有命令覆盖或被安全边界否决；
 - Docker exec 的“复用 `open_command`”按“复用终端会话管理”解释，而不是“复用 `terminal_open` 的参数面”。
 

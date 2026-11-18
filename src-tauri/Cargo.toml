@@ -13,6 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+arboard = { version = "3", default-features = false }
 async-trait.workspace = true
 opspilot-domain = { path = "../crates/domain" }
 opspilot-persistence = { path = "../crates/persistence" }

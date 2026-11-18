@@ -9,16 +9,20 @@ export interface PasteInspection {
 
 export function inspectTerminalPaste(value: string): PasteInspection {
   const bytes = new TextEncoder().encode(value).length;
-  const lines = value.length === 0
+  const normalized = value.replaceAll('\r\n', '\n');
+  const content = normalized.endsWith('\n')
+    ? normalized.slice(0, -1)
+    : normalized;
+  const lines = content.length === 0
     ? 0
-    : value.replaceAll('\r\n', '\n').split('\n').length;
+    : content.split('\n').length;
   return {
     bytes,
     lines,
     requiresConfirmation: (
       exceedsTerminalPasteLimit(value)
-      || value.includes('\r')
-      || value.includes('\n')
+      || content.includes('\n')
+      || normalized.includes('\r')
       || hasUnsafeControlCharacter(value)
     ),
   };

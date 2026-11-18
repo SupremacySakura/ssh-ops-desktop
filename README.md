@@ -14,7 +14,7 @@ Harbor v1 的五个核心能力已接线：服务器目录、终端、文件、�
 - **Docker**：列出容器名称、镜像、状态、端口与启动时间；查看日志；start、stop、restart；exec 跳转到终端 Tab 并新建会话，容器没有默认 shell 时可输入经校验的命令名或绝对路径。
 - **命令面板**：⌘K / Ctrl+K 搜索服务器、添加服务器或打开 SSH Config 导入。
 
-旧 OpsPilot 的已删除子系统见 `docs/adr/0001-remove-ai-and-task-engine.md`，活动代码不再保留对应入口。当前 Tauri 命令面共 **32** 个，以 `src-tauri/build.rs` 的 manifest 为准；主窗口只获得这些命令对应的权限，以及终端/连接事件所需的 `core:event:allow-listen`、`core:event:allow-unlisten`。
+旧 OpsPilot 的已删除子系统见 `docs/adr/0001-remove-ai-and-task-engine.md`，活动代码不再保留对应入口。当前 Tauri 命令面共 **33** 个，以 `src-tauri/build.rs` 的 manifest 为准；主窗口只获得这些命令对应的权限，以及终端/连接事件所需的 `core:event:allow-listen`、`core:event:allow-unlisten`。
 
 ## 技术栈
 

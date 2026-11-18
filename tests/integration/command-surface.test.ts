@@ -247,6 +247,7 @@ interface ReturnContract {
 const EXPECTED_RETURN_SCHEMAS: Record<string, ReturnContract> = {
   CoreHealth: { schema: 'CoreHealthSchema', shape: 'single' },
   'Result<CoreHealth, CoreError>': { schema: 'CoreHealthSchema', shape: 'single' },
+  'Result<String, CoreError>': { schema: 'ClipboardTextSchema', shape: 'single' },
   'Result<Vec<Server>, CoreError>': { schema: 'ServerSchema', shape: 'array' },
   'Result<Server, CoreError>': { schema: 'ServerSchema', shape: 'single' },
   'Result<ServerSaveOutcome, CoreError>': {
@@ -386,7 +387,7 @@ describe('Tauri command surface', () => {
   const acl = readJson('src-tauri/gen/schemas/acl-manifests.json');
 
   it('keeps the manifest, invoke handler, and command functions in lockstep', () => {
-    expect(manifestCommands).toHaveLength(32);
+    expect(manifestCommands).toHaveLength(33);
     expect(new Set(manifestCommands).size).toBe(manifestCommands.length);
     expect(handlerCommands).toEqual(manifestCommands);
 

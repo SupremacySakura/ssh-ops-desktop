@@ -131,6 +131,7 @@ test('removed OpsPilot subsystems and native E2E sources are absent', () => {
 test('Harbor commands are registered and authorized exactly once', () => {
   const expectedCommands = [
     'core_health',
+    'clipboard_read_text',
     'server_list',
     'server_create',
     'server_update',

@@ -186,29 +186,37 @@ test('selecting a server opens a live xterm with sessions, history, and keepaliv
   await page.keyboard.type('echo harbor-history');
   await page.keyboard.press('Enter');
   await expect(firstTerminal).toContainText('echo harbor-history');
-  await page.context().grantPermissions(
-    ['clipboard-read', 'clipboard-write'],
-    { origin: 'http://127.0.0.1:1421' },
-  );
-  await page.evaluate(() => navigator.clipboard.writeText('echo pasted'));
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    }).__harborRuntime;
+    runtime.core.readClipboardText = async () => 'echo pasted';
+  });
   await page.getByRole('button', { name: '粘贴到终端' }).click();
   await expect(firstTerminal).toContainText('echo pasted');
 
-  await page.evaluate(() => navigator.clipboard.writeText(
-    'echo multiline-one\necho multiline-two',
-  ));
-  const [declinedDialog] = await Promise.all([
-    page.waitForEvent('dialog'),
-    page.getByRole('button', { name: '粘贴到终端' }).click(),
-  ]);
-  expect(declinedDialog.message()).toContain('2 行');
-  await declinedDialog.dismiss();
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    }).__harborRuntime;
+    runtime.core.readClipboardText = async () => (
+      'echo multiline-one\necho multiline-two'
+    );
+  });
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  const declinedDialog = page.getByRole('alertdialog', { name: '粘贴多行内容？' });
+  await expect(declinedDialog).toBeVisible();
+  await expect(declinedDialog).toContainText('2 行');
+  await declinedDialog.getByRole('button', { name: '取消' }).click();
   await expect(firstTerminal).not.toContainText('echo multiline-one');
-  const [acceptedDialog] = await Promise.all([
-    page.waitForEvent('dialog'),
-    page.getByRole('button', { name: '粘贴到终端' }).click(),
-  ]);
-  await acceptedDialog.accept();
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  const acceptedDialog = page.getByRole('alertdialog', { name: '粘贴多行内容？' });
+  await expect(acceptedDialog).toBeVisible();
+  await acceptedDialog.getByRole('button', { name: '仍然粘贴' }).click();
   await expect(firstTerminal).toContainText('echo multiline-one');
   await expect(firstTerminal).toContainText('echo multiline-two');
   await page.keyboard.press('Control+KeyR');
@@ -349,7 +357,9 @@ test('never records interactive input that the remote pty does not echo', async 
   await expect(history.getByRole('option')).toHaveCount(0);
 });
 
-test('routes native paste through confirmation and sends one keyboard paste', async ({ page }) => {
+test('routes native paste through an in-app confirmation and sends one keyboard paste', async ({
+  page,
+}) => {
   await page.goto('/?scenario=terminal');
   await page.getByRole('button', {
     name: /^打开服务器 prod-web-01/u,
@@ -375,31 +385,27 @@ test('routes native paste through confirmation and sends one keyboard paste', as
     }));
   }, text);
 
-  const declined = page.waitForEvent('dialog');
-  const declinedPaste = dispatchNativePaste(
-    'echo native-one\necho native-two',
-  );
-  const declinedDialog = await declined;
-  expect(declinedDialog.message()).toContain('2 行');
-  await declinedDialog.dismiss();
-  await declinedPaste;
+  await dispatchNativePaste('echo native-one\necho native-two');
+  const declinedDialog = page.getByRole('alertdialog', { name: '粘贴多行内容？' });
+  await expect(declinedDialog).toBeVisible();
+  await expect(declinedDialog).toContainText('2 行');
+  await declinedDialog.getByRole('button', { name: '取消' }).click();
   await expect(terminal).not.toContainText('echo native-one');
 
-  const accepted = page.waitForEvent('dialog');
-  const acceptedPaste = dispatchNativePaste(
-    'echo native-one\necho native-two',
-  );
-  const acceptedDialog = await accepted;
-  await acceptedDialog.accept();
-  await acceptedPaste;
+  await dispatchNativePaste('echo native-one\necho native-two');
+  const acceptedDialog = page.getByRole('alertdialog', { name: '粘贴多行内容？' });
+  await expect(acceptedDialog).toBeVisible();
+  await acceptedDialog.getByRole('button', { name: '仍然粘贴' }).click();
   await expect(terminal).toContainText('echo native-one');
   await expect(terminal).toContainText('echo native-two');
 
   await page.evaluate(() => {
-    Object.defineProperty(navigator.clipboard, 'readText', {
-      configurable: true,
-      value: async () => 'echo keyboard-paste',
-    });
+    const runtime = (window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    }).__harborRuntime;
+    runtime.core.readClipboardText = async () => 'echo keyboard-paste';
   });
   await page.locator('[data-workspace-panel="terminal"]:visible .xterm-helper-textarea')
     .focus();
@@ -426,6 +432,84 @@ test('routes native paste through confirmation and sends one keyboard paste', as
       'echo keyboard-paste',
     )
   )).toBe(1);
+});
+
+test('reads the native Core clipboard first and falls back to the WebView', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=terminal');
+  await page.getByRole('button', {
+    name: /^打开服务器 prod-web-01/u,
+  }).click();
+  const terminal = page.getByRole('log', { name: '终端 1' });
+  await expect(terminal).toBeVisible();
+
+  await page.evaluate(() => {
+    const state = window as unknown as {
+      __webClipboardReads: number;
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    };
+    state.__webClipboardReads = 0;
+    Object.defineProperty(navigator.clipboard, 'readText', {
+      configurable: true,
+      value: async () => {
+        state.__webClipboardReads += 1;
+        return 'echo web-clipboard';
+      },
+    });
+    state.__harborRuntime.core.readClipboardText = async () => 'echo core-clipboard';
+  });
+
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  await expect(terminal).toContainText('echo core-clipboard');
+  await expect(page.getByText('已粘贴')).toBeVisible();
+  expect(await page.evaluate(() => (
+    window as unknown as { __webClipboardReads: number }
+  ).__webClipboardReads)).toBe(0);
+
+  await page.evaluate(() => {
+    const state = window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    };
+    state.__harborRuntime.core.readClipboardText = async () => {
+      throw new Error('native clipboard unavailable');
+    };
+    Object.defineProperty(navigator.clipboard, 'readText', {
+      configurable: true,
+      value: async () => 'echo web-fallback',
+    });
+  });
+  await page.getByRole('button', { name: '粘贴到终端' }).click();
+  await expect(terminal).toContainText('echo web-fallback');
+
+  await page.evaluate(() => {
+    const runtime = (window as unknown as {
+      __harborRuntime: {
+        core: { readClipboardText: () => Promise<string> };
+      };
+    }).__harborRuntime;
+    runtime.core.readClipboardText = async () => 'echo core-keyboard';
+    const textarea = document.querySelector(
+      '[data-workspace-panel="terminal"]:not(.hidden) .xterm-helper-textarea',
+    );
+    if (!(textarea instanceof HTMLElement)) {
+      throw new Error('missing xterm textarea');
+    }
+    textarea.focus();
+    for (const type of ['keydown', 'keyup']) {
+      textarea.dispatchEvent(new KeyboardEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        key: 'v',
+      }));
+    }
+  });
+  await expect(terminal).toContainText('echo core-keyboard');
 });
 
 test('editing a connected endpoint closes the old SSH identity first', async ({ page }) => {

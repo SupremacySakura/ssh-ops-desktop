@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
+  ClipboardTextSchema,
   ConnectOutcomeSchema,
   ConnectionHandleSchema,
   ConnectionStateEventSchema,
@@ -77,6 +78,7 @@ import {
 
 export interface CoreClient {
   health(): Promise<CoreHealth>;
+  readClipboardText(): Promise<string>;
   listServers(): Promise<Server[]>;
   createServer(input: ServerInput, credential: ServerCredentialInput): Promise<Server>;
   updateServer(
@@ -176,6 +178,9 @@ export interface CoreClient {
 export function createTauriCoreClient(): CoreClient {
   return {
     health: async () => CoreHealthSchema.parse(await invoke('core_health')),
+    readClipboardText: async () => ClipboardTextSchema.parse(
+      await invoke('clipboard_read_text'),
+    ),
     listServers: async () => (
       ServerSchema.array().parse(await invoke('server_list'))
     ),

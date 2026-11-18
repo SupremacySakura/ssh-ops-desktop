@@ -2,6 +2,7 @@ fn main() {
     let attributes =
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "core_health",
+            "clipboard_read_text",
             "server_list",
             "server_create",
             "server_update",
