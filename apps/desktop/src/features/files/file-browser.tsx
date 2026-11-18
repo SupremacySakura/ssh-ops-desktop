@@ -143,7 +143,7 @@ export function FileBrowser({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteNoticeId, setDeleteNoticeId] = useState<number | null>(null);
   const [operationNotices, setOperationNotices] = useState<OperationNotice[]>([]);
-  const [pendingNoticeRefresh, setPendingNoticeRefresh] = useState<{
+  const pendingNoticeRefreshRef = useRef<{
     id: number;
     directory: string;
   } | null>(null);
@@ -228,10 +228,18 @@ export function FileBrowser({
         loadedKey.current = requestKey;
         setEntries(currentEntries);
         setListState('ready');
+        const pending = pendingNoticeRefreshRef.current;
+        if (pending && pending.directory === path) {
+          pendingNoticeRefreshRef.current = null;
+          setOperationNotices((current) => (
+            current.filter((notice) => notice.id !== pending.id)
+          ));
+        }
       })
       .catch((error: unknown) => {
         if (cancelled) return;
         loadedKey.current = null;
+        pendingNoticeRefreshRef.current = null;
         setListState('error');
         setListError(remoteFileErrorMessage(error));
       });
@@ -481,19 +489,9 @@ export function FileBrowser({
     return noticeSequence.current;
   }
 
-  useEffect(() => {
-    if (!pendingNoticeRefresh) return;
-    if (listState === 'error') {
-      setPendingNoticeRefresh(null);
-      return;
-    }
-    if (listState === 'ready' && path === pendingNoticeRefresh.directory) {
-      setOperationNotices((current) => (
-        current.filter((notice) => notice.id !== pendingNoticeRefresh.id)
-      ));
-      setPendingNoticeRefresh(null);
-    }
-  }, [listState, path, pendingNoticeRefresh]);
+  function requestNoticeRefresh(id: number, directory: string) {
+    pendingNoticeRefreshRef.current = { id, directory };
+  }
 
   function selectUploadFiles(event: ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(event.currentTarget.files ?? []);
@@ -973,7 +971,7 @@ export function FileBrowser({
   function refreshOperationNotice(id: number) {
     const notice = operationNotices.find((candidate) => candidate.id === id);
     if (!notice?.refreshDirectory || !canWrite) return;
-    setPendingNoticeRefresh({ id, directory: notice.refreshDirectory });
+    requestNoticeRefresh(id, notice.refreshDirectory);
     refreshAfterMutation(notice.refreshDirectory);
   }
 
@@ -1080,10 +1078,10 @@ export function FileBrowser({
                   disabled={!canWrite}
                   onClick={() => {
                     if (uploadResidueNoticeId.current !== null) {
-                      setPendingNoticeRefresh({
-                        id: uploadResidueNoticeId.current,
-                        directory: uploadTarget,
-                      });
+                      requestNoticeRefresh(
+                        uploadResidueNoticeId.current,
+                        uploadTarget,
+                      );
                     }
                     refreshAfterMutation(uploadTarget);
                     setUploadFiles(null);
