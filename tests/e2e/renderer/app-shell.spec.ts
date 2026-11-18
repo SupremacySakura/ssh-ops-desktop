@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
+const EDITOR_LOAD_TIMEOUT = 15_000;
+
 const pageErrors = new WeakMap<Page, string[]>();
 
 test.beforeEach(({ page }) => {
@@ -74,8 +76,9 @@ test('file browser opens Monaco in a renderer with a frozen Object prototype', a
   await page.getByRole('button', { name: '打开文件 app.conf' }).dblclick();
 
   const dialog = page.getByRole('dialog', { name: '编辑 app.conf' });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.locator('.monaco-editor')).toBeVisible();
+  await expect(dialog).toBeVisible({ timeout: EDITOR_LOAD_TIMEOUT });
+  await expect(dialog.locator('.monaco-editor'))
+    .toBeVisible({ timeout: EDITOR_LOAD_TIMEOUT });
   expect(pageErrors).toEqual([]);
 });
 

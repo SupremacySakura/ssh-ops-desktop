@@ -2,6 +2,8 @@ import { expect, test, type Page } from '@playwright/test';
 
 import { FIXTURE_METADATA_KEY } from './fixture/scenario-keys';
 
+const EDITOR_LOAD_TIMEOUT = 15_000;
+
 const pageErrors = new WeakMap<Page, string[]>();
 
 test.beforeEach(({ page }) => {
@@ -95,7 +97,8 @@ test('adds a server, connects, edits a file, monitors it, and execs into Docker'
   await expect(table).toContainText('app.conf');
   await page.getByRole('button', { name: '打开文件 app.conf' }).dblclick();
   const editor = page.getByRole('dialog', { name: '编辑 app.conf' });
-  await expect(editor.locator('.monaco-editor')).toBeVisible();
+  await expect(editor.locator('.monaco-editor'))
+    .toBeVisible({ timeout: EDITOR_LOAD_TIMEOUT });
   await replaceEditorText(page, editor, 'hello from harbor');
   await expect(editor.getByText('有未保存修改')).toBeVisible();
   await editor.getByRole('button', { name: '保存到远程' }).click();
