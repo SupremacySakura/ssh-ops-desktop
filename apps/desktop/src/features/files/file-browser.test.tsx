@@ -23,6 +23,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createFakeCoreClient } from '../../test/fake-core';
 import { FileBrowser } from './file-browser';
+import { formatFileModifiedAt } from './file-browser-utils';
 
 vi.mock('./code-editor', () => ({
   CodeEditor: ({
@@ -140,7 +141,9 @@ describe('FileBrowser', () => {
     expect(within(rows[2]).getByRole('button', { name: '打开文件 current' })).toBeVisible();
     expect(within(rows[1]).getByText('6 B')).toBeVisible();
     expect(within(rows[1]).getByText('0640')).toBeVisible();
-    expect(within(rows[1]).getByText('2023-11-15 06:15')).toBeVisible();
+    expect(
+      within(rows[1]).getByText(formatFileModifiedAt(1_700_000_100)),
+    ).toBeVisible();
     expect(core.calls).toContainEqual(expect.objectContaining({
       method: 'listFiles',
       args: [connection, '/'],
