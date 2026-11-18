@@ -2,6 +2,9 @@
 resolver = "2"
 members = ["src-tauri", "crates/*"]
 
+[profile.release.package.sqlx-macros]
+debug = 1
+
 [workspace.package]
 edition = "2024"
 license = "UNLICENSED"
