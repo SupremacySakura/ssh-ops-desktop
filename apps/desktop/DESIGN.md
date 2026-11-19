@@ -12,6 +12,14 @@
 
 **Signature move:** 校准刻度。CPU / 内存 / 磁盘以带刻度的水平标尺呈现，而不是圆环图；服务器行是完整铭牌（名称、主机、状态、一条最近事实）；工作区左缘有一条常驻"书脊"，始终显示当前服务器与连接状态。
 
+## App Icon
+
+图标把 Harbor 的首字母 H 当作停靠龙门架：两根炭黑立柱、一条带刻度的横梁，以及横梁中央唯一的信号橙指针。暖灰底板与发丝内框沿用 Calibrated Panel，不使用渐变、阴影或额外强调色。
+
+- 源文件：`src-tauri/icons/app-icon.svg`。
+- 重新生成全套平台图标：`pnpm tauri icon src-tauri/icons/app-icon.svg -o src-tauri/icons`。
+- 以 16px 为最小评审尺寸：H 与橙色指针必须可辨，发丝内框与横梁刻度可作为次要细节消失。
+
 ## Palette
 
 | Token | Value | Use |
